@@ -6,6 +6,9 @@
  *
  *   bun run play          # from the repo root
  *   PORT=5000 bun run apps/playground/server.ts
+ *
+ * YURA_BUNDLE_FILE=<path> serves a pre-built bundle instead of building
+ * from source (used when the source tree is unavailable).
  */
 import { Hono } from 'hono'
 import { Database } from 'bun:sqlite'
@@ -23,7 +26,9 @@ const app = yura('#stage')
 
 await app.run()
 
-// Try: app.morphNow('HELLO')  ·  app.morphNow(shapes.vortex())
+// The swarm obeys at runtime — change the word, press Run:
+setTimeout(() => app.morphNow('HELLO'), 3000)
+setTimeout(() => app.morphNow(shapes.vortex()), 7500)
 `
 
 /** Curated example sketches — the playground's docs-by-example. */
@@ -103,6 +108,11 @@ function randomId(): string {
 let yuraBundle: string | null = null
 async function buildYuraBundle(): Promise<string> {
   if (yuraBundle) return yuraBundle
+  const prebuilt = process.env.YURA_BUNDLE_FILE
+  if (prebuilt) {
+    yuraBundle = await Bun.file(prebuilt).text()
+    return yuraBundle
+  }
   const entry = new URL('../../packages/yura/src/index.ts', import.meta.url).pathname
   const result = await Bun.build({ entrypoints: [entry], target: 'browser', minify: true })
   if (!result.success) {
@@ -259,7 +269,10 @@ function page(snippetId: string | null): string {
     <div class="recipes" id="recipes"><span>examples</span></div>
     <textarea id="code" spellcheck="false" autocomplete="off"></textarea>
   </div>
-  <div class="preview"><iframe id="frame" sandbox="allow-scripts" title="preview"></iframe></div>
+  <div class="preview"><!-- Preview runs same-origin: fine for localhost.
+       For public deployment, serve previews from a separate origin instead
+       of re-enabling sandbox (sandboxed srcdoc script execution proved
+       unreliable across Chrome states). --><iframe id="frame" title="preview"></iframe></div>
 </main>
 <div id="toast"></div>
 <script>
@@ -278,17 +291,56 @@ function toast(msg) {
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
 }
 
+/** Full-width / invisible characters are the usual cause of an opaque
+ *  "Invalid or unexpected token" (typing with an IME on). Locate them so the
+ *  error overlay can point at the exact spot. U+3000 is legal JS whitespace
+ *  and full-width letters are legal in strings, so this only reports when a
+ *  SyntaxError actually occurred. */
+function sketchHints(src) {
+  const matcher = () =>
+    /[\\u00A0\\u200B-\\u200F\\u2018-\\u201F\\u2212\\u3001-\\u303F\\uFE64-\\uFE66\\uFEFF\\uFF01-\\uFF5E\\uFFE0-\\uFFE6]/g;
+  const found = [];
+  const lines = src.split('\\n');
+  for (let ln = 0; ln < lines.length && found.length < 5; ln++) {
+    const g = matcher();
+    let m;
+    while ((m = g.exec(lines[ln])) && found.length < 5) {
+      const cp = m[0].codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+      found.push('line ' + (ln + 1) + ':' + (m.index + 1) + '  "' + m[0] + '" (U+' + cp + ')');
+    }
+  }
+  if (found.length === 0) return '';
+  return '\\nfull-width / invisible characters found — likely cause, replace with half-width:\\n  ' +
+    found.join('\\n  ');
+}
+
 function run() {
-  const code = codeEl.value.replace(/<\\/script/gi, '<\\\\/script');
+  const src = codeEl.value;
+  const code = src.replace(/<\\/script/gi, '<\\\\/script');
+  const hints = sketchHints(src);
   const origin = location.origin;
   frame.srcdoc = [
     '<!doctype html><html><head><meta charset="utf-8"><style>',
     'html,body{height:100%;margin:0;background:#04050c;overflow:hidden}#stage{position:fixed;inset:0}',
     '#fps{position:fixed;top:10px;right:12px;z-index:9;font:600 11.5px ui-monospace,Menlo,monospace;',
     'color:#8494ad;text-shadow:0 0 8px rgba(0,0,0,0.9);pointer-events:none}',
+    '#err{display:none;position:fixed;left:12px;right:12px;bottom:12px;z-index:99;padding:12px 16px;',
+    'border-radius:10px;background:rgba(26,7,14,0.94);border:1px solid rgba(251,113,133,0.4);',
+    'border-left:3px solid #fb7185;color:#fecdd3;font:12.5px/1.65 ui-monospace,Menlo,monospace;white-space:pre-wrap}',
+    '#err b{color:#fb7185;display:block;margin-bottom:3px;font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase}',
     '</style>',
+    '<script>(function(){var HINTS=' + JSON.stringify(hints) + ';',
+    'function show(m,line){var d=document.getElementById("err");if(!d)return;',
+    'd.style.display="block";d.innerHTML="<b>sketch error</b>";',
+    'var t=m;if(line>0)t+="  [sketch line "+line+"]";',
+    'if(/SyntaxError/i.test(m)&&HINTS)t+=HINTS;',
+    'd.appendChild(document.createTextNode(t))}',
+    'window.addEventListener("error",function(e){',
+    'show(e.message||"Script error",/srcdoc/.test(e.filename||"")?e.lineno:0)});',
+    'window.addEventListener("unhandledrejection",function(e){var r=e.reason;',
+    'show(r&&r.message?r.message:String(r),0)})})()<\\/script>',
     '<script type="importmap">' + JSON.stringify({ imports: { yura: origin + '/yura.js' } }) + '<\\/script>',
-    '</head><body><div id="stage"></div><div id="fps"></div>',
+    '</head><body><div id="stage"></div><div id="fps"></div><div id="err"></div>',
     '<script>(function(){var l=performance.now(),e=60,el=document.getElementById("fps");',
     'function t(n){e=e*0.92+(1000/Math.max(n-l,0.1))*0.08;l=n;requestAnimationFrame(t)}',
     'requestAnimationFrame(t);setInterval(function(){el.textContent=Math.round(e)+" fps"},500)})()<\\/script>',

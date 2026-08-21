@@ -9,7 +9,11 @@ test('GET / serves the playground page', async () => {
   const html = await res.text()
   expect(html).toContain('YURA')
   expect(html).toContain('id="code"')
-  expect(html).toContain('sandbox="allow-scripts"')
+  // Preview runs same-origin (see the inline comment in server.ts); the error
+  // overlay must diagnose full-width/invisible characters behind SyntaxErrors.
+  expect(html).toContain('<iframe id="frame"')
+  expect(html).toContain('sketchHints')
+  expect(html).toContain('sketch error')
   // Recipe chips (docs-by-example) ship with the page.
   expect(html).toContain('word morph')
   expect(html).toContain('shape tour')
