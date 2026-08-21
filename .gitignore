@@ -2,6 +2,8 @@
 node_modules/
 .pnp
 .pnp.js
+.yarn/
+.pnpm-store/
 
 # --- Build output ---
 dist/
@@ -13,10 +15,20 @@ out/
 bun.lockb.orig
 .bun/
 
+# --- Bundler / dev-server caches ---
+.vite/
+vite.config.*.timestamp*
+.parcel-cache/
+.turbo/
+
 # --- Test & coverage ---
 coverage/
 .nyc_output/
 *.lcov
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
 # --- Logs ---
 logs/
@@ -33,11 +45,22 @@ lerna-debug.log*
 *.pem
 *.key
 
+# --- AI agent state (machine-local: hooks reference absolute paths) ---
+.claude/
+.codex/
+.gemini/
+.cursor/
+.aider*
+.fable5/
+.night/
+CLAUDE.local.md
+
 # --- Editor / IDE ---
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json.example
 .idea/
+.history/
 *.swp
 *.swo
 *~
@@ -48,6 +71,7 @@ lerna-debug.log*
 ._*
 .Spotlight-V100
 .Trashes
+Icon?
 Thumbs.db
 ehthumbs.db
 Desktop.ini
@@ -57,14 +81,21 @@ Desktop.ini
 .temp/
 .tmp/
 *.tmp
+*.orig
+*.rej
 .eslintcache
-.turbo/
+
+# --- Deploy platforms ---
+.vercel/
+.netlify/
+.wrangler/
 
 # --- Release / publish ---
 *.tgz
 .changeset/*.md.bak
 
 # --- Rendering / capture artifacts (screenshots, videos, golden diffs) ---
+# NOTE: docs/screenshots/*.jpg are committed intentionally (README assets).
 captures/
 *.mp4
 *.webm
