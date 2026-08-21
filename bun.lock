@@ -56,6 +56,17 @@
         "yura": "workspace:*",
       },
     },
+    "examples/three": {
+      "name": "example-three",
+      "version": "0.1.0",
+      "dependencies": {
+        "three": "^0.168.0",
+        "yura": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/three": "^0.168.0",
+      },
+    },
     "packages/core": {
       "name": "@yura/core",
       "version": "0.1.0",
@@ -119,6 +130,8 @@
     "example-hello": ["example-hello@workspace:examples/hello"],
 
     "example-model": ["example-model@workspace:examples/model"],
+
+    "example-three": ["example-three@workspace:examples/three"],
 
     "fflate": ["fflate@0.8.3", "", {}, "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="],
 

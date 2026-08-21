@@ -321,3 +321,48 @@ fn skyFS(in: VOut) -> @location(0) vec4<f32> {
   return vec4<f32>(c * F.params.x * F.params.w, 1.0);
 }
 `
+
+// Camera-facing FX sprites: instanced quads, additive HDR blending.
+// Depth-tested against the mesh scene (no depth write) so bursts and trails
+// composite correctly behind geometry; bright cores feed the bloom pass.
+export const FX_WGSL = /* wgsl */ `
+struct FxFrame {
+  viewProj: mat4x4<f32>,
+  right: vec4<f32>,
+  up: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> F: FxFrame;
+
+struct VSOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) corner: vec2<f32>,
+  @location(1) color: vec4<f32>,
+}
+
+@vertex
+fn vs(
+  @builtin(vertex_index) vi: u32,
+  @location(0) centerSize: vec4<f32>,
+  @location(1) colorAlpha: vec4<f32>,
+) -> VSOut {
+  var corners = array<vec2<f32>, 4>(
+    vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
+  );
+  let c = corners[vi];
+  let world = centerSize.xyz + (F.right.xyz * c.x + F.up.xyz * c.y) * centerSize.w;
+  var out: VSOut;
+  out.pos = F.viewProj * vec4<f32>(world, 1.0);
+  out.corner = c;
+  out.color = colorAlpha;
+  return out;
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4<f32> {
+  let d2 = dot(in.corner, in.corner);
+  let falloff = max(1.0 - d2, 0.0);
+  // Soft round sprite with a hot core; alpha=0 keeps additive blending pure.
+  let glow = falloff * falloff * (0.35 + 1.9 * falloff);
+  return vec4<f32>(in.color.rgb * (in.color.a * glow * 2.2), 0.0);
+}
+`

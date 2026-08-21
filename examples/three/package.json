@@ -1,0 +1,13 @@
+{
+  "name": "example-three",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "yura": "workspace:*",
+    "three": "^0.168.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.168.0"
+  }
+}

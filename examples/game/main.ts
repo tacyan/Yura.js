@@ -5,7 +5,7 @@ const app = yura('#game')
 const scene = app.scene({ gravity: -22, bounds: 12 })
 
 scene.add('plane', { size: 24, material: 'checker' })
-scene.add('knot', { radius: 1.1, material: 'gold', position: [0, 1.6, 0], spin: [0, 0.7, 0.25], shadow: true })
+scene.add('knot', { radius: 1.1, material: 'gold', position: [0, 1.6, 0], spin: [0, 0.7, 0.25], solid: true, shadow: true })
 
 const ball = scene.add('sphere', {
   radius: 0.45, material: 'chrome', position: [0, 3, 7], body: 'dynamic', shadow: true,

@@ -10,7 +10,7 @@ import {
   type Vec3,
 } from '@yura/core'
 import { POST_WGSL } from './shaders'
-import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL } from './model-shaders'
+import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL, FX_WGSL } from './model-shaders'
 import { loadGLB, type GLTFModel } from './gltf'
 import type { MeshGeometry } from './meshes'
 import type { LookParams } from './renderer'
@@ -86,6 +86,7 @@ export class WebGPUModelRenderer {
   private brightPipeline!: GPURenderPipeline
   private blurPipeline!: GPURenderPipeline
   private compositePipeline!: GPURenderPipeline
+  private fxPipeline!: GPURenderPipeline
 
   private envTex!: GPUTexture
   private shadowTex!: GPUTexture
@@ -130,6 +131,15 @@ export class WebGPUModelRenderer {
   private width = 0
   private height = 0
   private disposed = false
+
+  // FX sprite pass: pooled instance buffer, grown on demand.
+  private fxUB!: GPUBuffer
+  private fxBG!: GPUBindGroup
+  private fxBuffer: GPUBuffer | null = null
+  private fxCapacity = 0
+  private fxData: Float32Array<ArrayBuffer> | null = null
+  private fxCount = 0
+  private fxFrameData = new Float32Array(24)
 
   look: LookParams
   colorA: Vec3 = [0.05, 0.3, 0.5]
@@ -294,6 +304,36 @@ export class WebGPUModelRenderer {
     this.streak1UB = uniform('yura-mstreak1-ub', 64)
     this.streak2UB = uniform('yura-mstreak2-ub', 64)
     this.compositeUB = uniform('yura-mcomposite-ub', 64)
+    this.fxUB = uniform('yura-fx-ub', 96)
+
+    // FX sprites: instanced camera-facing quads, additive HDR blending,
+    // depth-tested against the mesh scene without writing depth.
+    const additive: GPUBlendState = {
+      color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+      alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
+    }
+    const fxModule = d.createShaderModule({ label: 'yura-fx', code: FX_WGSL })
+    this.fxPipeline = d.createRenderPipeline({
+      label: 'yura-fx',
+      layout: 'auto',
+      vertex: {
+        module: fxModule,
+        entryPoint: 'vs',
+        buffers: [
+          {
+            arrayStride: 32,
+            stepMode: 'instance',
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x4' },
+              { shaderLocation: 1, offset: 16, format: 'float32x4' },
+            ],
+          },
+        ],
+      },
+      fragment: { module: fxModule, entryPoint: 'fs', targets: [{ format: 'rgba16float', blend: additive }] },
+      primitive: { topology: 'triangle-strip', cullMode: 'none' },
+      depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
+    })
   }
 
   /** Render the procedural studio HDRI into a mipped cubemap, once. */
@@ -381,6 +421,10 @@ export class WebGPUModelRenderer {
       layout: this.unlitPipeline.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: { buffer: this.frameUB } }],
     })
+    this.fxBG = d.createBindGroup({
+      layout: this.fxPipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: this.fxUB } }],
+    })
   }
 
   /** Procedural material patterns: no image assets, still mipped + sRGB. */
@@ -427,7 +471,7 @@ export class WebGPUModelRenderer {
   }
 
   /** Add a procedural mesh with a parametric PBR (or unlit) material. */
-  addMesh(geo: MeshGeometry, mat: SceneMaterial): MeshHandle {
+  addMesh(geo: MeshGeometry, mat: SceneMaterial, opts: { shadow?: boolean } = {}): MeshHandle {
     const d = this.device
     const upload = (data: Float32Array<ArrayBuffer> | Uint32Array<ArrayBuffer>, usage: number): GPUBuffer => {
       const buf = d.createBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
@@ -490,12 +534,14 @@ export class WebGPUModelRenderer {
         layout: pipeline.getBindGroupLayout(2),
         entries: [{ binding: 0, resource: { buffer: objectUB } }],
       }),
-      shadowBG: unlit
-        ? null
-        : d.createBindGroup({
-            layout: this.shadowPipeline.getBindGroupLayout(1),
-            entries: [{ binding: 0, resource: { buffer: objectUB } }],
-          }),
+      // Only meshes registered with shadow:true cast into the shadow map.
+      shadowBG:
+        unlit || opts.shadow !== true
+          ? null
+          : d.createBindGroup({
+              layout: this.shadowPipeline.getBindGroupLayout(1),
+              entries: [{ binding: 0, resource: { buffer: objectUB } }],
+            }),
       unlit,
       alive: true,
     }
@@ -512,6 +558,7 @@ export class WebGPUModelRenderer {
         mesh.uvs.destroy()
         mesh.indices.destroy()
         mesh.objectUB.destroy()
+        matUB.destroy()
         this.dynMeshes = this.dynMeshes.filter((x) => x !== mesh)
       },
     }
@@ -747,9 +794,21 @@ export class WebGPUModelRenderer {
     this.idleTime = 0
   }
 
+  /**
+   * Uploads camera-facing FX sprite instances for the next frame.
+   * `data` holds FX_FLOATS (8) floats per sprite — x, y, z, size, r, g, b,
+   * alpha — and only the first `count` sprites are drawn. The array is read
+   * during frame(), so callers may reuse one persistent buffer. Pass
+   * `count = 0` to clear the effect layer.
+   */
+  setFX(data: Float32Array<ArrayBuffer>, count: number): void {
+    this.fxData = data
+    this.fxCount = Math.max(0, Math.min(Math.floor(count), Math.floor(data.length / 8)))
+  }
+
   frame(dt: number, time: number): void {
     if (this.disposed || !this.hdrTex || !this.depthTex || !this.frameBG) return
-    if (this.primitives.length === 0 && this.dynMeshes.length === 0) return
+    if (this.primitives.length === 0 && this.dynMeshes.length === 0 && this.fxCount === 0) return
     const d = this.device
 
     let target: Vec3 = [0, 0, 0]
@@ -780,6 +839,30 @@ export class WebGPUModelRenderer {
     const view = lookAt(this.eye, target, [0, 1, 0])
     const viewProj = multiply(proj, view)
     const invVP = invert(viewProj) ?? identity()
+
+    // FX frame uniforms: viewProj + camera right/up rows for billboarding.
+    this.fxFrameData.set(viewProj, 0)
+    this.fxFrameData[16] = view[0]
+    this.fxFrameData[17] = view[4]
+    this.fxFrameData[18] = view[8]
+    this.fxFrameData[19] = 0
+    this.fxFrameData[20] = view[1]
+    this.fxFrameData[21] = view[5]
+    this.fxFrameData[22] = view[9]
+    this.fxFrameData[23] = 0
+    d.queue.writeBuffer(this.fxUB, 0, this.fxFrameData)
+    if (this.fxCount > 0 && this.fxData) {
+      if (!this.fxBuffer || this.fxCapacity < this.fxCount) {
+        this.fxBuffer?.destroy()
+        this.fxCapacity = Math.max(this.fxCount, this.fxCapacity * 2, 256)
+        this.fxBuffer = d.createBuffer({
+          label: 'yura-fx-instances',
+          size: this.fxCapacity * 32,
+          usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+        })
+      }
+      d.queue.writeBuffer(this.fxBuffer, 0, this.fxData, 0, this.fxCount * 8)
+    }
 
     this.frameData.set(viewProj, 0)
     this.frameData.set(invVP, 16)
@@ -924,6 +1007,14 @@ export class WebGPUModelRenderer {
         scene.drawIndexed(m.indexCount)
       }
     }
+    // FX sprites last: additive on top of opaques + translucents, still
+    // occluded by geometry via the depth test.
+    if (this.fxCount > 0 && this.fxBuffer) {
+      scene.setPipeline(this.fxPipeline)
+      scene.setBindGroup(0, this.fxBG)
+      scene.setVertexBuffer(0, this.fxBuffer)
+      scene.draw(4, this.fxCount)
+    }
     scene.end()
 
     const fullscreen = (label: string, pipeline: GPURenderPipeline, bg: GPUBindGroup, view: GPUTextureView) => {
@@ -956,6 +1047,7 @@ export class WebGPUModelRenderer {
     this.bloomC?.destroy()
     this.envTex?.destroy()
     this.shadowTex?.destroy()
+    this.fxBuffer?.destroy()
     for (const t of this.textureCache.values()) t.destroy()
     this.context.unconfigure()
     this.device.destroy()

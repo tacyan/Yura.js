@@ -54,6 +54,26 @@ export interface RendererOptions {
   colorB: Vec3
 }
 
+/**
+ * External camera override for embedding the swarm inside another engine's
+ * scene (e.g. the Three.js adapter). When set, the internal sway camera is
+ * bypassed and these matrices drive the frame instead.
+ */
+export interface ExternalCamera {
+  /** Column-major premultiplied projection * view * model, WebGPU [0,1] clip depth. */
+  viewProj: Float32Array
+  /** Unit billboard right axis in swarm-local space. */
+  right: Vec3
+  /** Unit billboard up axis in swarm-local space. */
+  up: Vec3
+  /** Camera position in swarm-local space (pointer-plane math). */
+  eye: Vec3
+  /** Vertical field of view in radians (WebGL point sizing). */
+  fovY?: number
+  /** Uniform model scale baked into viewProj (WebGL point sizing). */
+  sizeScale?: number
+}
+
 const WORKGROUP = 256
 
 /**
@@ -130,6 +150,8 @@ export class WebGPUParticleRenderer {
   pointerStrength = 0
   /** Smoothed pointer NDC used for camera parallax. */
   parallax: [number, number] = [0, 0]
+  /** When set, replaces the internal sway camera (external engine adapters). */
+  externalCamera: ExternalCamera | null = null
 
   private eye: Vec3 = [0, 3, 26]
   private center: Vec3 = [0, 0, 0]
@@ -444,19 +466,32 @@ export class WebGPUParticleRenderer {
     const d = this.device
     const n = Math.max(1, Math.min(this.count, Math.floor(activeCount)))
 
-    // Camera: gentle sway + pointer parallax. A full orbit would view flat
-    // shapes (text, images) edge-on, so we oscillate instead.
-    const angle = Math.sin(time * 0.12) * 0.45
-    const radius = 26
-    this.eye = [
-      Math.sin(angle) * radius + this.parallax[0] * 2.2,
-      3 + this.parallax[1] * 1.6,
-      Math.cos(angle) * radius,
-    ]
+    // Camera: external override (engine adapters) or the internal gentle
+    // sway + pointer parallax. A full orbit would view flat shapes (text,
+    // images) edge-on, so we oscillate instead.
     const aspect = this.width / this.height
-    const proj = perspective((50 * Math.PI) / 180, aspect, 0.1, 200)
-    const view = lookAt(this.eye, this.center, [0, 1, 0])
-    this.viewProj = multiply(proj, view)
+    let right: Vec3
+    let up: Vec3
+    const ext = this.externalCamera
+    if (ext) {
+      this.eye = ext.eye
+      this.viewProj = ext.viewProj
+      right = ext.right
+      up = ext.up
+    } else {
+      const angle = Math.sin(time * 0.12) * 0.45
+      const radius = 26
+      this.eye = [
+        Math.sin(angle) * radius + this.parallax[0] * 2.2,
+        3 + this.parallax[1] * 1.6,
+        Math.cos(angle) * radius,
+      ]
+      const proj = perspective((50 * Math.PI) / 180, aspect, 0.1, 200)
+      const view = lookAt(this.eye, this.center, [0, 1, 0])
+      this.viewProj = multiply(proj, view)
+      right = [view[0], view[4], view[8]]
+      up = [view[1], view[5], view[9]]
+    }
 
     // Sim uniforms.
     this.simF32[0] = dt
@@ -487,13 +522,13 @@ export class WebGPUParticleRenderer {
 
     // Render uniforms. Camera right/up derived from the view matrix rows.
     this.renderData.set(this.viewProj, 0)
-    this.renderData[16] = view[0]
-    this.renderData[17] = view[4]
-    this.renderData[18] = view[8]
+    this.renderData[16] = right[0]
+    this.renderData[17] = right[1]
+    this.renderData[18] = right[2]
     this.renderData[19] = this.look.particleSize
-    this.renderData[20] = view[1]
-    this.renderData[21] = view[5]
-    this.renderData[22] = view[9]
+    this.renderData[20] = up[0]
+    this.renderData[21] = up[1]
+    this.renderData[22] = up[2]
     this.renderData[23] = this.look.intensity * trailComp * countComp
     this.renderData[24] = this.colorA[0]
     this.renderData[25] = this.colorA[1]

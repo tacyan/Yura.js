@@ -8,7 +8,7 @@ import {
   warnCode,
   type Vec3,
 } from '@yura/core'
-import type { LookParams, MotionParams, RendererOptions } from '@yura/renderer-webgpu'
+import type { LookParams, MotionParams, RendererOptions, ExternalCamera } from '@yura/renderer-webgpu'
 import {
   SIM_VS,
   RENDER_VS,
@@ -40,6 +40,8 @@ export class WebGL2ParticleRenderer {
   pointerWorld: Vec3 = [0, 0, 0]
   pointerStrength = 0
   parallax: [number, number] = [0, 0]
+  /** When set, replaces the internal sway camera (external engine adapters). */
+  externalCamera: ExternalCamera | null = null
 
   private gl: WebGL2RenderingContext
   private canvas: HTMLCanvasElement
@@ -291,17 +293,23 @@ void main() { o = vec4(0.0); }
     const gl = this.gl
     const n = Math.max(1, Math.min(this.count, Math.floor(activeCount)))
 
-    const angle = Math.sin(time * 0.12) * 0.45
-    const radius = 26
-    this.eye = [
-      Math.sin(angle) * radius + this.parallax[0] * 2.2,
-      3 + this.parallax[1] * 1.6,
-      Math.cos(angle) * radius,
-    ]
     const aspect = this.width / this.height
-    const proj = perspective((50 * Math.PI) / 180, aspect, 0.1, 200)
-    const view = lookAt(this.eye, this.center, [0, 1, 0])
-    this.viewProj = multiply(proj, view)
+    const ext = this.externalCamera
+    if (ext) {
+      this.eye = ext.eye
+      this.viewProj = ext.viewProj
+    } else {
+      const angle = Math.sin(time * 0.12) * 0.45
+      const radius = 26
+      this.eye = [
+        Math.sin(angle) * radius + this.parallax[0] * 2.2,
+        3 + this.parallax[1] * 1.6,
+        Math.cos(angle) * radius,
+      ]
+      const proj = perspective((50 * Math.PI) / 180, aspect, 0.1, 200)
+      const view = lookAt(this.eye, this.center, [0, 1, 0])
+      this.viewProj = multiply(proj, view)
+    }
 
     // --- Simulation via transform feedback ---
     const next = 1 - this.cur
@@ -359,7 +367,9 @@ void main() { o = vec4(0.0); }
     gl.useProgram(this.renderProgram)
     const ru = (name: string) => this.u('render', this.renderProgram, name)
     gl.uniformMatrix4fv(ru('uViewProj'), false, this.viewProj)
-    const sizePx = (this.look.particleSize * this.height) / (2 * Math.tan((25 * Math.PI) / 180))
+    const fovY = ext?.fovY ?? (50 * Math.PI) / 180
+    const sizePx =
+      ((this.look.particleSize * (ext?.sizeScale ?? 1)) * this.height) / (2 * Math.tan(fovY / 2))
     gl.uniform1f(ru('uSizePx'), sizePx)
     gl.uniform1f(ru('uIntensity'), this.look.intensity * trailComp * countComp)
     gl.uniform1f(ru('uSpeedColorMix'), this.motion.speedColorMix)

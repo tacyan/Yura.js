@@ -6,6 +6,14 @@ import {
   type WebGPUModelRenderer,
 } from '@yura/renderer-webgpu'
 import { resolveMaterial, type MaterialLike } from './materials'
+import {
+  FxPool,
+  FxTrailEmitter,
+  FX_FLOATS,
+  type BurstOptions,
+  type TrailOptions,
+  type CelebrateOptions,
+} from './fx'
 
 /**
  * The game layer (spec: "ゲームも作れる最小コード"). Procedural meshes + PBR
@@ -14,6 +22,13 @@ import { resolveMaterial, type MaterialLike } from './materials'
  */
 
 export type ShapeName = 'sphere' | 'box' | 'torus' | 'knot' | 'cylinder' | 'plane' | 'disc'
+
+/** Seconds a Space tap stays buffered waiting for a landing (jump buffer). */
+const JUMP_BUFFER = 0.15
+/** Seconds after leaving the ground a jump is still honoured (coyote time). */
+const COYOTE_TIME = 0.1
+/** Grounded bodies with |vy| below this settle to zero instead of micro-bouncing. */
+const SLEEP_VY = 0.05
 
 export interface SceneOptions {
   /** Y acceleration for dynamic bodies (e.g. -18). 0 disables gravity. */
@@ -47,6 +62,11 @@ export interface TextHandle {
   remove(): void
 }
 
+export interface TrailHandle {
+  /** Stops emitting; already-spawned particles fade out naturally. */
+  stop(): void
+}
+
 export class SceneObject {
   position: [number, number, number]
   rotation: [number, number, number]
@@ -59,8 +79,26 @@ export class SceneObject {
   restitution: number
   /** Collision sphere radius (approximate for non-spheres). */
   radius: number
-  grounded = false
   alive = true
+
+  /** @internal collider kind — cylinders collide radially in XZ, not as spheres. */
+  collider: 'sphere' | 'cylinder' = 'sphere'
+  /** @internal half-height of the cylinder collision band. */
+  halfHeight = 0
+  /** @internal raw ground contact this frame (no coyote grace). */
+  groundedNow = false
+  /** @internal sim-time stamp of the most recent ground contact. */
+  groundedAt = -Infinity
+
+  /** True on ground contact — held ~100ms after leaving (coyote time) while not moving up. */
+  get grounded(): boolean {
+    if (this.groundedNow) return true
+    return this.velocity[1] <= 0 && this.scene.simTime - this.groundedAt <= COYOTE_TIME
+  }
+  set grounded(v: boolean) {
+    this.groundedNow = v
+    if (v) this.groundedAt = this.scene.simTime
+  }
 
   /** @internal */ geo: MeshGeometry
   /** @internal */ matLike: MaterialLike | undefined
@@ -90,6 +128,14 @@ export class SceneObject {
     return this
   }
 
+  /**
+   * Attaches a glowing particle trail that follows this object.
+   * One line of game code: `player.trail({ color: '#4cc9f0' })`.
+   */
+  trail(opts: TrailOptions = {}): TrailHandle {
+    return this.scene.trail(this, opts)
+  }
+
   remove(): void {
     if (!this.alive) return
     this.alive = false
@@ -103,6 +149,12 @@ export class SceneInput {
   private keys = new Set<string>()
   private prevKeys = new Set<string>()
   private cleanupFns: Array<() => void> = []
+  /** Frame clock (seconds) advanced by endFrame — drives the jump buffer. */
+  private clock = 0
+  /** Clock stamp of the latest Space keydown edge; -Infinity = no pending intent. */
+  private jumpEdgeAt = -Infinity
+  /** @internal set by the scene each frame: a grounded dynamic body can jump now. */
+  jumpEligible: boolean | null = null
 
   /** -1..1 — A/D or arrow left/right. */
   get x(): number {
@@ -123,28 +175,67 @@ export class SceneInput {
     return this.keys.has(code) && !this.prevKeys.has(code)
   }
 
+  /**
+   * Jump intent, consumed on use. A Space tap is buffered for ~150ms so it
+   * survives a within-frame press/release and lands the jump on the first
+   * frame the body can actually take off; holding Space keeps the intent
+   * alive, so a held key re-jumps on each landing. While the scene reports no
+   * jump-capable body (airborne past coyote time), reading this returns false
+   * WITHOUT consuming the buffer — the tap still fires on landing.
+   */
   get jump(): boolean {
-    return this.pressed('Space')
+    const buffered = this.clock - this.jumpEdgeAt <= JUMP_BUFFER
+    if (!buffered && !this.key('Space')) return false
+    if (this.jumpEligible === false) return false
+    this.jumpEdgeAt = -Infinity
+    return true
+  }
+
+  /** @internal raw keydown edge (also the headless-test entry point). */
+  keyDown(code: string, repeat = false): void {
+    if (code === 'Space' && !repeat && !this.keys.has(code)) this.jumpEdgeAt = this.clock
+    this.keys.add(code)
+  }
+
+  /** @internal raw keyup edge (also the headless-test entry point). */
+  keyUp(code: string): void {
+    this.keys.delete(code)
+  }
+
+  /** @internal drop all held state — blur/tab-hide never delivers the keyups. */
+  clearKeys(): void {
+    this.keys.clear()
+    this.prevKeys.clear()
+    this.jumpEdgeAt = -Infinity
   }
 
   /** @internal */
   bind(): void {
     const down = (e: KeyboardEvent) => {
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault()
-      this.keys.add(e.code)
+      this.keyDown(e.code, e.repeat)
     }
-    const up = (e: KeyboardEvent) => this.keys.delete(e.code)
+    const up = (e: KeyboardEvent) => this.keyUp(e.code)
+    const blur = () => this.clearKeys()
+    const vis = () => {
+      if (document.visibilityState === 'hidden') this.clearKeys()
+    }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    document.addEventListener('visibilitychange', vis)
     this.cleanupFns.push(() => {
       window.removeEventListener('keydown', down)
       window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', blur)
+      document.removeEventListener('visibilitychange', vis)
     })
   }
 
   /** @internal */
-  endFrame(): void {
+  endFrame(dt = 0): void {
     this.prevKeys = new Set(this.keys)
+    this.clock += dt
   }
 
   /** @internal */
@@ -167,6 +258,8 @@ export class YuraScene {
   gravity: number
   bounds: number
   private keyboard: boolean
+  /** @internal sim clock (seconds) — drives coyote time; set each step. */
+  simTime = 0
 
   private objects: SceneObject[] = []
   private updateCbs: Array<(dt: number, input: SceneInput, time: number) => void> = []
@@ -175,6 +268,11 @@ export class YuraScene {
   private groundY: number | null = null
   private cam: CameraState = { mode: 'orbit', target: null, distance: 8, height: 3.5, smoothedEye: null }
   private texts: HTMLElement[] = []
+
+  /** Particle-FX pool behind burst/trail/celebrate. Pure logic — steps headless. */
+  readonly fx = new FxPool(8192)
+  private trails: Array<{ obj: SceneObject; emitter: FxTrailEmitter; active: boolean }> = []
+  private fxInstances: Float32Array<ArrayBuffer> | null = null
 
   readonly camera = {
     follow: (obj: SceneObject, opts: { distance?: number; height?: number } = {}): void => {
@@ -196,8 +294,10 @@ export class YuraScene {
   }
 
   add(shape: ShapeName, opts: AddOptions = {}): SceneObject {
-    const { geo, radius } = buildShape(shape, opts)
+    const { geo, radius, collider, halfHeight } = buildShape(shape, opts)
     const obj = new SceneObject(this, geo, radius, opts)
+    obj.collider = collider ?? 'sphere'
+    obj.halfHeight = halfHeight ?? radius
     if (shape === 'plane') {
       this.groundY = obj.position[1]
       obj.radius = 0 // ground never sphere-collides
@@ -252,6 +352,39 @@ export class YuraScene {
     return n
   }
 
+  /**
+   * Fires a radial particle burst at `position` — the one-liner for collect
+   * flashes, explosions, and impacts:
+   * `orb.onCollide(() => scene.burst(orb.position, { color: '#ffd166' }))`.
+   */
+  burst(position: readonly [number, number, number] | Vec3, opts: BurstOptions = {}): this {
+    this.fx.burst(position, opts)
+    return this
+  }
+
+  /**
+   * Attaches a glowing particle trail that follows `obj` until stopped or the
+   * object is removed. Also available as `obj.trail(opts)`.
+   */
+  trail(obj: SceneObject, opts: TrailOptions = {}): TrailHandle {
+    const entry = { obj, emitter: new FxTrailEmitter(this.fx, opts), active: true }
+    this.trails.push(entry)
+    return {
+      stop: () => {
+        entry.active = false
+      },
+    }
+  }
+
+  /**
+   * Fireworks-like multi-burst win celebration:
+   * `if (score === total) scene.celebrate()`.
+   */
+  celebrate(opts: CelebrateOptions = {}): this {
+    this.fx.celebrate(opts)
+    return this
+  }
+
   /** @internal called by YuraApp once the GPU renderer exists. */
   attach(renderer: WebGPUModelRenderer, container: HTMLElement): () => void {
     this.renderer = renderer
@@ -274,6 +407,17 @@ export class YuraScene {
 
   /** @internal one simulation step; safe to run headless (tests). */
   step(dt: number, time: number): void {
+    this.simTime = time
+    // Jump gating for the input's buffered intent: while nothing can take off
+    // (airborne past coyote), input.jump must not consume the buffered tap.
+    let jumpable = false
+    for (const o of this.objects) {
+      if (o.alive && o.body === 'dynamic' && o.grounded) {
+        jumpable = true
+        break
+      }
+    }
+    this.input.jumpEligible = jumpable
     for (const cb of this.updateCbs) cb(dt, this.input, time)
 
     const ground = this.groundY
@@ -283,13 +427,20 @@ export class YuraScene {
       obj.rotation[1] += obj.spin[1] * dt
       obj.rotation[2] += obj.spin[2] * dt
       if (obj.body === 'dynamic') {
-        obj.velocity[1] += this.gravity * dt
+        // Sleep threshold: a resting body stays at rest instead of re-gaining
+        // gravity every frame and sinking/popping a few mm below the ground.
+        if (obj.groundedNow && Math.abs(obj.velocity[1]) < SLEEP_VY) {
+          obj.velocity[1] = 0
+        } else {
+          obj.velocity[1] += this.gravity * dt
+        }
         obj.position[0] += obj.velocity[0] * dt
         obj.position[1] += obj.velocity[1] * dt
         obj.position[2] += obj.velocity[2] * dt
         obj.grounded = false
-        if (ground !== null && obj.position[1] - obj.radius <= ground) {
-          obj.position[1] = ground + obj.radius
+        const clearance = obj.collider === 'cylinder' ? obj.halfHeight : obj.radius
+        if (ground !== null && obj.position[1] - clearance <= ground) {
+          obj.position[1] = ground + clearance
           if (obj.velocity[1] < 0) {
             obj.velocity[1] = Math.abs(obj.velocity[1]) > 1 ? -obj.velocity[1] * obj.restitution : 0
           }
@@ -310,7 +461,9 @@ export class YuraScene {
       }
     }
 
-    // Sphere-sphere collisions: callbacks + push-out vs solid objects.
+    // Collisions: callbacks + push-out vs solid objects. Cylinders collide as
+    // true vertical cylinders (radial XZ, inside their height band); every
+    // other pair keeps the sphere-sphere path.
     const objs = this.objects
     for (let i = 0; i < objs.length; i++) {
       const a = objs[i]
@@ -318,11 +471,24 @@ export class YuraScene {
       for (let j = i + 1; j < objs.length; j++) {
         const b = objs[j]
         if (!b.alive || b.radius === 0) continue
-        const dx = a.position[0] - b.position[0]
-        const dy = a.position[1] - b.position[1]
-        const dz = a.position[2] - b.position[2]
-        const rr = a.radius + b.radius
-        const d2 = dx * dx + dy * dy + dz * dz
+        const cyl =
+          a.collider === 'cylinder' ? (b.collider === 'cylinder' ? null : a) : b.collider === 'cylinder' ? b : null
+        let rr: number
+        let d2: number
+        if (cyl) {
+          const s = cyl === a ? b : a
+          if (Math.abs(s.position[1] - cyl.position[1]) > cyl.halfHeight + s.radius) continue
+          const dx = s.position[0] - cyl.position[0]
+          const dz = s.position[2] - cyl.position[2]
+          rr = cyl.radius + s.radius
+          d2 = dx * dx + dz * dz
+        } else {
+          const dx = a.position[0] - b.position[0]
+          const dy = a.position[1] - b.position[1]
+          const dz = a.position[2] - b.position[2]
+          rr = a.radius + b.radius
+          d2 = dx * dx + dy * dy + dz * dz
+        }
         if (d2 > rr * rr) continue
         for (const cb of a.collideCbs) cb(b)
         for (const cb of b.collideCbs) cb(a)
@@ -331,7 +497,7 @@ export class YuraScene {
         if (dyn && other.solid && dyn.alive && other.alive) {
           const d = Math.sqrt(d2) || 1e-4
           const nx = (dyn.position[0] - other.position[0]) / d
-          const ny = (dyn.position[1] - other.position[1]) / d
+          const ny = cyl ? 0 : (dyn.position[1] - other.position[1]) / d
           const nz = (dyn.position[2] - other.position[2]) / d
           const push = rr - d
           dyn.position[0] += nx * push
@@ -348,9 +514,27 @@ export class YuraScene {
       }
     }
 
+    this.stepFx(dt)
     this.updateCamera(dt)
     this.syncWorlds()
-    this.input.endFrame()
+    this.input.endFrame(dt)
+  }
+
+  /** Emit trails at their objects, advance the pool, hand sprites to the GPU. */
+  private stepFx(dt: number): void {
+    let prune = false
+    for (const t of this.trails) {
+      if (!t.active || !t.obj.alive) {
+        prune = true
+        continue
+      }
+      t.emitter.step(dt, t.obj.position, t.obj.velocity)
+    }
+    if (prune) this.trails = this.trails.filter((t) => t.active && t.obj.alive)
+    this.fx.step(dt)
+    if (!this.renderer) return
+    if (!this.fxInstances) this.fxInstances = new Float32Array(this.fx.capacity * FX_FLOATS)
+    this.renderer.setFX(this.fxInstances, this.fx.writeInstances(this.fxInstances))
   }
 
   private updateCamera(dt: number): void {
@@ -369,7 +553,7 @@ export class YuraScene {
 
   private realize(obj: SceneObject): void {
     if (!this.renderer || obj.handle) return
-    obj.handle = this.renderer.addMesh(obj.geo, resolveMaterial(obj.matLike))
+    obj.handle = this.renderer.addMesh(obj.geo, resolveMaterial(obj.matLike), { shadow: obj.wantShadow })
     if (obj.wantShadow) {
       obj.shadowHandle = this.renderer.addMesh(meshes.disc(1, 32), {
         color: [0, 0, 0, 0.42],
@@ -404,7 +588,10 @@ export class YuraScene {
   }
 }
 
-function buildShape(shape: ShapeName, opts: AddOptions): { geo: MeshGeometry; radius: number } {
+function buildShape(
+  shape: ShapeName,
+  opts: AddOptions,
+): { geo: MeshGeometry; radius: number; collider?: 'cylinder'; halfHeight?: number } {
   const size = opts.size
   const s3: [number, number, number] = Array.isArray(size) ? size : [size ?? 1, size ?? 1, size ?? 1]
   switch (shape) {
@@ -423,7 +610,9 @@ function buildShape(shape: ShapeName, opts: AddOptions): { geo: MeshGeometry; ra
       return { geo: meshes.torusKnot(r, r * 0.3), radius: r * 1.3 }
     }
     case 'cylinder':
-      return { geo: meshes.cylinder(s3[0] / 2, s3[1]), radius: Math.max(s3[0] / 2, s3[1] / 2) }
+      // Collision radius matches the visual radius (s3[0]/2), not the sphere
+      // bound — the radial push-out happens only inside the height band.
+      return { geo: meshes.cylinder(s3[0] / 2, s3[1]), radius: s3[0] / 2, collider: 'cylinder', halfHeight: s3[1] / 2 }
     case 'plane':
       return { geo: meshes.plane(s3[0], Math.max(2, Math.round(s3[0] / 2))), radius: 0 }
     case 'disc': {
