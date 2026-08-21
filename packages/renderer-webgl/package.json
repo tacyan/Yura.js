@@ -1,10 +1,28 @@
 {
   "name": "@yura/renderer-webgl",
   "version": "0.1.0",
+  "description": "Yura.js WebGL2 fallback renderer: transform-feedback particle simulation with the same HDR look for browsers without WebGPU.",
+  "license": "MIT",
   "type": "module",
   "module": "src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "sideEffects": false,
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "webgl2",
+    "particles",
+    "transform-feedback",
+    "fallback",
+    "yura"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@yura/core": "workspace:*",

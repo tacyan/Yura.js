@@ -20,6 +20,14 @@
         "@types/three": "^0.168.0",
       },
     },
+    "apps/playground": {
+      "name": "app-playground",
+      "version": "0.1.0",
+      "dependencies": {
+        "hono": "^4.6.0",
+        "yura": "workspace:*",
+      },
+    },
     "apps/showcase": {
       "name": "app-showcase",
       "version": "0.1.0",
@@ -100,6 +108,8 @@
 
     "app-benchmarks": ["app-benchmarks@workspace:apps/benchmarks"],
 
+    "app-playground": ["app-playground@workspace:apps/playground"],
+
     "app-showcase": ["app-showcase@workspace:apps/showcase"],
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
@@ -111,6 +121,8 @@
     "example-model": ["example-model@workspace:examples/model"],
 
     "fflate": ["fflate@0.8.3", "", {}, "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="],
+
+    "hono": ["hono@4.13.3", "", {}, "sha512-r8AO2mYHoLxSHkgafNeC/BXyb2vWRxD3jem4Ts+ptav8oTG5FIRifAjuJEmZI4bSvvc2ns0GxmIYiZnHqN3mMw=="],
 
     "meshoptimizer": ["meshoptimizer@0.18.1", "", {}, "sha512-ZhoIoL7TNV4s5B6+rx5mC//fw8/POGyNxS/DZyCJeiZ12ScLfVwRE/GfsxwiTkMYYD5DmK2/JXnEVXqL4rF+Sw=="],
 

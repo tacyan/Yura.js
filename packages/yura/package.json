@@ -1,11 +1,29 @@
 {
   "name": "yura",
   "version": "0.1.0",
+  "description": "Make the web move. One million GPU-simulated particles in five lines — a visual-first WebGPU framework with WebGL2 fallback, curated looks, shape morphing, and an adaptive quality governor.",
+  "license": "MIT",
   "type": "module",
   "module": "src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
   },
+  "sideEffects": false,
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "webgpu",
+    "webgl2",
+    "particles",
+    "creative-coding",
+    "visualization",
+    "bun",
+    "graphics",
+    "animation"
+  ],
   "dependencies": {
     "@yura/core": "workspace:*",
     "@yura/renderer-webgpu": "workspace:*",

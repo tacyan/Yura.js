@@ -1,10 +1,29 @@
 {
   "name": "@yura/renderer-webgpu",
   "version": "0.1.0",
+  "description": "Yura.js WebGPU renderer: compute-shader particle simulation and an HDR post pipeline (trails, bloom, anamorphic streaks, ACES), plus glTF/PBR with shadow mapping.",
+  "license": "MIT",
   "type": "module",
   "module": "src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "sideEffects": false,
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "webgpu",
+    "particles",
+    "wgsl",
+    "gltf",
+    "pbr",
+    "yura"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@yura/core": "workspace:*"

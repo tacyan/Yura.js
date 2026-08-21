@@ -14,7 +14,8 @@
     "showcase": "bun ./apps/showcase/index.html",
     "bench": "bun ./apps/benchmarks/index.html",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "play": "bun run apps/playground/server.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.2.13",

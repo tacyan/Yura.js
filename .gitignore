@@ -104,3 +104,6 @@ golden-diff/
 
 # NOTE: examples/model/DamagedHelmet.glb is committed intentionally
 # (Khronos sample asset, needed for the model demo).
+
+# --- Playground snippet store ---
+apps/playground/.data/

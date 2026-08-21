@@ -1,9 +1,26 @@
 {
   "name": "@yura/core",
   "version": "0.1.0",
+  "description": "Yura.js core: math, GPU capability detection, adaptive quality governor, lifecycle. Zero dependencies.",
+  "license": "MIT",
   "type": "module",
   "module": "src/index.ts",
+  "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "sideEffects": false,
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "webgpu",
+    "graphics",
+    "quality-governor",
+    "yura"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }
