@@ -26,6 +26,63 @@ await app.run()
 // Try: app.morphNow('HELLO')  ·  app.morphNow(shapes.vortex())
 `
 
+/** Curated example sketches — the playground's docs-by-example. */
+const RECIPES: Array<{ label: string; code: string }> = [
+  { label: 'galaxy', code: DEFAULT_CODE },
+  {
+    label: 'word morph',
+    code: `import { yura } from 'yura'
+
+const app = yura('#stage')
+  .preset('cyberpunk')
+  .particles(350_000)
+  .interactive()
+
+await app.run()
+
+const words = ['YURA', 'MAKE', 'THE WEB', 'MOVE']
+let i = 0
+setInterval(() => app.morphNow(words[i++ % words.length]), 3200)
+`,
+  },
+  {
+    label: 'aurora',
+    code: `import { yura } from 'yura'
+
+yura('#stage')
+  .preset('aurora')
+  .interactive()
+  .run()
+`,
+  },
+  {
+    label: 'custom look',
+    code: `import { yura, shapes, looks } from 'yura'
+
+yura('#stage')
+  .particles(400_000)
+  .gradient('#f472b6', '#22d3ee')
+  .look(looks.cinematic({ trail: 0.6, streak: 0.9, bloomStrength: 0.9 }))
+  .shape(shapes.ring({ radius: 9, thickness: 1.6 }))
+  .motion({ swirl: 0.35, noiseStrength: 1.1 })
+  .interactive()
+  .run()
+`,
+  },
+  {
+    label: 'shape tour',
+    code: `import { yura, shapes } from 'yura'
+
+yura('#stage')
+  .preset('cinematic')
+  .particles(600_000)
+  .morphTo([shapes.sphere(), shapes.vortex(), shapes.ring(), shapes.galaxy()])
+  .interactive()
+  .run()
+`,
+  },
+]
+
 export interface PlaygroundOptions {
   /** SQLite path; ':memory:' for tests. */
   dbPath?: string
@@ -156,8 +213,20 @@ function page(snippetId: string | null): string {
   }
   kbd { font-family: var(--mono); font-size: 0.7rem; color: var(--muted);
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-left: 7px; }
+  button.primary kbd { color: rgba(4,5,12,0.75); border-color: rgba(4,5,12,0.3); }
   main { flex: 1; display: grid; grid-template-columns: minmax(320px, 34%) 1fr; min-height: 0; }
   .editor { display: flex; flex-direction: column; border-right: 1px solid var(--line); min-width: 0; }
+  .recipes {
+    display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px;
+    border-bottom: 1px solid var(--line); background: rgba(11,14,29,0.6);
+  }
+  .recipes span { font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--muted); align-self: center; margin-right: 4px; }
+  .recipes button {
+    padding: 4px 12px; border-radius: 999px; font-size: 0.72rem; font-weight: 500;
+    font-family: var(--mono); color: var(--muted);
+  }
+  .recipes button:hover { color: var(--cyan); border-color: rgba(103,232,249,0.4); }
   textarea {
     flex: 1; resize: none; border: 0; outline: none; padding: 18px 20px;
     background: var(--bg); color: var(--text); font-family: var(--mono);
@@ -186,13 +255,17 @@ function page(snippetId: string | null): string {
   <button id="share">Share</button>
 </header>
 <main>
-  <div class="editor"><textarea id="code" spellcheck="false" autocomplete="off"></textarea></div>
+  <div class="editor">
+    <div class="recipes" id="recipes"><span>examples</span></div>
+    <textarea id="code" spellcheck="false" autocomplete="off"></textarea>
+  </div>
   <div class="preview"><iframe id="frame" sandbox="allow-scripts" title="preview"></iframe></div>
 </main>
 <div id="toast"></div>
 <script>
 const SNIPPET_ID = ${JSON.stringify(snippetId)};
 const DEFAULT_CODE = ${JSON.stringify(DEFAULT_CODE)};
+const RECIPES = ${JSON.stringify(RECIPES)};
 const codeEl = document.getElementById('code');
 const frame = document.getElementById('frame');
 const toastEl = document.getElementById('toast');
@@ -211,12 +284,26 @@ function run() {
   frame.srcdoc = [
     '<!doctype html><html><head><meta charset="utf-8"><style>',
     'html,body{height:100%;margin:0;background:#04050c;overflow:hidden}#stage{position:fixed;inset:0}',
+    '#fps{position:fixed;top:10px;right:12px;z-index:9;font:600 11.5px ui-monospace,Menlo,monospace;',
+    'color:#8494ad;text-shadow:0 0 8px rgba(0,0,0,0.9);pointer-events:none}',
     '</style>',
     '<script type="importmap">' + JSON.stringify({ imports: { yura: origin + '/yura.js' } }) + '<\\/script>',
-    '</head><body><div id="stage"></div>',
+    '</head><body><div id="stage"></div><div id="fps"></div>',
+    '<script>(function(){var l=performance.now(),e=60,el=document.getElementById("fps");',
+    'function t(n){e=e*0.92+(1000/Math.max(n-l,0.1))*0.08;l=n;requestAnimationFrame(t)}',
+    'requestAnimationFrame(t);setInterval(function(){el.textContent=Math.round(e)+" fps"},500)})()<\\/script>',
     '<script type="module">' + code + '<\\/script>',
     '</body></html>',
   ].join('');
+}
+
+const recipesEl = document.getElementById('recipes');
+for (const r of RECIPES) {
+  const b = document.createElement('button');
+  b.textContent = r.label;
+  b.dataset.recipe = r.label;
+  b.addEventListener('click', () => { codeEl.value = r.code; run(); });
+  recipesEl.appendChild(b);
 }
 
 async function share() {

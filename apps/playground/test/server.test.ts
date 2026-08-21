@@ -10,6 +10,9 @@ test('GET / serves the playground page', async () => {
   expect(html).toContain('YURA')
   expect(html).toContain('id="code"')
   expect(html).toContain('sandbox="allow-scripts"')
+  // Recipe chips (docs-by-example) ship with the page.
+  expect(html).toContain('word morph')
+  expect(html).toContain('shape tour')
 })
 
 test('share -> fetch snippet -> load shared page round-trips', async () => {
