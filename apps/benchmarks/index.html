@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yura.js — Honest Benchmarks</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      :root {
+        --bg: #05060e;
+        --panel: #0b0e1d;
+        --panel-2: #10142a;
+        --line: rgba(148, 163, 184, 0.14);
+        --text: #e2e8f0;
+        --muted: #7c8aa5;
+        --cyan: #22d3ee;
+        --violet: #a78bfa;
+        --amber: #fbbf24;
+        --rose: #fb7185;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      html { background: var(--bg); color: var(--text); }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        line-height: 1.6; padding: 40px 20px 90px;
+      }
+      .wrap { max-width: 1060px; margin: 0 auto; }
+      header h1 {
+        font-size: clamp(1.7rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -0.03em;
+        background: linear-gradient(90deg, #67e8f9, #c4b5fd);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      header p.sub { color: var(--muted); margin-top: 6px; max-width: 62ch; }
+      header p.sub strong { color: var(--text); font-weight: 600; }
+
+      .card {
+        margin-top: 22px; background: var(--panel); border: 1px solid var(--line);
+        border-radius: 14px; padding: 18px 20px;
+      }
+      .card h2 { font-size: 0.95rem; font-weight: 700; letter-spacing: 0.04em;
+        text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+
+      #env { font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 4px 22px; }
+      #env b { color: var(--text); font-weight: 600; }
+
+      .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; }
+      .controls label { display: inline-flex; align-items: center; gap: 7px; font-size: 0.9rem; cursor: pointer; }
+      .controls input[type="checkbox"] { accent-color: var(--cyan); width: 15px; height: 15px; }
+      .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+      button#run {
+        margin-left: auto; padding: 10px 26px; border: 0; border-radius: 10px; cursor: pointer;
+        font-weight: 700; font-size: 0.95rem; color: #04050c;
+        background: linear-gradient(90deg, #67e8f9, #c4b5fd);
+      }
+      button#run:disabled { opacity: 0.45; cursor: wait; }
+
+      #stagebox { display: flex; justify-content: center; }
+      #stage {
+        position: relative; width: 960px; max-width: 100%; aspect-ratio: 16 / 9;
+        background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
+      }
+      #stage canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; }
+      #status { margin-top: 12px; font-family: var(--mono); font-size: 13px; color: var(--cyan); min-height: 1.4em; }
+      #status.idle { color: var(--muted); }
+
+      table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+      th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+      th { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.05em; }
+      td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+      td .dot { width: 9px; height: 9px; border-radius: 3px; display: inline-block; margin-right: 8px; vertical-align: baseline; }
+      .capped { color: var(--muted); font-size: 0.78rem; }
+      .fail { color: var(--rose); }
+
+      .chart-group { margin-top: 16px; }
+      .chart-group h3 { font-family: var(--mono); font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+      .bar-row { display: grid; grid-template-columns: 190px 1fr 86px; align-items: center; gap: 10px; margin: 5px 0; }
+      .bar-label { font-size: 0.8rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .bar-track { height: 16px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+      .bar-fill { height: 100%; border-radius: 5px; width: 0; transition: width 0.5s ease; }
+      .bar-val { font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: right; }
+
+      .honest ol { margin-left: 1.2em; }
+      .honest li { margin: 7px 0; color: var(--muted); font-size: 0.92rem; }
+      .honest li strong { color: var(--text); font-weight: 600; }
+
+      .actions { margin-top: 14px; display: flex; gap: 12px; }
+      .actions button {
+        padding: 7px 16px; border-radius: 8px; cursor: pointer; font-size: 0.85rem;
+        background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+      }
+      footer { margin-top: 34px; color: var(--muted); font-size: 0.82rem; text-align: center; }
+      footer code { font-family: var(--mono); color: var(--cyan); }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Yura.js — Honest Benchmarks</h1>
+        <p class="sub">
+          Live particle-rendering measurements on <strong>your</strong> machine, in
+          <strong>this</strong> tab — not numbers we picked from our best run. Every
+          contender's workload difference is disclosed below the results.
+        </p>
+      </header>
+
+      <div class="card">
+        <h2>Environment</h2>
+        <div id="env">measuring…</div>
+      </div>
+
+      <div class="card">
+        <h2>Contenders</h2>
+        <div class="controls" id="contenders"></div>
+      </div>
+
+      <div class="card">
+        <h2>Stage — every cell renders here (960 × 540 css px)</h2>
+        <div id="stagebox"><div id="stage"></div></div>
+        <div id="status" class="idle">Press “Run benchmark”. Full sweep takes about 2 minutes.</div>
+      </div>
+
+      <div class="card">
+        <h2>Results</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Engine</th>
+              <th class="num">Particles</th>
+              <th class="num">Median FPS</th>
+              <th class="num">p95 frame</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody id="rows"><tr><td colspan="5" style="color: var(--muted)">No data yet.</td></tr></tbody>
+        </table>
+        <div id="charts"></div>
+        <div class="actions">
+          <button id="export" disabled>Export JSON</button>
+          <button id="copy" disabled>Copy Markdown table</button>
+        </div>
+      </div>
+
+      <div class="card honest">
+        <h2>How to read these numbers (the honest part)</h2>
+        <ol>
+          <li><strong>Vsync caps everything.</strong> Browsers align frames to your display refresh (measured above). A median at the cap means “at least this fast” — the real headroom is invisible from JavaScript.</li>
+          <li><strong>The workloads are not identical — on purpose, and in Three.js's favor.</strong> Yura cells run the full pipeline: GPU simulation (attraction + flow noise + swirl), HDR trails, threshold bloom, anamorphic streaks, procedural nebula + starfield, ACES tonemapping. The Three.js cells draw raw additive points with <em>no</em> post-processing.</li>
+          <li><strong>“Three.js · CPU sim” is the typical implementation, not Three.js at its best.</strong> It updates a typed array every frame and re-uploads it — exactly what most tutorials and production sites do. Three.js can go much faster with hand-written GPGPU.</li>
+          <li><strong>“Three.js · GPU vertex” is Three.js done well</strong> — particles animated statelessly in a custom vertex shader, zero per-frame uploads. It is fast, but stateless: it cannot express attraction fields, morphing, or pointer shockwaves. Matching Yura's stateful simulation in Three.js requires a custom GPGPU/compute setup (hundreds of lines). The difference isn't possibility — it's the work required.</li>
+          <li><strong>Same-machine variance is real.</strong> Thermals, battery state, other tabs, and the compositor all move numbers by a few percent. Run the sweep twice before quoting anything.</li>
+          <li><strong>Method:</strong> each cell renders alone into the same 960×540 stage at min(devicePixelRatio, 2); Yura's quality governor is disabled (fixed count, fixed resolution); 1.2 s warm-up, then 3.5 s of requestAnimationFrame deltas → median FPS and p95 frame time; the renderer is disposed and the page cools 0.4 s between cells.</li>
+        </ol>
+      </div>
+
+      <footer>
+        Reproduce: <code>bun run bench</code> in the Yura.js repo · zero image assets ·
+        source: <code>apps/benchmarks/main.ts</code>
+      </footer>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

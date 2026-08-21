@@ -1,0 +1,75 @@
+# --- Dependencies ---
+node_modules/
+.pnp
+.pnp.js
+
+# --- Build output ---
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# --- Bun ---
+bun.lockb.orig
+.bun/
+
+# --- Test & coverage ---
+coverage/
+.nyc_output/
+*.lcov
+
+# --- Logs ---
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# --- Environment & secrets ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Editor / IDE ---
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS junk ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Temp & caches ---
+.cache/
+.temp/
+.tmp/
+*.tmp
+.eslintcache
+.turbo/
+
+# --- Release / publish ---
+*.tgz
+.changeset/*.md.bak
+
+# --- Rendering / capture artifacts (screenshots, videos, golden diffs) ---
+captures/
+*.mp4
+*.webm
+*.gif.tmp
+golden-diff/
+
+# NOTE: examples/model/DamagedHelmet.glb is committed intentionally
+# (Khronos sample asset, needed for the model demo).

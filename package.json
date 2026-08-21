@@ -1,0 +1,24 @@
+{
+  "name": "yurajs",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/*",
+    "examples/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "bun ./examples/hello/index.html",
+    "dev:model": "bun ./examples/model/index.html",
+    "dev:game": "bun ./examples/game/index.html",
+    "showcase": "bun ./apps/showcase/index.html",
+    "bench": "bun ./apps/benchmarks/index.html",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.13",
+    "@webgpu/types": "^0.1.44",
+    "typescript": "^5.6.0"
+  }
+}

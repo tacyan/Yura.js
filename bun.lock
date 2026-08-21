@@ -1,0 +1,125 @@
+{
+  "lockfileVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "yurajs",
+      "devDependencies": {
+        "@types/bun": "^1.2.13",
+        "@webgpu/types": "^0.1.44",
+        "typescript": "^5.6.0",
+      },
+    },
+    "apps/benchmarks": {
+      "name": "app-benchmarks",
+      "version": "0.1.0",
+      "dependencies": {
+        "three": "^0.168.0",
+        "yura": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/three": "^0.168.0",
+      },
+    },
+    "apps/showcase": {
+      "name": "app-showcase",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
+    "examples/game": {
+      "name": "example-game",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
+    "examples/hello": {
+      "name": "example-hello",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
+    "examples/model": {
+      "name": "example-model",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
+    "packages/core": {
+      "name": "@yura/core",
+      "version": "0.1.0",
+    },
+    "packages/renderer-webgl": {
+      "name": "@yura/renderer-webgl",
+      "version": "0.1.0",
+      "dependencies": {
+        "@yura/core": "workspace:*",
+        "@yura/renderer-webgpu": "workspace:*",
+      },
+    },
+    "packages/renderer-webgpu": {
+      "name": "@yura/renderer-webgpu",
+      "version": "0.1.0",
+      "dependencies": {
+        "@yura/core": "workspace:*",
+      },
+    },
+    "packages/yura": {
+      "name": "yura",
+      "version": "0.1.0",
+      "dependencies": {
+        "@yura/core": "workspace:*",
+        "@yura/renderer-webgl": "workspace:*",
+        "@yura/renderer-webgpu": "workspace:*",
+      },
+    },
+  },
+  "packages": {
+    "@tweenjs/tween.js": ["@tweenjs/tween.js@23.1.3", "", {}, "sha512-vJmvvwFxYuGnF2axRtPYocag6Clbb5YS7kLL+SO/TeVFzHqDIWrNKYtcsPMibjDx9O+bu+psAy9NKfWklassUA=="],
+
+    "@types/bun": ["@types/bun@1.4.0", "", { "dependencies": { "bun-types": "1.4.0" } }, "sha512-K+lZULY23vRgK/CfTjFIV+tyifaNdSMlPh9j+6mQ/cLfpOznLyAuzgV/JQysyECpkBQLVMSyvjlr2fBUSA9wFQ=="],
+
+    "@types/node": ["@types/node@26.2.0", "", { "dependencies": { "undici-types": "~8.3.0" } }, "sha512-5IviulTZeRNp2vAJ514cc/HUlY5nZ9fCbq9DMyC52BrhFZACo3nI0R7qBxhQmo/d27NFe96ur/b7Wwxklda+kg=="],
+
+    "@types/stats.js": ["@types/stats.js@0.17.4", "", {}, "sha512-jIBvWWShCvlBqBNIZt0KAshWpvSjhkwkEu4ZUcASoAvhmrgAUI2t1dXrjSL4xXVLB4FznPrIsX3nKXFl/Dt4vA=="],
+
+    "@types/three": ["@types/three@0.168.0", "", { "dependencies": { "@tweenjs/tween.js": "~23.1.3", "@types/stats.js": "*", "@types/webxr": "*", "@webgpu/types": "*", "fflate": "~0.8.2", "meshoptimizer": "~0.18.1" } }, "sha512-qAGLGzbaYgkkonOBfwOr+TZpOskPfFjrDAj801WQSVkUz0/D9zwir4vhruJ/CC/GteywzR9pqeVVfs5th/2oKw=="],
+
+    "@types/webxr": ["@types/webxr@0.5.24", "", {}, "sha512-h8fgEd/DpoS9CBrjEQXR+dIDraopAEfu4wYVNY2tEPwk60stPWhvZMf4Foo5FakuQ7HFZoa8WceaWFervK2Ovg=="],
+
+    "@webgpu/types": ["@webgpu/types@0.1.72", "", {}, "sha512-0cF7RFM2edNoiIS1ODJp0/Gzv4/xSXhwoR0YCza+OWpJWtn4wmo9DvK91aLlH9+uUnwIriP7ZiC3WitmyhuzBw=="],
+
+    "@yura/core": ["@yura/core@workspace:packages/core"],
+
+    "@yura/renderer-webgl": ["@yura/renderer-webgl@workspace:packages/renderer-webgl"],
+
+    "@yura/renderer-webgpu": ["@yura/renderer-webgpu@workspace:packages/renderer-webgpu"],
+
+    "app-benchmarks": ["app-benchmarks@workspace:apps/benchmarks"],
+
+    "app-showcase": ["app-showcase@workspace:apps/showcase"],
+
+    "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
+
+    "example-game": ["example-game@workspace:examples/game"],
+
+    "example-hello": ["example-hello@workspace:examples/hello"],
+
+    "example-model": ["example-model@workspace:examples/model"],
+
+    "fflate": ["fflate@0.8.3", "", {}, "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="],
+
+    "meshoptimizer": ["meshoptimizer@0.18.1", "", {}, "sha512-ZhoIoL7TNV4s5B6+rx5mC//fw8/POGyNxS/DZyCJeiZ12ScLfVwRE/GfsxwiTkMYYD5DmK2/JXnEVXqL4rF+Sw=="],
+
+    "three": ["three@0.168.0", "", {}, "sha512-6m6jXtDwMJEK/GGMbAOTSAmxNdzKvvBzgd7q8bE/7Tr6m7PaBh5kKLrN7faWtlglXbzj7sVba48Idwx+NRsZXw=="],
+
+    "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
+
+    "undici-types": ["undici-types@8.3.0", "", {}, "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="],
+
+    "yura": ["yura@workspace:packages/yura"],
+  }
+}

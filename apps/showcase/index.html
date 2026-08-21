@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YURA — one million particles, live</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      :root {
+        --text: #e2e8f0;
+        --muted: #8494ad;
+        --line: rgba(148, 163, 184, 0.16);
+        --glass: rgba(8, 11, 24, 0.55);
+        --cyan: #67e8f9;
+        --violet: #c4b5fd;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      html, body { height: 100%; background: #04050c; color: var(--text); overflow: hidden; }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+      #stage { position: fixed; inset: 0; cursor: crosshair; }
+
+      .ui { transition: opacity 0.8s ease; }
+      body.calm .ui { opacity: 0; pointer-events: none; }
+
+      /* ---- brand ---- */
+      .brand { position: fixed; top: 22px; left: 26px; user-select: none; }
+      .brand .word {
+        font-size: 1.5rem; font-weight: 900; letter-spacing: 0.34em;
+        background: linear-gradient(90deg, var(--cyan), var(--violet));
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      .brand .tag { margin-top: 2px; font-size: 0.72rem; letter-spacing: 0.18em;
+        text-transform: uppercase; color: var(--muted); }
+
+      /* ---- HUD ---- */
+      .hud {
+        position: fixed; top: 18px; right: 22px; text-align: right; user-select: none;
+        padding: 12px 16px 10px; border: 1px solid var(--line); border-radius: 14px;
+        background: var(--glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      }
+      .hud .fps {
+        font-family: var(--mono); font-size: 2.5rem; font-weight: 700; line-height: 1;
+        font-variant-numeric: tabular-nums; color: var(--text);
+      }
+      .hud .fps small { font-size: 0.85rem; color: var(--muted); font-weight: 400; margin-left: 4px; }
+      .hud .meta { margin-top: 5px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+      .hud .meta b { color: var(--cyan); font-weight: 600; }
+      .hud canvas { display: block; margin-top: 8px; margin-left: auto; width: 132px; height: 30px; opacity: 0.9; }
+      .hud .badge {
+        display: inline-block; margin-top: 7px; padding: 2px 9px; border-radius: 999px;
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em;
+        color: #04050c; background: linear-gradient(90deg, var(--cyan), var(--violet)); font-weight: 700;
+      }
+
+      /* ---- dock ---- */
+      .dock {
+        position: fixed; left: 0; right: 0; bottom: 0; padding: 0 26px 24px;
+        display: flex; flex-direction: column; align-items: center; gap: 14px;
+      }
+      .prompt { width: min(560px, 92vw); position: relative; }
+      .prompt input {
+        width: 100%; padding: 15px 22px; border-radius: 999px; outline: none;
+        border: 1px solid var(--line); background: var(--glass); color: var(--text);
+        backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+        font-size: 1rem; text-align: center; letter-spacing: 0.02em;
+        transition: border-color 0.25s ease, box-shadow 0.25s ease;
+      }
+      .prompt input::placeholder { color: var(--muted); }
+      .prompt input:focus {
+        border-color: rgba(103, 232, 249, 0.55);
+        box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.25), 0 0 34px rgba(103, 232, 249, 0.12);
+      }
+      .rows { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 8px; max-width: 92vw; }
+      .chip {
+        padding: 7px 15px; border-radius: 999px; cursor: pointer; font-size: 0.8rem;
+        border: 1px solid var(--line); background: var(--glass); color: var(--muted);
+        backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+        transition: color 0.2s, border-color 0.2s, background 0.2s; user-select: none;
+      }
+      .chip:hover { color: var(--text); border-color: rgba(148, 163, 184, 0.4); }
+      .chip.on {
+        color: #04050c; font-weight: 700;
+        background: linear-gradient(90deg, var(--cyan), var(--violet)); border-color: transparent;
+      }
+      .chip.ghost { font-family: var(--mono); font-size: 0.74rem; }
+      .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 6px; }
+
+      .hints {
+        position: fixed; left: 26px; bottom: 24px; font-family: var(--mono);
+        font-size: 11px; color: var(--muted); line-height: 1.9; user-select: none;
+      }
+      .hints b { color: var(--text); font-weight: 600; }
+
+      /* ---- cover ---- */
+      #cover {
+        position: fixed; inset: 0; background: #04050c; z-index: 10;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+        transition: opacity 0.7s ease; pointer-events: none;
+      }
+      #cover.hidden { opacity: 0; }
+      #cover .word {
+        font-size: clamp(2rem, 7vw, 4rem); font-weight: 900; letter-spacing: 0.4em; padding-left: 0.4em;
+        background: linear-gradient(90deg, var(--cyan), var(--violet));
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      #cover .note { font-family: var(--mono); font-size: 12px; letter-spacing: 0.22em;
+        text-transform: uppercase; color: var(--muted); animation: pulse 1.6s ease-in-out infinite; }
+      @keyframes pulse { 50% { opacity: 0.35; } }
+
+      @media (max-width: 640px) {
+        .hints { display: none; }
+        .hud .fps { font-size: 1.8rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+
+    <div class="brand ui">
+      <div class="word">YURA</div>
+      <div class="tag">make the web move</div>
+    </div>
+
+    <div class="hud ui">
+      <div class="fps"><span id="fps">—</span><small>fps</small></div>
+      <div class="meta"><b id="particles">0</b> particles · <span id="res">×1.0</span></div>
+      <canvas id="spark" width="264" height="60"></canvas>
+      <div class="badge" id="backend">BOOTING</div>
+    </div>
+
+    <div class="dock ui">
+      <div class="prompt">
+        <input id="prompt" type="text" maxlength="14" spellcheck="false" autocomplete="off"
+          placeholder="type a word — a million particles will obey ⏎" />
+      </div>
+      <div class="rows" id="lookRow"></div>
+      <div class="rows" id="countRow"></div>
+    </div>
+
+    <div class="hints ui">
+      <b>click</b> shockwave · <b>move</b> parallax + repel<br />
+      <b>1–4</b> looks · <b>⏎</b> summon text · shapes morph on their own
+    </div>
+
+    <div id="cover">
+      <div class="word">YURA</div>
+      <div class="note" id="coverNote">summoning 1,000,000 particles</div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

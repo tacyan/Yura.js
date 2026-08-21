@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yura.js — Make the web move.</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; background: #04050c; color: #e2e8f0; }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; overflow: hidden; }
+      #hero { position: fixed; inset: 0; }
+      .overlay {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: flex-end; padding-bottom: 8vh;
+        pointer-events: none; text-align: center;
+      }
+      h1 {
+        font-size: clamp(2rem, 6vw, 4.5rem); font-weight: 800; letter-spacing: -0.03em;
+        background: linear-gradient(90deg, #67e8f9, #c4b5fd);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      p.tagline { margin-top: 0.6rem; font-size: clamp(0.9rem, 2vw, 1.15rem); color: #94a3b8; }
+      code.snippet {
+        margin-top: 1.4rem; display: inline-block; padding: 0.7rem 1.1rem;
+        background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.85rem; color: #7dd3fc; backdrop-filter: blur(8px);
+      }
+      #hud {
+        position: fixed; left: 14px; bottom: 12px; font-family: ui-monospace, Menlo, monospace;
+        font-size: 11px; color: #64748b; pointer-events: none; line-height: 1.7;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hero"></div>
+    <div class="overlay">
+      <h1>Make the web move.</h1>
+      <p class="tagline">One million particles. Five lines of TypeScript.</p>
+      <code class="snippet">yura('#hero').preset('neon-galaxy').interactive().run()</code>
+    </div>
+    <div id="hud"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
