@@ -51,6 +51,26 @@ setInterval(() => app.morphNow(words[i++ % words.length]), 3200)
 `,
   },
   {
+    label: 'lyric motion',
+    code: `import { yura, lyrics } from 'yura'
+
+const app = yura('#stage')
+  .preset('aurora')
+  .particles(400_000)
+  .interactive()
+
+await app.run()
+
+// Kinetic typography: sweep 0.8 staggers the morph glyph by glyph,
+// so each line condenses char by char before dissolving into the next.
+lyrics(app, [
+  { text: 'ゆらめく光', at: 0 },
+  { text: '波のように踊る', at: 3.4 },
+  { text: 'YURA', at: 6.8, direction: 'center' },
+], { sweep: 0.8, loop: true })
+`,
+  },
+  {
     label: 'aurora',
     code: `import { yura } from 'yura'
 

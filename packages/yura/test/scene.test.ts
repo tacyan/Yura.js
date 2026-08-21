@@ -10,6 +10,8 @@ import {
   padDeadZone,
   readGamepads,
   clampToBounds,
+  occludedEyeDistance,
+  easeOcclusion,
 } from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
 
@@ -463,4 +465,163 @@ test('holding a direction into the arena wall pins the ball without jitter', () 
     scene.step(1 / 60, i / 60)
     expect(ball.position[0]).toBe(4.5) // glued to the wall, not vibrating off it
   }
+})
+
+// --- HUD text metadata across detach/re-attach (device recovery) ---
+
+interface FakeEl {
+  style: { cssText: string }
+  textContent: string
+  removed: boolean
+  remove(): void
+}
+
+/** Minimal DOM stand-in so mount/unmount cycles run headless. */
+function installFakeDocument(): { made: FakeEl[]; uninstall: () => void } {
+  const made: FakeEl[] = []
+  const doc = {
+    createElement: (): FakeEl => {
+      const el: FakeEl = {
+        style: { cssText: '' },
+        textContent: '',
+        removed: false,
+        remove() {
+          this.removed = true
+        },
+      }
+      made.push(el)
+      return el
+    },
+    body: { appendChild: () => {} },
+  }
+  ;(globalThis as { document?: unknown }).document = doc
+  return {
+    made,
+    uninstall: () => {
+      delete (globalThis as { document?: unknown }).document
+    },
+  }
+}
+
+test('HUD text metadata survives detach/re-attach with its current content', () => {
+  const scene = new YuraScene({})
+  const hud = scene.text('ORBS 0 / 10', { anchor: 'top' }) // headless: metadata only, no DOM yet
+  hud.set('ORBS 3 / 10')
+  const { made, uninstall } = installFakeDocument()
+  try {
+    scene.mountTexts() // simulated re-attach after device recovery
+    expect(made.length).toBe(1)
+    expect(made[0].textContent).toBe('ORBS 3 / 10') // latest content, not the initial
+    expect(made[0].style.cssText).toContain('left:50%') // anchor preserved
+    hud.set('ORBS 4 / 10') // handle identity survives recovery
+    expect(made[0].textContent).toBe('ORBS 4 / 10')
+    scene.unmountTexts() // a second device loss
+    expect(made[0].removed).toBe(true)
+    scene.mountTexts()
+    expect(made.length).toBe(2)
+    expect(made[1].textContent).toBe('ORBS 4 / 10')
+  } finally {
+    uninstall()
+  }
+})
+
+test('a removed HUD text stays gone; set() while detached lands on re-attach', () => {
+  const scene = new YuraScene({})
+  const gone = scene.text('A')
+  const kept = scene.text('B', { anchor: 'top-right' })
+  gone.remove()
+  const { made, uninstall } = installFakeDocument()
+  try {
+    scene.mountTexts()
+    expect(made.length).toBe(1) // removed handle does not resurrect
+    expect(made[0].textContent).toBe('B')
+    scene.unmountTexts()
+    kept.set('B2') // updated while no element exists
+    scene.mountTexts()
+    expect(made[1].textContent).toBe('B2')
+  } finally {
+    uninstall()
+  }
+})
+
+// --- Camera occlusion pull-in math ---
+
+test('occludedEyeDistance: clear ray returns the full look→eye distance', () => {
+  const look = [0, 1, 0]
+  const eye = [0, 1, 10]
+  expect(occludedEyeDistance(look, eye, [])).toBeCloseTo(10, 6)
+  expect(occludedEyeDistance(look, eye, [{ position: [5, 1, 5], radius: 1 }])).toBeCloseTo(10, 6)
+})
+
+test('occludedEyeDistance: a blocking sphere pulls the eye to first hit minus margin', () => {
+  const look = [0, 1, 0]
+  const eye = [0, 1, 10]
+  const wall = { position: [0, 1, 5], radius: 1 }
+  // 24 samples along 10 units; probe 0.25 → first hit at z = 3.75, minus margin 0.4.
+  expect(occludedEyeDistance(look, eye, [wall])).toBeCloseTo(3.35, 6)
+  const noMargin = occludedEyeDistance(look, eye, [wall], 0.25, 0)
+  expect(noMargin - occludedEyeDistance(look, eye, [wall], 0.25, 0.4)).toBeCloseTo(0.4, 6)
+  expect(occludedEyeDistance(look, eye, [wall])).toBeLessThan(10)
+})
+
+test('occludedEyeDistance: cylinder blocks only inside its height band', () => {
+  const pillar = { position: [0, 1.3, 4], radius: 0.55, halfHeight: 1.3, collider: 'cylinder' as const }
+  const low = occludedEyeDistance([0, 1, 0], [0, 1, 8], [pillar])
+  expect(low).toBeLessThan(4) // through the pillar → pulled in front of it
+  expect(low).toBeGreaterThan(2)
+  const high = occludedEyeDistance([0, 4, 0], [0, 4, 8], [pillar])
+  expect(high).toBeCloseTo(8, 6) // over the top → untouched
+})
+
+test('easeOcclusion approaches without popping; pull-in is faster than release', () => {
+  const dt = 1 / 60
+  const first = easeOcclusion(0, 2, dt)
+  expect(first).toBeGreaterThan(0)
+  expect(first).toBeLessThan(2) // eased, not snapped
+  let v = 0
+  for (let i = 0; i < 200; i++) v = easeOcclusion(v, 2, dt)
+  expect(v).toBeCloseTo(2, 2) // converges to the target
+  const inStep = easeOcclusion(0, 1, dt) - 0
+  const outStep = 1 - easeOcclusion(1, 0, dt)
+  expect(inStep).toBeGreaterThan(outStep) // hide fast, reveal gently
+  expect(easeOcclusion(1.99, 2, 10)).toBeLessThanOrEqual(2) // never overshoots
+})
+
+// --- onLand landing events ---
+
+test('onLand fires exactly once per landing with the impact intensity', () => {
+  const scene = new YuraScene({ gravity: -20 })
+  scene.add('plane', { size: 10 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 0.62, 0], body: 'dynamic' })
+  const fired: number[] = []
+  expect(ball.onLand((i) => fired.push(i))).toBe(ball) // chainable
+  for (let i = 0; i < 240; i++) scene.step(1 / 60, i / 60)
+  expect(fired.length).toBe(1) // one landing, one event — settling never re-fires
+  expect(fired[0]).toBeGreaterThan(1.5) // downward speed of the fall
+  expect(fired[0]).toBeLessThan(3.5)
+  expect(ball.grounded).toBe(true)
+})
+
+test('onLand does not fire while rolling on the ground, re-fires after a jump', () => {
+  const scene = new YuraScene({ gravity: -20 })
+  scene.add('plane', { size: 20 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 0.62, 0], body: 'dynamic' })
+  let fires = 0
+  let last = 0
+  ball.onLand((i) => {
+    fires++
+    last = i
+  })
+  for (let i = 0; i < 120; i++) scene.step(1 / 60, i / 60)
+  expect(fires).toBe(1)
+  scene.onUpdate(() => {
+    ball.velocity[0] = 4 // constant roll across the floor
+  })
+  for (let i = 120; i < 300; i++) scene.step(1 / 60, i / 60)
+  expect(fires).toBe(1) // rolling on ground is not a landing
+  ball.velocity[1] = 6 // jump
+  for (let i = 300; i < 480; i++) scene.step(1 / 60, i / 60)
+  expect(fires).toBeGreaterThanOrEqual(2) // landing after the jump fires again
+  expect(last).toBeGreaterThan(1) // with a real impact speed
+  expect(ball.grounded).toBe(true)
 })

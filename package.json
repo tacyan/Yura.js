@@ -14,6 +14,7 @@
     "showcase": "bun ./apps/showcase/index.html",
     "bench": "bun ./apps/benchmarks/index.html",
     "dev:three": "bun ./examples/three/index.html",
+    "dev:lyrics": "bun ./examples/lyrics/index.html",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "play": "bun run apps/playground/server.ts"

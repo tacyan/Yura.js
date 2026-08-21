@@ -198,6 +198,65 @@ export function cameraFollowGoal(
   }
 }
 
+/** Minimal collider view of a solid object, as seen by the occlusion cast. */
+export interface OcclusionSolid {
+  position: readonly number[]
+  radius: number
+  halfHeight?: number
+  collider?: 'sphere' | 'cylinder'
+}
+
+const OCCLUSION_PROBE = 0.25
+const OCCLUSION_MARGIN = 0.4
+const OCCLUSION_SAMPLES = 24
+
+/**
+ * Sampled sphere-cast from the look-target toward the desired eye against
+ * solid colliders. Returns the distance along that ray the eye may sit at:
+ * the full look→eye distance when clear, else the first blocked sample's
+ * distance minus `margin` (clamped to >= 0) so the camera rests just in
+ * front of the occluder instead of inside it.
+ */
+export function occludedEyeDistance(
+  look: readonly number[],
+  eye: readonly number[],
+  solids: ReadonlyArray<OcclusionSolid>,
+  probe = OCCLUSION_PROBE,
+  margin = OCCLUSION_MARGIN,
+  samples = OCCLUSION_SAMPLES,
+): number {
+  const dx = eye[0] - look[0]
+  const dy = eye[1] - look[1]
+  const dz = eye[2] - look[2]
+  const dist = Math.hypot(dx, dy, dz)
+  if (dist < 1e-6 || solids.length === 0) return dist
+  for (let i = 1; i <= samples; i++) {
+    const k = i / samples
+    const px = look[0] + dx * k
+    const py = look[1] + dy * k
+    const pz = look[2] + dz * k
+    for (const s of solids) {
+      const hit =
+        s.collider === 'cylinder'
+          ? Math.abs(py - s.position[1]) <= (s.halfHeight ?? s.radius) + probe &&
+            Math.hypot(px - s.position[0], pz - s.position[2]) <= s.radius + probe
+          : Math.hypot(px - s.position[0], py - s.position[1], pz - s.position[2]) <= s.radius + probe
+      if (hit) return Math.max(0, k * dist - margin)
+    }
+  }
+  return dist
+}
+
+/**
+ * Eases the camera's occlusion pull-in amount toward `target` with an
+ * exponential approach — faster when pulling in (an obstacle just appeared)
+ * than when releasing, so the correction never pops in either direction.
+ */
+export function easeOcclusion(current: number, target: number, dt: number, rateIn = 12, rateOut = 5): number {
+  const rate = target > current ? rateIn : rateOut
+  return current + (target - current) * (1 - Math.exp(-rate * dt))
+}
+
 export interface TextHandle {
   set(text: string): void
   remove(): void
@@ -255,6 +314,7 @@ export class SceneObject {
   /** @internal */ shadowHandle: MeshHandle | null = null
   /** @internal */ wantShadow: boolean
   /** @internal */ collideCbs: Array<(other: SceneObject) => void> = []
+  /** @internal */ landCbs: Array<(intensity: number) => void> = []
   /** @internal */ scene: YuraScene
 
   constructor(scene: YuraScene, geo: MeshGeometry, radius: number, opts: AddOptions) {
@@ -275,6 +335,16 @@ export class SceneObject {
 
   onCollide(cb: (other: SceneObject) => void): this {
     this.collideCbs.push(cb)
+    return this
+  }
+
+  /**
+   * Fires exactly once per fresh ground contact with the landing's downward
+   * speed — the same impact detection the camera dip consumes, not a copy.
+   * One line of game code: `ball.onLand((i) => sfx.land(i))`.
+   */
+  onLand(cb: (intensity: number) => void): this {
+    this.landCbs.push(cb)
     return this
   }
 
@@ -521,6 +591,19 @@ interface CameraState {
   smoothedLook: Vec3 | null
   /** Landing-dip amount (decays each frame). */
   dip: number
+  /** Eased occlusion pull-in distance (eye toward look when blocked). */
+  occlusion: number
+}
+
+/**
+ * HUD text metadata — the source of truth an element is (re)built from, so
+ * text survives detach/re-attach cycles (WebGPU device recovery re-runs
+ * attach after the old cleanup removed every element).
+ */
+interface TextRecord {
+  content: string
+  anchor: 'top-left' | 'top' | 'top-right'
+  el: HTMLElement | null
 }
 
 export class YuraScene {
@@ -537,10 +620,10 @@ export class YuraScene {
   private container: HTMLElement | null = null
   private groundY: number | null = null
   private cam: CameraState = {
-    mode: 'orbit', target: null, distance: 8, height: 3.5, smoothedEye: null, smoothedLook: null, dip: 0,
+    mode: 'orbit', target: null, distance: 8, height: 3.5, smoothedEye: null, smoothedLook: null, dip: 0, occlusion: 0,
   }
   private removed: SceneObject[] = []
-  private texts: HTMLElement[] = []
+  private texts: TextRecord[] = []
 
   /** Particle-FX pool behind burst/trail/celebrate. Pure logic — steps headless. */
   readonly fx = new FxPool(8192)
@@ -586,24 +669,56 @@ export class YuraScene {
     return this
   }
 
-  /** DOM HUD text — web-native, crisp, zero GPU cost. */
+  /**
+   * DOM HUD text — web-native, crisp, zero GPU cost. The handle owns metadata
+   * (current content + anchor), so the element can be rebuilt with its latest
+   * text after device recovery; `set` keeps working across re-attach.
+   */
   text(initial: string, opts: { anchor?: 'top-left' | 'top' | 'top-right' } = {}): TextHandle {
+    const rec: TextRecord = { content: initial, anchor: opts.anchor ?? 'top-left', el: null }
+    this.texts.push(rec)
+    this.mountText(rec)
+    return {
+      set: (t: string) => {
+        rec.content = t
+        if (rec.el) rec.el.textContent = t
+      },
+      remove: () => {
+        rec.el?.remove()
+        rec.el = null
+        this.texts = this.texts.filter((r) => r !== rec)
+      },
+    }
+  }
+
+  private mountText(rec: TextRecord): void {
+    if (rec.el || typeof document === 'undefined') return
     const el = document.createElement('div')
-    const anchor = opts.anchor ?? 'top-left'
     const pos =
-      anchor === 'top' ? 'left:50%;transform:translateX(-50%);' : anchor === 'top-right' ? 'right:18px;' : 'left:18px;'
+      rec.anchor === 'top'
+        ? 'left:50%;transform:translateX(-50%);'
+        : rec.anchor === 'top-right'
+          ? 'right:18px;'
+          : 'left:18px;'
     el.style.cssText =
       `position:absolute;top:14px;${pos}pointer-events:none;` +
       'font-family:ui-monospace,Menlo,monospace;font-size:15px;letter-spacing:0.14em;' +
       'color:#e2f4ff;text-shadow:0 0 12px rgba(56,189,248,0.8);z-index:10;'
-    el.textContent = initial
+    el.textContent = rec.content
     ;(this.container ?? document.body).appendChild(el)
-    this.texts.push(el)
-    return {
-      set: (t: string) => {
-        el.textContent = t
-      },
-      remove: () => el.remove(),
+    rec.el = el
+  }
+
+  /** @internal (re)creates HUD elements from metadata — attach / recovery. */
+  mountTexts(): void {
+    for (const rec of this.texts) this.mountText(rec)
+  }
+
+  /** @internal removes HUD elements but keeps metadata for the next attach. */
+  unmountTexts(): void {
+    for (const rec of this.texts) {
+      rec.el?.remove()
+      rec.el = null
     }
   }
 
@@ -670,10 +785,10 @@ export class YuraScene {
       this.input.bindPointer(container)
     }
     for (const obj of this.objects) this.realize(obj)
+    this.mountTexts()
     return () => {
       this.input.dispose()
-      for (const el of this.texts) el.remove()
-      this.texts = []
+      this.unmountTexts()
     }
   }
 
@@ -708,6 +823,7 @@ export class YuraScene {
     }
     this.fx.clear()
     this.cam.dip = 0
+    this.cam.occlusion = 0
     return this
   }
 
@@ -754,8 +870,12 @@ export class YuraScene {
         const clearance = obj.collider === 'cylinder' ? obj.halfHeight : obj.radius
         if (ground !== null && obj.position[1] - clearance <= ground) {
           obj.position[1] = ground + clearance
-          // Fresh landing: record the downward speed for the camera's dip.
-          if (!wasGrounded && obj.velocity[1] < -1) obj.impact = -obj.velocity[1]
+          // Fresh landing: record the downward speed for the camera's dip
+          // and fire onLand listeners from the same single detection.
+          if (!wasGrounded && obj.velocity[1] < -1) {
+            obj.impact = -obj.velocity[1]
+            for (const cb of obj.landCbs) cb(obj.impact)
+          }
           if (obj.velocity[1] < 0) {
             obj.velocity[1] = Math.abs(obj.velocity[1]) > 1 ? -obj.velocity[1] * obj.restitution : 0
           }
@@ -874,7 +994,22 @@ export class YuraScene {
       e[i] += (goal.eye[i] - e[i]) * ke
       l[i] += (goal.look[i] - l[i]) * kl
     }
-    this.renderer.cameraPose = { eye: [...e], target: [...l] }
+    // Occlusion: cast look → eye against solids; if blocked, ease the eye in
+    // toward the look-target so pillars/knot never hide the ball (no popping —
+    // the correction distance itself is eased both in and out).
+    const solids: OcclusionSolid[] = []
+    for (const o of this.objects) {
+      if (o.alive && o.solid && o.radius > 0 && o !== cam.target) solids.push(o)
+    }
+    const dist = Math.hypot(e[0] - l[0], e[1] - l[1], e[2] - l[2])
+    const allowed = occludedEyeDistance(l, e, solids)
+    cam.occlusion = easeOcclusion(cam.occlusion, Math.max(0, dist - allowed), dt)
+    const eye: Vec3 = [...e]
+    if (cam.occlusion > 1e-4 && dist > 1e-6) {
+      const k = cam.occlusion / dist
+      for (let i = 0; i < 3; i++) eye[i] += (l[i] - e[i]) * k
+    }
+    this.renderer.cameraPose = { eye, target: [...l] }
   }
 
   private realize(obj: SceneObject): void {

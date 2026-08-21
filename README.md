@@ -28,6 +28,7 @@ bun dev            # hello example — 1M-particle neon galaxy
 bun run showcase   # flagship demo: type a word, a million particles obey
 bun run dev:game   # ORB RUSH — a complete 3D game, zero assets
 bun run dev:three  # Yura particles inside a plain Three.js scene
+bun run dev:lyrics # kinetic typography — timed lyrics as particle morphs
 bun run dev:model  # glTF PBR demo (DamagedHelmet, drag to orbit)
 bun run bench      # honest benchmarks vs Three.js, measured on YOUR machine
 bun run play       # local playground server — edit, run, share snippets
@@ -80,9 +81,14 @@ What you get for free:
 
 - **Physics** — gravity, ground contact with restitution, arena bounds,
   sphere/cylinder collisions with `onCollide` callbacks and solid push-out.
-- **Game-feel input** — WASD/arrow axes (`input.x`, `input.y`), plus
-  `input.jump` with a 150 ms jump buffer and 100 ms coyote time built in, so
+- **Game-feel input** — one `input` object fed by keyboard (WASD/arrows),
+  touch (drag = virtual stick, quick tap = jump), and gamepad (dead-zoned
+  left stick, button 0 = jump) — largest magnitude wins, nothing to wire up.
+  `input.jump` has a 150 ms jump buffer and 100 ms coyote time built in, so
   jumps feel fair without you writing timing code.
+- **Sound one-liners** — `gameAudio()` gives zero-asset WebAudio effects:
+  `pickup(combo)`, `jump()`, `land(intensity)`, `win()`, with `volume` and
+  `mute()`; the AudioContext is created lazily on the first user gesture.
 - **Follow camera** — `scene.camera.follow(obj)` with exponential smoothing;
   `scene.camera.orbit()` to hand control back.
 - **Shadows** — shadow-mapped meshes plus automatic ground blob shadows.
@@ -126,15 +132,58 @@ matrix properties), so it works with whatever Three.js version your project
 already uses — no peer-dependency conflicts, nothing added to your bundle
 beyond Yura itself.
 
+## Kinetic typography / lyric motion
+
+`lyrics()` turns a list of timed lines into a particle lyric video: at each
+timestamp the swarm morphs into the next line, assembling **character by
+character** instead of all at once (`bun run dev:lyrics` runs this):
+
+```ts
+import { yura, lyrics } from 'yura'
+
+const app = yura('#stage').particles(600_000).gradient('#22d3ee', '#f472b6').look('cyberpunk')
+await app.run()
+
+lyrics(app, [
+  { text: 'YURA', at: 0 },
+  { text: '君の声が', at: 4.2 },
+  { text: '粒子のなかで\nまた君に出会う', at: 8.4 },
+], {
+  font: "900 240px 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif",
+  style: 'assemble',   // or 'rain' | 'explode'
+  out: 'explode',      // between lines: 'dissolve' | 'explode'
+  loop: true,
+})
+```
+
+How the char-by-char sweep works: text shapes assign each grapheme a
+contiguous band of the palette/delay coordinate in reading order, and
+`app.morphNow(shape, { sweep, direction })` staggers per-particle morph
+timing along that coordinate — `sweep` (0..1) sets how much of the morph is
+spent sweeping, `direction` is `'ltr' | 'rtl' | 'center' | 'random'`. So
+letters land one after another, and the color gradient follows the same
+ordering. Graphemes are segmented with `Intl.Segmenter('ja')` when
+available (Japanese-first: CJK, combining marks, and compound emoji stay
+whole), with a surrogate-pair-safe fallback elsewhere.
+
+Per line you can override `sweep`, `direction`, or substitute any
+`ShapeSpec` instead of text; the run handle has `stop()` and `seek(t)`.
+
+The underlying `shapes.text` is v2: multi-line via `'\n'`, `letterSpacing`
+and `lineGap` (in em), `align: 'left' | 'center' | 'right'`, and px font
+sizes auto-shrink so the text block always fits the target `worldWidth`.
+
 ## API sketch
 
 | Surface | Highlights |
 | --- | --- |
-| `yura(sel)` | `.preset()` `.look()` `.model(url)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD')` |
-| `app.scene(opts)` | `add(shape, opts)`, `onUpdate(cb)`, `camera.follow/orbit`, `text()`, `each(tag, cb)`, `count(tag)`, `burst/trail/celebrate`, `input` |
+| `yura(sel)` | `.preset()` `.look()` `.model(url)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD', { sweep, direction })` |
+| `app.scene(opts)` | `add(shape, opts)`, `onUpdate(cb)`, `camera.follow/orbit`, `text()`, `each(tag, cb)`, `count(tag)`, `burst/trail/celebrate`, `input` (keyboard + touch + gamepad) |
 | `SceneObject` | `position` `velocity` `spin`, `body: 'dynamic'`, `solid`, `tag`, `grounded`, `onCollide()`, `trail()`, `remove()` |
 | `yuraLayer(renderer, camera, opts)` | `attach(obj)`, `at(x, y, z)`, `setRadius(r)`, `morphTo(textOrShape)`, `sync()`, `stats`, `dispose()` |
-| `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `text` `image` |
+| `lyrics(app, lines, opts)` | timed lines → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop`, per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
+| `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, `volume`, `mute()`; context created lazily on first user gesture |
+| `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
 | `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` |
 | `materials` | `matte` `plastic` `metal` `neon(hex)` + named presets (`chrome`, `gold`, `obsidian`, `checker`, …) |
 
@@ -148,6 +197,10 @@ beyond Yura itself.
 - **Shape morphing** — galaxy → text → vortex transitions with turbulence
   boosts mid-flight; shapes carry a palette coordinate, so gradients sweep
   across letters and spiral arms.
+- **Kinetic typography** — `lyrics()` timed-line scheduling over
+  `morphNow({ sweep, direction })` char-by-char assembly; text shapes v2
+  with multi-line, `letterSpacing`, `align`, auto-fit, and grapheme
+  segmentation via `Intl.Segmenter` (Japanese-first).
 - **HDR pipeline** — rgba16float scene target, light trails, threshold
   bloom, anamorphic streaks, chromatic aberration, ACES tonemapping,
   vignette, film grain; procedural nebula + starfield backdrop, zero assets.

@@ -12,6 +12,7 @@ const ball = scene.add('sphere', {
   radius: 0.45, material: 'chrome', position: [0, 3, 7], body: 'dynamic', shadow: true,
 })
 ball.trail({ color: '#7dd3fc' })
+ball.onLand((i) => sfx.land(i))
 
 const ORBS = 10
 for (let i = 0; i < ORBS; i++) {
