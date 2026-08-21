@@ -46,6 +46,64 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 }
 
+/** What `prefers-reduced-motion` means for one run mode. */
+export interface ReducedMotionPolicy {
+  /** Start the rAF loop at all? */
+  runLoop: boolean
+  /** Keep non-essential idle motion (auto-rotate / camera sway)? */
+  idleSway: boolean
+}
+
+/**
+ * Reduced-motion policy per run mode (pure; exported for tests).
+ *
+ * - `'scene'` (game kit): the game loop ALWAYS runs. Freezing a game leaves
+ *   dead controls, which is a bug, not an accessibility feature. Reduced
+ *   motion instead tones down non-essential motion: idle auto-rotate /
+ *   camera sway is disabled while player-driven movement stays intact.
+ * - `'particles'` / `'model'`: purely decorative ambient animation — honor
+ *   the preference literally by settling to a single static frame (no loop).
+ */
+export function reducedMotionPolicy(
+  mode: 'particles' | 'model' | 'scene',
+  reduced: boolean,
+): ReducedMotionPolicy {
+  if (!reduced) return { runLoop: true, idleSway: true }
+  return { runLoop: mode === 'scene', idleSway: false }
+}
+
+/**
+ * Runs every registered cleanup exactly once and returns the fresh empty list
+ * to store back. The input array is emptied before the first call, so a
+ * cleanup that re-enters (or a concurrent drain) can never double-fire a
+ * teardown, and a throwing cleanup never blocks the rest — device-loss
+ * recovery must proceed past one broken listener. (Exported for tests.)
+ */
+export function drainCleanups(cleanups: Array<() => void>): Array<() => void> {
+  for (const c of cleanups.splice(0)) {
+    try {
+      c()
+    } catch {
+      // One failing teardown must not abort recovery or leak the rest.
+    }
+  }
+  return []
+}
+
+/**
+ * Nulls every SceneObject's mesh handles so the scene's realize() re-registers
+ * them on a fresh renderer after GPU device loss. Handles into a lost device
+ * are dead: without this, attach() sees non-null handles, skips
+ * re-registration, and the recovered canvas stays permanently blank.
+ * (Exported for tests.)
+ */
+export function resetSceneHandles(scene: YuraScene | null): void {
+  scene?.each(null, (obj) => {
+    obj.handle = null
+    obj.shadowHandle = null
+  })
+}
+
 /**
  * The chainable facade (spec §8.1). Configuration is collected synchronously;
  * everything async (GPU init, shape generation, asset loads) happens in run().
@@ -81,6 +139,8 @@ export class YuraApp {
   private running = false
   private visible = true
   private disposed = false
+  /** True while recoverFromDeviceLost() is in flight (re-entrancy guard). */
+  private recovering = false
   private lastTime = 0
   private simTime = 0
   private fpsEma = 60
@@ -257,8 +317,15 @@ export class YuraApp {
     if (gpu && this.modelUrl) {
       return this.runModel(gpu.device)
     }
-    if (!gpu && (this.sceneObj || this.modelUrl)) {
-      // PBR paths are WebGPU-only for now; keep the no-white-screen promise.
+    if (!gpu && this.sceneObj) {
+      // A game cannot degrade to the decorative particle poster — dead
+      // controls behind pretty dots reads as "broken". Say why, in-DOM.
+      this.backend = 'poster'
+      this.renderSceneUnsupported()
+      return this
+    }
+    if (!gpu && this.modelUrl) {
+      // PBR model path is WebGPU-only for now; keep the no-white-screen promise.
       this.backend = 'poster'
       this.renderPoster()
       return this
@@ -307,7 +374,7 @@ export class YuraApp {
       }),
     )
 
-    if (prefersReducedMotion()) {
+    if (!reducedMotionPolicy('particles', prefersReducedMotion()).runLoop) {
       // A11y: settle the simulation and present a single static frame.
       this.applyResolution()
       for (let i = 0; i < 240; i++) {
@@ -340,8 +407,7 @@ export class YuraApp {
     if (this.disposed) return
     this.disposed = true
     this.pause()
-    for (const c of this.cleanups) c()
-    this.cleanups = []
+    this.cleanups = drainCleanups(this.cleanups)
     this.renderer?.dispose()
     this.renderer = null
     this.modelRenderer?.dispose()
@@ -373,12 +439,12 @@ export class YuraApp {
       }),
     )
 
-    if (prefersReducedMotion()) {
-      this.applyResolution()
+    // Reduced motion must NOT freeze the game — dead controls are a bug, not
+    // an accessibility feature. The loop always runs; only non-essential idle
+    // motion (auto-rotate / camera sway) is toned down. See
+    // reducedMotionPolicy() for the full policy.
+    if (!reducedMotionPolicy('scene', prefersReducedMotion()).idleSway) {
       this.modelRenderer.autoRotate = 0
-      this.sceneObj!.step(1 / 60, 0)
-      this.modelRenderer.frame(1 / 60, 0)
-      return this
     }
 
     this.running = true
@@ -408,7 +474,8 @@ export class YuraApp {
       }),
     )
 
-    if (prefersReducedMotion()) {
+    if (!reducedMotionPolicy('model', prefersReducedMotion()).runLoop) {
+      // A11y: a decorative model viewer settles to one static frame.
       this.applyResolution()
       this.modelRenderer.autoRotate = 0
       this.modelRenderer.frame(1 / 60, 0)
@@ -618,9 +685,23 @@ export class YuraApp {
     this.rafId = requestAnimationFrame(this.tick)
   }
 
+  /**
+   * GPU device loss (driver reset, GPU switch, backgrounded tab reclaim):
+   * tear down everything the previous run registered, then re-run on a fresh
+   * device. Two invariants keep repeated recoveries sound:
+   *
+   * 1. `cleanups` is drained BEFORE run() installs fresh listeners, so
+   *    keyboard/resize/visibility handlers never accumulate per recovery.
+   * 2. Scene mesh handles are nulled so the scene's realize() re-registers
+   *    every mesh (and shadow) on the new renderer — stale handles into the
+   *    lost device would otherwise leave the canvas permanently blank.
+   */
   private async recoverFromDeviceLost(): Promise<void> {
-    if (this.disposed) return
+    if (this.disposed || this.recovering) return
+    this.recovering = true
     this.pause()
+    this.cleanups = drainCleanups(this.cleanups)
+    resetSceneHandles(this.sceneObj)
     this.renderer = null
     this.modelRenderer = null
     try {
@@ -628,7 +709,40 @@ export class YuraApp {
     } catch {
       this.backend = 'poster'
       this.renderPoster()
+    } finally {
+      this.recovering = false
     }
+  }
+
+  /**
+   * Shown when a scene/game is configured but WebGPU is unavailable. Unlike
+   * the decorative particle poster, a game cannot honestly degrade to a
+   * static image — dead controls would read as "broken" — so render an
+   * explicit in-DOM notice (readable by screen readers; the canvas itself is
+   * aria-hidden) styled to match the library's night-sky aesthetic.
+   */
+  private renderSceneUnsupported(): void {
+    const overlay = document.createElement('div')
+    overlay.setAttribute('role', 'status')
+    overlay.style.cssText =
+      'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;' +
+      'justify-content:center;gap:12px;padding:24px;text-align:center;box-sizing:border-box;' +
+      'background:radial-gradient(ellipse at 50% 45%,#0b1023 0%,#04050c 100%);' +
+      'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#e2e8f0;'
+    const badge = document.createElement('div')
+    badge.style.cssText =
+      'width:44px;height:44px;border-radius:50%;opacity:0.9;' +
+      `background:linear-gradient(135deg,${this.colorA},${this.colorB});` +
+      'box-shadow:0 0 36px rgba(139,92,246,0.4);'
+    const title = document.createElement('div')
+    title.textContent = 'This game needs WebGPU'
+    title.style.cssText = 'font-size:1.05rem;font-weight:600;letter-spacing:0.01em;'
+    const hint = document.createElement('div')
+    hint.textContent = 'Try Chrome or Edge 113+ (or another WebGPU-enabled browser).'
+    hint.style.cssText = 'font-size:0.85rem;opacity:0.65;max-width:34ch;line-height:1.5;'
+    overlay.append(badge, title, hint)
+    this.container.appendChild(overlay)
+    this.cleanups.push(() => overlay.remove())
   }
 
   /** Static 2D-canvas fallback (F-002): never a white screen. */

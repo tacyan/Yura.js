@@ -1,4 +1,4 @@
-import { trsToMat4, eulerToQuat, type Vec3 } from '@yura/core'
+import { trsToMat4, eulerToQuat, type Vec3, type Vec4 } from '@yura/core'
 import {
   meshes,
   type MeshGeometry,
@@ -57,6 +57,61 @@ export interface AddOptions {
   restitution?: number
 }
 
+/**
+ * Axis-angle rotation increment for a sphere of `radius` rolling with
+ * horizontal velocity (vx, vz). Axis = up x v (so the mesh rotates the way a
+ * real ball rolls), angle = distance / radius. Pure — unit-tested headless.
+ */
+export function rollDelta(
+  vx: number,
+  vz: number,
+  radius: number,
+  dt: number,
+): { axis: Vec3; angle: number } {
+  const speed = Math.hypot(vx, vz)
+  if (speed < 1e-6 || radius <= 0 || dt <= 0) return { axis: [0, 0, 0], angle: 0 }
+  return { axis: [vz / speed, 0, -vx / speed], angle: (speed / radius) * dt }
+}
+
+/** q ⊗ p (Hamilton product), [x,y,z,w] order. */
+function quatMul(q: Vec4, p: Vec4): Vec4 {
+  return [
+    q[3] * p[0] + q[0] * p[3] + q[1] * p[2] - q[2] * p[1],
+    q[3] * p[1] - q[0] * p[2] + q[1] * p[3] + q[2] * p[0],
+    q[3] * p[2] + q[0] * p[1] - q[1] * p[0] + q[2] * p[3],
+    q[3] * p[3] - q[0] * p[0] - q[1] * p[1] - q[2] * p[2],
+  ]
+}
+
+/** Premultiplies a world-space axis-angle rotation onto q, renormalized in place. */
+function rotateQuat(q: Vec4, axis: Vec3, angle: number): void {
+  const s = Math.sin(angle / 2)
+  const r = quatMul([axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(angle / 2)], q)
+  const n = Math.hypot(r[0], r[1], r[2], r[3]) || 1
+  for (let i = 0; i < 4; i++) q[i] = r[i] / n
+}
+
+/**
+ * Pure camera-follow goal (unit-tested headless): speed widens distance and
+ * height a little, velocity adds a capped look-ahead, and a landing `dip`
+ * (0..~0.45) lowers the eye. The caller smooths both points over time, which
+ * keeps the result motion-sickness-safe.
+ */
+export function cameraFollowGoal(
+  pos: readonly number[],
+  vel: readonly number[],
+  base: { distance: number; height: number },
+  dip = 0,
+): { eye: Vec3; look: Vec3 } {
+  const speed = Math.hypot(vel[0], vel[2])
+  const widen = Math.min(speed * 0.035, 0.3) // up to +30% at high speed
+  const clamp = (v: number) => Math.max(-1.6, Math.min(1.6, v))
+  return {
+    eye: [pos[0], pos[1] + base.height * (1 + widen * 0.6) - dip, pos[2] + base.distance * (1 + widen)],
+    look: [pos[0] + clamp(vel[0] * 0.22), pos[1] + 0.5 - dip * 0.5, pos[2] + clamp(vel[2] * 0.22)],
+  }
+}
+
 export interface TextHandle {
   set(text: string): void
   remove(): void
@@ -89,6 +144,14 @@ export class SceneObject {
   groundedNow = false
   /** @internal sim-time stamp of the most recent ground contact. */
   groundedAt = -Infinity
+  /** @internal spheres roll: mesh spin derived from horizontal velocity. */
+  rolls = false
+  /** @internal accumulated rolling orientation (world-space). */
+  rollQuat: Vec4 | null = null
+  /** @internal downward speed of the latest fresh landing; camera consumes it. */
+  impact = 0
+  /** @internal spawn-state snapshot restored by scene.reset(). */
+  spawn: { position: Vec3; rotation: Vec3 }
 
   /** True on ground contact — held ~100ms after leaving (coyote time) while not moving up. */
   get grounded(): boolean {
@@ -121,6 +184,7 @@ export class SceneObject {
     this.restitution = opts.restitution ?? 0.35
     this.radius = radius
     this.wantShadow = opts.shadow ?? false
+    this.spawn = { position: [...this.position], rotation: [...this.rotation] }
   }
 
   onCollide(cb: (other: SceneObject) => void): this {
@@ -251,6 +315,9 @@ interface CameraState {
   distance: number
   height: number
   smoothedEye: Vec3 | null
+  smoothedLook: Vec3 | null
+  /** Landing-dip amount (decays each frame). */
+  dip: number
 }
 
 export class YuraScene {
@@ -266,7 +333,10 @@ export class YuraScene {
   private renderer: WebGPUModelRenderer | null = null
   private container: HTMLElement | null = null
   private groundY: number | null = null
-  private cam: CameraState = { mode: 'orbit', target: null, distance: 8, height: 3.5, smoothedEye: null }
+  private cam: CameraState = {
+    mode: 'orbit', target: null, distance: 8, height: 3.5, smoothedEye: null, smoothedLook: null, dip: 0,
+  }
+  private removed: SceneObject[] = []
   private texts: HTMLElement[] = []
 
   /** Particle-FX pool behind burst/trail/celebrate. Pure logic — steps headless. */
@@ -302,6 +372,7 @@ export class YuraScene {
       this.groundY = obj.position[1]
       obj.radius = 0 // ground never sphere-collides
     }
+    obj.rolls = shape === 'sphere' // dynamic spheres roll instead of sliding
     this.objects.push(obj)
     if (this.renderer) this.realize(obj)
     return obj
@@ -403,6 +474,35 @@ export class YuraScene {
   /** @internal */
   forget(obj: SceneObject): void {
     this.objects = this.objects.filter((o) => o !== obj)
+    this.removed.push(obj)
+  }
+
+  /**
+   * One-line "play again": every object (removed ones included) returns to its
+   * spawn position at rest, particles clear, and the camera's landing dip
+   * resets. HUD text, callbacks, trails, and camera follow all survive.
+   */
+  reset(): this {
+    for (const obj of this.removed) {
+      obj.alive = true
+      obj.handle = null
+      obj.shadowHandle = null
+      this.objects.push(obj)
+      if (this.renderer) this.realize(obj)
+    }
+    this.removed = []
+    for (const obj of this.objects) {
+      obj.position = [...obj.spawn.position]
+      obj.rotation = [...obj.spawn.rotation]
+      obj.velocity = [0, 0, 0]
+      obj.rollQuat = null
+      obj.groundedNow = false
+      obj.groundedAt = -Infinity
+      obj.impact = 0
+    }
+    this.fx.clear()
+    this.cam.dip = 0
+    return this
   }
 
   /** @internal one simulation step; safe to run headless (tests). */
@@ -437,10 +537,19 @@ export class YuraScene {
         obj.position[0] += obj.velocity[0] * dt
         obj.position[1] += obj.velocity[1] * dt
         obj.position[2] += obj.velocity[2] * dt
+        // Rolling: dynamic spheres derive mesh spin from horizontal velocity,
+        // so they roll across the floor instead of sliding. Zero game code.
+        if (obj.rolls) {
+          const { axis, angle } = rollDelta(obj.velocity[0], obj.velocity[2], obj.radius, dt)
+          if (angle > 0) rotateQuat((obj.rollQuat ??= [0, 0, 0, 1]), axis, angle)
+        }
+        const wasGrounded = obj.groundedNow
         obj.grounded = false
         const clearance = obj.collider === 'cylinder' ? obj.halfHeight : obj.radius
         if (ground !== null && obj.position[1] - clearance <= ground) {
           obj.position[1] = ground + clearance
+          // Fresh landing: record the downward speed for the camera's dip.
+          if (!wasGrounded && obj.velocity[1] < -1) obj.impact = -obj.velocity[1]
           if (obj.velocity[1] < 0) {
             obj.velocity[1] = Math.abs(obj.velocity[1]) > 1 ? -obj.velocity[1] * obj.restitution : 0
           }
@@ -539,16 +648,26 @@ export class YuraScene {
 
   private updateCamera(dt: number): void {
     if (!this.renderer) return
-    if (this.cam.mode !== 'follow' || !this.cam.target || !this.cam.target.alive) return
-    const t = this.cam.target.position
-    const desired: Vec3 = [t[0], t[1] + this.cam.height, t[2] + this.cam.distance]
-    if (!this.cam.smoothedEye) this.cam.smoothedEye = [...desired]
-    const k = 1 - Math.exp(-dt * 5)
-    const e = this.cam.smoothedEye
-    e[0] += (desired[0] - e[0]) * k
-    e[1] += (desired[1] - e[1]) * k
-    e[2] += (desired[2] - e[2]) * k
-    this.renderer.cameraPose = { eye: [...e], target: [t[0], t[1] + 0.5, t[2]] }
+    const cam = this.cam
+    if (cam.mode !== 'follow' || !cam.target || !cam.target.alive) return
+    // Landing dip: absorb the target's impact, then decay it fast but smoothly.
+    if (cam.target.impact > 0) {
+      cam.dip = Math.min(cam.dip + cam.target.impact * 0.035, 0.45)
+      cam.target.impact = 0
+    }
+    cam.dip *= Math.exp(-6 * dt)
+    const goal = cameraFollowGoal(cam.target.position, cam.target.velocity, cam, cam.dip)
+    if (!cam.smoothedEye) cam.smoothedEye = [...goal.eye]
+    if (!cam.smoothedLook) cam.smoothedLook = [...goal.look]
+    const ke = 1 - Math.exp(-dt * 5)
+    const kl = 1 - Math.exp(-dt * 9)
+    const e = cam.smoothedEye
+    const l = cam.smoothedLook
+    for (let i = 0; i < 3; i++) {
+      e[i] += (goal.eye[i] - e[i]) * ke
+      l[i] += (goal.look[i] - l[i]) * kl
+    }
+    this.renderer.cameraPose = { eye: [...e], target: [...l] }
   }
 
   private realize(obj: SceneObject): void {
@@ -569,7 +688,8 @@ export class YuraScene {
 
   private syncObject(obj: SceneObject): void {
     if (!obj.handle) return
-    const q = eulerToQuat(obj.rotation[0], obj.rotation[1], obj.rotation[2])
+    const e = eulerToQuat(obj.rotation[0], obj.rotation[1], obj.rotation[2])
+    const q = obj.rollQuat ? quatMul(obj.rollQuat, e) : e
     obj.handle.setWorld(trsToMat4(obj.position, q, obj.scale))
     if (obj.shadowHandle) {
       const g = this.groundY ?? 0

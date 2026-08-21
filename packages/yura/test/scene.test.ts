@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { YuraScene, SceneInput } from '../src/scene'
+import { YuraScene, SceneInput, rollDelta, cameraFollowGoal } from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
 
 // Scenes run headless before attach(): physics and collisions are pure JS.
@@ -224,4 +224,104 @@ test('a settled ball rests at exactly ground + radius with zero vy', () => {
   scene.step(1 / 60, 5.01)
   expect(ball.position[1]).toBe(before) // no per-frame sink/pop micro-jitter
   expect(ball.grounded).toBe(true)
+})
+
+// --- Rolling spheres --------------------------------------------------------
+
+test('rollDelta: axis is horizontal, perpendicular to travel; angle = dist / r', () => {
+  const d = rollDelta(3, 0, 0.5, 1 / 60) // moving +x
+  expect(d.axis[0]).toBe(0)
+  expect(d.axis[1]).toBe(0)
+  expect(d.axis[2]).toBe(-1) // up x v for +x travel
+  expect(d.angle).toBeCloseTo((3 / 0.5) * (1 / 60), 6)
+  expect(Math.hypot(...d.axis)).toBeCloseTo(1, 6) // unit axis
+})
+
+test('rollDelta: no rotation at rest or with a degenerate radius', () => {
+  expect(rollDelta(0, 0, 0.5, 1 / 60).angle).toBe(0)
+  expect(rollDelta(2, 1, 0, 1 / 60).angle).toBe(0)
+})
+
+test('a moving dynamic sphere accumulates roll orientation; a box does not', () => {
+  const scene = new YuraScene({ gravity: -20 })
+  scene.add('plane', { size: 20 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 0.5, 0], body: 'dynamic' })
+  const box = scene.add('box', { size: 1, position: [5, 0.7, 5], body: 'dynamic' })
+  ball.velocity[0] = 4
+  box.velocity[0] = 4
+  for (let i = 0; i < 30; i++) scene.step(1 / 60, i / 60)
+  const q = ball.rollQuat
+  expect(q).not.toBeNull()
+  expect(Math.hypot(q![0], q![1], q![2], q![3])).toBeCloseTo(1, 5) // stays normalized
+  expect(Math.abs(q![2])).toBeGreaterThan(0.01) // rotated about z for +x travel
+  expect(box.rollQuat).toBeNull() // only spheres roll
+})
+
+// --- Camera follow math -----------------------------------------------------
+
+test('cameraFollowGoal at rest: eye sits behind and above, look at the target', () => {
+  const g = cameraFollowGoal([1, 2, 3], [0, 0, 0], { distance: 8, height: 3.6 })
+  expect(g.eye).toEqual([1, 5.6, 11])
+  expect(g.look).toEqual([1, 2.5, 3])
+})
+
+test('cameraFollowGoal widens with speed and looks ahead, both capped', () => {
+  const base = { distance: 8, height: 3.6 }
+  const slow = cameraFollowGoal([0, 1, 0], [4, 0, 0], base)
+  expect(slow.eye[2]).toBeGreaterThan(8) // a little wider than the base distance
+  expect(slow.eye[1]).toBeGreaterThan(4.6) // and a little higher
+  expect(slow.look[0]).toBeCloseTo(4 * 0.22, 6) // look-ahead in travel direction
+  const fast = cameraFollowGoal([0, 1, 0], [40, 0, -40], base)
+  expect(fast.eye[2]).toBeCloseTo(8 * 1.3, 6) // widening capped at +30%
+  expect(fast.look[0]).toBe(1.6) // look-ahead capped
+  expect(fast.look[2]).toBe(-1.6)
+})
+
+test('cameraFollowGoal landing dip lowers the eye and eases the look down', () => {
+  const base = cameraFollowGoal([0, 1, 0], [0, 0, 0], { distance: 8, height: 3.6 })
+  const dipped = cameraFollowGoal([0, 1, 0], [0, 0, 0], { distance: 8, height: 3.6 }, 0.4)
+  expect(dipped.eye[1]).toBeCloseTo(base.eye[1] - 0.4, 6)
+  expect(dipped.look[1]).toBeCloseTo(base.look[1] - 0.2, 6)
+})
+
+test('a hard landing records its impact speed for the camera dip', () => {
+  const scene = new YuraScene({ gravity: -20 })
+  scene.add('plane', { size: 10 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 4, 0], body: 'dynamic' })
+  for (let i = 0; i < 45; i++) scene.step(1 / 60, i / 60)
+  expect(ball.impact).toBeGreaterThan(5) // fell ~3.5 units: v = sqrt(2*g*h) ≈ 11.8
+})
+
+// --- scene.reset() ----------------------------------------------------------
+
+test('reset revives removed objects and restores spawn state', () => {
+  const scene = new YuraScene({ gravity: -20, bounds: 10 })
+  scene.add('plane', { size: 20 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 3, 7], body: 'dynamic' })
+  const orb = scene.add('sphere', { radius: 0.3, position: [2, 1, 0], tag: 'orb' })
+  const total = scene.objectCount
+  ball.velocity[0] = 9
+  for (let i = 0; i < 90; i++) scene.step(1 / 60, i / 60)
+  orb.remove()
+  expect(scene.count('orb')).toBe(0)
+  scene.reset()
+  expect(scene.objectCount).toBe(total)
+  expect(scene.count('orb')).toBe(1)
+  expect(orb.alive).toBe(true)
+  expect(ball.position).toEqual([0, 3, 7])
+  expect(ball.velocity).toEqual([0, 0, 0])
+  expect(ball.rollQuat).toBeNull()
+})
+
+test('reset clears particles and the sim still settles cleanly afterwards', () => {
+  const scene = new YuraScene({ gravity: -20 })
+  scene.add('plane', { size: 20 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 2, 0], body: 'dynamic' })
+  scene.burst([0, 1, 0], { count: 40 })
+  scene.step(1 / 60, 0)
+  expect(scene.fx.alive).toBeGreaterThan(0)
+  scene.reset()
+  expect(scene.fx.alive).toBe(0)
+  for (let i = 1; i < 240; i++) scene.step(1 / 60, i / 60)
+  expect(ball.position[1]).toBeCloseTo(0.5, 1) // physics keeps working post-reset
 })
