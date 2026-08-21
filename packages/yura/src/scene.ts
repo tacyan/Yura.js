@@ -29,6 +29,92 @@ const JUMP_BUFFER = 0.15
 const COYOTE_TIME = 0.1
 /** Grounded bodies with |vy| below this settle to zero instead of micro-bouncing. */
 const SLEEP_VY = 0.05
+/** Virtual stick: drag distance (CSS px) for full deflection. */
+const STICK_RADIUS = 64
+/** Virtual stick: drags shorter than this (CSS px) read as zero. */
+const STICK_DEAD_ZONE = 8
+/** A press shorter than this (seconds) with little movement is a tap = jump. */
+const TAP_MAX_TIME = 0.2
+/** A press that travelled further than this (CSS px) is a drag, not a tap. */
+const TAP_MAX_MOVE = 12
+/** Gamepad stick dead zone (normalized units). */
+const PAD_DEAD_ZONE = 0.15
+
+/**
+ * Virtual-stick mapping: pointer offset from drag start (CSS px, screen
+ * coords — +dy is down) → axes in -1..1 (game coords — +y is forward/up).
+ * Offsets inside the dead zone read as zero; deflection ramps linearly to
+ * full at `radius` and clamps beyond it.
+ */
+export function stickAxes(
+  dx: number,
+  dy: number,
+  radius = STICK_RADIUS,
+  deadZone = STICK_DEAD_ZONE,
+): { x: number; y: number } {
+  const mag = Math.hypot(dx, dy)
+  if (mag <= deadZone) return { x: 0, y: 0 }
+  const scale = Math.min(1, (mag - deadZone) / (radius - deadZone)) / mag
+  return { x: dx * scale, y: -dy * scale }
+}
+
+/** Tap-vs-drag: a quick press that barely moved is a tap (= jump intent). */
+export function isTap(durationSec: number, movedPx: number, maxTime = TAP_MAX_TIME, maxMove = TAP_MAX_MOVE): boolean {
+  return durationSec < maxTime && movedPx < maxMove
+}
+
+/** Combine one axis across input sources — the largest magnitude wins. */
+export function combineAxes(...values: number[]): number {
+  let out = 0
+  for (const v of values) if (Math.abs(v) > Math.abs(out)) out = v
+  return out
+}
+
+/** Radial gamepad dead zone: below `dz` reads zero, above rescales to 0..1. */
+export function padDeadZone(value: number, dz = PAD_DEAD_ZONE): number {
+  const a = Math.abs(value)
+  if (a <= dz) return 0
+  return Math.sign(value) * Math.min(1, (a - dz) / (1 - dz))
+}
+
+/** Minimal shape of a navigator.getGamepads() entry (testable snapshot). */
+export interface GamepadSnapshot {
+  axes: ReadonlyArray<number>
+  buttons: ReadonlyArray<{ pressed: boolean }>
+  connected?: boolean
+}
+
+/**
+ * Fold a getGamepads() array into one reading: left stick → x/y with dead
+ * zone (largest magnitude across pads wins), A/cross held → jump.
+ */
+export function readGamepads(
+  pads: Iterable<GamepadSnapshot | null> | null | undefined,
+): { x: number; y: number; jump: boolean } {
+  let x = 0
+  let y = 0
+  let jump = false
+  if (pads) {
+    for (const gp of pads) {
+      if (!gp || gp.connected === false) continue
+      x = combineAxes(x, padDeadZone(gp.axes[0] ?? 0))
+      y = combineAxes(y, padDeadZone(-(gp.axes[1] ?? 0)))
+      if (gp.buttons[0]?.pressed) jump = true
+    }
+  }
+  return { x, y, jump }
+}
+
+/**
+ * Arena-boundary resolution for one axis: past the limit the position clamps
+ * to the wall and any outward velocity is zeroed (inward velocity survives).
+ * Reflecting instead (-v * bounce) fights a held stick and vibrates the ball.
+ */
+export function clampToBounds(position: number, velocity: number, limit: number): { position: number; velocity: number } {
+  if (Math.abs(position) <= limit) return { position, velocity }
+  const side = position > 0 ? 1 : -1
+  return { position: side * limit, velocity: velocity * side > 0 ? 0 : velocity }
+}
 
 export interface SceneOptions {
   /** Y acceleration for dynamic bodies (e.g. -18). 0 disables gravity. */
@@ -220,14 +306,30 @@ export class SceneInput {
   /** @internal set by the scene each frame: a grounded dynamic body can jump now. */
   jumpEligible: boolean | null = null
 
-  /** -1..1 — A/D or arrow left/right. */
+  /** Pointer id currently driving the virtual stick; null = no drag active. */
+  private stickId: number | null = null
+  private stickStartX = 0
+  private stickStartY = 0
+  private stickStartAt = 0
+  private stickMoved = 0
+  private stickX = 0
+  private stickY = 0
+  /** Latest gamepad reading (dead-zoned) and held state for edge detection. */
+  private padX = 0
+  private padY = 0
+  private padJump = false
+
+  /** -1..1 — keyboard, touch-drag stick, or gamepad; largest magnitude wins. */
   get x(): number {
-    return (this.key('KeyD') || this.key('ArrowRight') ? 1 : 0) - (this.key('KeyA') || this.key('ArrowLeft') ? 1 : 0)
+    const kb =
+      (this.key('KeyD') || this.key('ArrowRight') ? 1 : 0) - (this.key('KeyA') || this.key('ArrowLeft') ? 1 : 0)
+    return combineAxes(kb, this.stickX, this.padX)
   }
 
-  /** -1..1 — W/S or arrow up/down (forward positive). */
+  /** -1..1 (forward positive) — keyboard, touch, or gamepad; largest wins. */
   get y(): number {
-    return (this.key('KeyW') || this.key('ArrowUp') ? 1 : 0) - (this.key('KeyS') || this.key('ArrowDown') ? 1 : 0)
+    const kb = (this.key('KeyW') || this.key('ArrowUp') ? 1 : 0) - (this.key('KeyS') || this.key('ArrowDown') ? 1 : 0)
+    return combineAxes(kb, this.stickY, this.padY)
   }
 
   key(code: string): boolean {
@@ -249,7 +351,7 @@ export class SceneInput {
    */
   get jump(): boolean {
     const buffered = this.clock - this.jumpEdgeAt <= JUMP_BUFFER
-    if (!buffered && !this.key('Space')) return false
+    if (!buffered && !this.key('Space') && !this.padJump) return false
     if (this.jumpEligible === false) return false
     this.jumpEdgeAt = -Infinity
     return true
@@ -266,11 +368,76 @@ export class SceneInput {
     this.keys.delete(code)
   }
 
+  /**
+   * @internal pointer edge (also the headless-test entry point). The first
+   * pointer becomes the virtual stick; any additional pointer while the stick
+   * drags is an immediate jump edge (second-finger tap).
+   */
+  pointerDown(id: number, x: number, y: number): void {
+    if (this.stickId === null) {
+      this.stickId = id
+      this.stickStartX = x
+      this.stickStartY = y
+      this.stickStartAt = this.clock
+      this.stickMoved = 0
+      this.stickX = 0
+      this.stickY = 0
+    } else if (id !== this.stickId) {
+      this.jumpEdgeAt = this.clock
+    }
+  }
+
+  /** @internal drag update for the stick pointer — maps offset to axes. */
+  pointerMove(id: number, x: number, y: number): void {
+    if (id !== this.stickId) return
+    const dx = x - this.stickStartX
+    const dy = y - this.stickStartY
+    this.stickMoved = Math.max(this.stickMoved, Math.hypot(dx, dy))
+    const a = stickAxes(dx, dy)
+    this.stickX = a.x
+    this.stickY = a.y
+  }
+
+  /** @internal release: a quick, small press was a tap = jump; drag just ends. */
+  pointerUp(id: number): void {
+    if (id !== this.stickId) return
+    if (isTap(this.clock - this.stickStartAt, this.stickMoved)) this.jumpEdgeAt = this.clock
+    this.stickId = null
+    this.stickX = 0
+    this.stickY = 0
+  }
+
+  /** @internal cancelled pointer drops the stick without a tap. */
+  pointerCancel(id: number): void {
+    if (id !== this.stickId) return
+    this.stickId = null
+    this.stickX = 0
+    this.stickY = 0
+  }
+
+  /**
+   * @internal feed one gamepad reading (also the headless-test entry point).
+   * A rising jump edge lands in the shared jump buffer; holding the button
+   * keeps the intent alive exactly like a held Space.
+   */
+  applyPad(reading: { x: number; y: number; jump: boolean }): void {
+    this.padX = reading.x
+    this.padY = reading.y
+    if (reading.jump && !this.padJump) this.jumpEdgeAt = this.clock
+    this.padJump = reading.jump
+  }
+
   /** @internal drop all held state — blur/tab-hide never delivers the keyups. */
   clearKeys(): void {
     this.keys.clear()
     this.prevKeys.clear()
     this.jumpEdgeAt = -Infinity
+    this.stickId = null
+    this.stickX = 0
+    this.stickY = 0
+    this.padX = 0
+    this.padY = 0
+    this.padJump = false
   }
 
   /** @internal */
@@ -296,9 +463,45 @@ export class SceneInput {
     })
   }
 
+  /**
+   * @internal touch/mouse drag = virtual stick, quick tap = jump. Bound to
+   * the scene container so page scroll and text selection stay untouched
+   * elsewhere; pointer capture keeps a drag alive when it leaves the canvas.
+   */
+  bindPointer(el: HTMLElement): void {
+    const prevTouchAction = el.style.touchAction
+    el.style.touchAction = 'none'
+    const down = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') e.preventDefault()
+      try {
+        el.setPointerCapture?.(e.pointerId)
+      } catch {
+        /* capture is a nicety — a plain drag still works without it */
+      }
+      this.pointerDown(e.pointerId, e.clientX, e.clientY)
+    }
+    const move = (e: PointerEvent) => this.pointerMove(e.pointerId, e.clientX, e.clientY)
+    const up = (e: PointerEvent) => this.pointerUp(e.pointerId)
+    const cancel = (e: PointerEvent) => this.pointerCancel(e.pointerId)
+    el.addEventListener('pointerdown', down)
+    el.addEventListener('pointermove', move)
+    el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', cancel)
+    this.cleanupFns.push(() => {
+      el.removeEventListener('pointerdown', down)
+      el.removeEventListener('pointermove', move)
+      el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', cancel)
+      el.style.touchAction = prevTouchAction
+    })
+  }
+
   /** @internal */
   endFrame(dt = 0): void {
     this.prevKeys = new Set(this.keys)
+    if (typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function') {
+      this.applyPad(readGamepads(navigator.getGamepads()))
+    }
     this.clock += dt
   }
 
@@ -462,7 +665,10 @@ export class YuraScene {
     this.container = container
     renderer.shadowArea = this.bounds > 0 ? this.bounds * 1.25 + 2 : 14
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative'
-    if (this.keyboard) this.input.bind()
+    if (this.keyboard) {
+      this.input.bind()
+      this.input.bindPointer(container)
+    }
     for (const obj of this.objects) this.realize(obj)
     return () => {
       this.input.dispose()
@@ -562,8 +768,9 @@ export class YuraScene {
           for (const axis of [0, 2] as const) {
             const limit = this.bounds - obj.radius
             if (Math.abs(obj.position[axis]) > limit) {
-              obj.position[axis] = Math.sign(obj.position[axis]) * limit
-              obj.velocity[axis] = -obj.velocity[axis] * 0.5
+              const r = clampToBounds(obj.position[axis], obj.velocity[axis], limit)
+              obj.position[axis] = r.position
+              obj.velocity[axis] = r.velocity
             }
           }
         }

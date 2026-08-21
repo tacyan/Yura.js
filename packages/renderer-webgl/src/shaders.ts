@@ -10,7 +10,7 @@ layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aVel;
 layout(location = 2) in vec4 aTA;
 layout(location = 3) in vec4 aTB;
-uniform float uDt, uTime, uMorphT, uAttraction, uDamping, uNoiseScale, uNoiseStrength, uSwirl, uMaxSpeed, uBoost;
+uniform float uDt, uTime, uMorphT, uAttraction, uDamping, uNoiseScale, uNoiseStrength, uSwirl, uMaxSpeed, uBoost, uMorphSpread;
 uniform vec4 uPointer;
 out vec4 tfPos;
 out vec4 tfVel;
@@ -28,7 +28,14 @@ void main() {
   // Defense in depth: a negative or huge dt must never reach the
   // integration (see YuraApp.tick for the rAF timestamp hazard).
   float dt = clamp(uDt, 0.0, 0.05);
-  float k = smoothstep(0.0, 1.0, uMorphT);
+  // Per-particle morph sweep (mirrors the WGSL sim): |uMorphSpread| is the
+  // stagger spread, its sign routes the delay coordinate to the morph's
+  // destination buffer (+ = aTB.w, - = 1-aTA.w). Spread 0 reduces to
+  // clamp(uMorphT, 0, 1) — bit-exact legacy behavior.
+  float spread = abs(uMorphSpread);
+  float delay = uMorphSpread < 0.0 ? 1.0 - aTA.w : aTB.w;
+  float sweepT = clamp(uMorphT * (1.0 + spread) - delay * spread, 0.0, 1.0);
+  float k = smoothstep(0.0, 1.0, sweepT);
   vec3 goal = mix(aTA.xyz, aTB.xyz, k);
   float palette = mix(aTA.w, aTB.w, k);
   float attraction = uAttraction * (1.0 - 0.35 * uBoost);

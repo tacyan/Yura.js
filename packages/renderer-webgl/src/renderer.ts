@@ -37,6 +37,8 @@ export class WebGL2ParticleRenderer {
   colorB: Vec3
   morphT = 0
   morphBoost = 0
+  /** Per-particle morph stagger; mirrors WebGPUParticleRenderer.morphSpread. */
+  morphSpread = 0
   pointerWorld: Vec3 = [0, 0, 0]
   pointerStrength = 0
   parallax: [number, number] = [0, 0]
@@ -325,6 +327,7 @@ void main() { o = vec4(0.0); }
     gl.uniform1f(su('uSwirl'), this.motion.swirl)
     gl.uniform1f(su('uMaxSpeed'), this.motion.maxSpeed)
     gl.uniform1f(su('uBoost'), this.morphBoost)
+    gl.uniform1f(su('uMorphSpread'), this.morphSpread)
     gl.uniform4f(su('uPointer'), this.pointerWorld[0], this.pointerWorld[1], this.pointerWorld[2], this.pointerStrength)
     gl.bindVertexArray(this.simVAO[this.cur])
     gl.enable(gl.RASTERIZER_DISCARD)

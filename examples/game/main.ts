@@ -1,7 +1,8 @@
-// ORB RUSH — a complete game in <60 lines. No 3D assets, no engine boilerplate.
-import { yura, materials } from 'yura'
+// ORB RUSH — a complete game, sound included, in ~60 lines. No assets, no engine boilerplate.
+import { yura, materials, gameAudio } from 'yura'
 
 const app = yura('#game')
+const sfx = gameAudio() // synthesized WebAudio; unlocks itself on first tap/keypress
 const scene = app.scene({ gravity: -22, bounds: 12 })
 
 scene.add('plane', { size: 24, material: 'checker' })
@@ -35,7 +36,7 @@ scene.camera.follow(ball, { distance: 8, height: 3.6 })
 scene.onUpdate((dt, input, time) => {
   ball.velocity[0] += input.x * 26 * dt
   ball.velocity[2] -= input.y * 26 * dt
-  if (input.jump && ball.grounded) ball.velocity[1] = 8.5
+  if (input.jump && ball.grounded) { ball.velocity[1] = 8.5; sfx.jump() }
   if (!done) clock.set(`${fmt((elapsed += dt))}${best ? `  BEST ${fmt(best)}` : ''}`)
   if (input.pressed('KeyR')) { scene.reset(); score = elapsed = 0; done = false; hud.set(`ORBS 0 / ${ORBS}`) }
   scene.each('orb', (orb, i) => {
@@ -47,9 +48,11 @@ ball.onCollide((other) => {
   if (other.tag !== 'orb' || !other.alive) return
   other.remove()
   scene.burst(other.position, { color: '#22d3ee' })
+  sfx.pickup(score) // pitch climbs with each orb collected
   if (++score < ORBS) return hud.set(`ORBS ${score} / ${ORBS}`)
   done = true
   scene.celebrate()
+  sfx.win()
   const record = !best || elapsed < best
   if (record) { best = elapsed; try { localStorage.setItem('orb-rush-best', String(best)) } catch { /* ignore */ } }
   hud.set(`YOU WIN — ${fmt(elapsed)}${record ? ' ★ NEW BEST' : ''}  ·  R to restart`)

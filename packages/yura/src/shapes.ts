@@ -141,36 +141,201 @@ export function flow(options: { width?: number } = {}): ShapeSpec {
   }
 }
 
-/** Samples pixels from rasterized text. Browser-only (uses canvas 2D). */
-export function text(str: string, options: { font?: string; worldWidth?: number } = {}): ShapeSpec {
-  const { font = '900 250px system-ui, Arial, sans-serif', worldWidth = 20 } = options
+// ---- kinetic typography (text v2) ----
+
+export type TextAlign = 'left' | 'center' | 'right'
+
+export interface TextOptions {
+  /** CSS font shorthand; weight rides inside it ('900 250px …'). px sizes auto-shrink to fit. */
+  font?: string
+  /** World-space width the full canvas span maps to. */
+  worldWidth?: number
+  /** Extra tracking between graphemes, in em (fractions of the font size). */
+  letterSpacing?: number
+  /** Vertical gap between lines, in em. Only matters for multi-line ('\n') text. */
+  lineGap?: number
+  /** Horizontal alignment of lines inside the text block. */
+  align?: TextAlign
+}
+
+/**
+ * Splits a string into user-perceived characters (graphemes). Uses
+ * Intl.Segmenter('ja') when available so CJK, combining marks, and compound
+ * emoji stay whole; falls back to Array.from (surrogate-pair safe) elsewhere.
+ * (Pure; exported for tests — `useIntl: false` forces the fallback.)
+ */
+export function segmentGraphemes(str: string, useIntl = true): string[] {
+  if (useIntl && typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    const seg = new Intl.Segmenter('ja', { granularity: 'grapheme' })
+    return Array.from(seg.segment(str), (s) => s.segment)
+  }
+  return Array.from(str)
+}
+
+/**
+ * Palette/delay coordinate for one particle of a text shape: characters own
+ * contiguous [i/count, (i+1)/count) bands in reading order, and `intraX`
+ * (0..1 across the glyph, clamped) spreads particles inside the band. This
+ * per-CHARACTER ordering is what makes a morph sweep land char-by-char
+ * instead of pixel-column-by-column. (Pure; exported for tests.)
+ */
+export function charCoord(charIndex: number, intraX: number, charCount: number): number {
+  if (charCount <= 0) return 0
+  const intra = Math.min(Math.max(intraX, 0), 1)
+  return Math.min((charIndex + intra) / charCount, 1)
+}
+
+export interface LinePlacement {
+  /** Left edge of the line inside a box of the given width. */
+  x: number
+  /** Line center offset from the block's vertical center (down = positive). */
+  y: number
+}
+
+/**
+ * Multi-line layout: stacks lines around the vertical center and aligns each
+ * horizontally inside `boxWidth`. (Pure; exported for tests.)
+ */
+export function layoutLines(
+  lineWidths: number[],
+  lineHeight: number,
+  lineGap: number,
+  align: TextAlign,
+  boxWidth: number,
+): LinePlacement[] {
+  const count = lineWidths.length
+  const totalH = count * lineHeight + Math.max(count - 1, 0) * lineGap
+  return lineWidths.map((w, i) => ({
+    x: align === 'left' ? 0 : align === 'right' ? boxWidth - w : (boxWidth - w) / 2,
+    y: -totalH / 2 + lineHeight / 2 + i * (lineHeight + lineGap),
+  }))
+}
+
+/**
+ * Samples pixels from rasterized text. Browser-only (uses canvas 2D).
+ *
+ * v2: multi-line via '\n', per-grapheme segmentation (CJK first-class), and a
+ * per-CHARACTER palette/delay coordinate in reading order — see charCoord().
+ * Backward compatible with the v1 `{ font, worldWidth }` call sites.
+ */
+export function text(str: string, options: TextOptions = {}): ShapeSpec {
+  const {
+    font = '900 250px system-ui, Arial, sans-serif',
+    worldWidth = 20,
+    letterSpacing = 0,
+    lineGap = 0.22,
+    align = 'center',
+  } = options
   return {
     kind: 'text',
     generate(n) {
+      const lines = str.split('\n').map((line) => segmentGraphemes(line))
+      const charCount = lines.reduce((sum, gs) => sum + gs.length, 0)
+      const W = 1024
+      const H = Math.min(1600, 400 * Math.max(lines.length, 1))
+      // Glyph cells recorded during draw: which character owns which x-range.
+      interface Cell {
+        index: number
+        x0: number
+        x1: number
+      }
+      const rows: Cell[][] = []
+      const rowY: number[] = []
+
       const candidates = rasterize((ctx, w, h) => {
-        ctx.font = font
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
         ctx.fillStyle = '#fff'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.font = font
         // Long strings (CJK especially) overflow the fixed canvas at the
         // requested size, clipping the outer glyphs. Shrink px-sized fonts
-        // to fit; other units fall through unscaled.
-        const m = ctx.measureText(str)
-        const textH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent
+        // so the widest line AND the stacked line block fit; other units
+        // fall through unscaled.
+        const pxMatch = /(\d+(?:\.\d+)?)px/.exec(font)
+        let fontPx = pxMatch ? Number(pxMatch[1]) : 250
+        const measureLine = (gs: string[]): number =>
+          gs.reduce((sum, g) => sum + ctx.measureText(g).width, 0) +
+          letterSpacing * fontPx * Math.max(gs.length - 1, 0)
+        let widths = lines.map(measureLine)
+        const blockH = () =>
+          lines.length * fontPx * 1.06 + (lines.length - 1) * fontPx * lineGap
         const fit = Math.min(
           1,
-          (w * 0.94) / Math.max(m.width, 1),
-          textH > 0 ? (h * 0.9) / textH : 1,
+          (w * 0.94) / Math.max(1, ...widths),
+          (h * 0.9) / Math.max(blockH(), 1),
         )
-        if (fit < 1) {
-          ctx.font = font.replace(
-            /(\d+(?:\.\d+)?)px/,
-            (_, px: string) => `${Math.max(8, Math.floor(Number(px) * fit))}px`,
-          )
+        if (fit < 1 && pxMatch) {
+          fontPx = Math.max(8, Math.floor(fontPx * fit))
+          ctx.font = font.replace(/(\d+(?:\.\d+)?)px/, `${fontPx}px`)
+          widths = lines.map(measureLine)
         }
-        ctx.fillText(str, w / 2, h / 2)
-      }, 1024, 400)
-      return sampleCandidates(candidates, 1024, 400, n, worldWidth)
+
+        const margin = w * 0.03
+        const placed = layoutLines(widths, fontPx * 1.06, fontPx * lineGap, align, w - margin * 2)
+        let index = 0
+        lines.forEach((gs, li) => {
+          const cells: Cell[] = []
+          const y = h / 2 + placed[li].y
+          rows.push(cells)
+          rowY.push(y)
+          let x = margin + placed[li].x
+          for (const g of gs) {
+            const adv = Math.max(ctx.measureText(g).width, 1)
+            if (g.trim() !== '') {
+              ctx.fillText(g, x, y)
+              cells.push({ index, x0: x, x1: x + adv })
+            }
+            // Whitespace advances the pen and keeps its char index, so the
+            // sweep breathes naturally at word gaps.
+            x += adv + letterSpacing * fontPx
+            index++
+          }
+        })
+      }, W, H)
+
+      const pairCount = candidates.length / 2
+      if (pairCount === 0 || charCount === 0) {
+        // Degenerate input: fall through to the tiny-sphere fallback.
+        return sampleCandidates(candidates, W, H, n, worldWidth)
+      }
+
+      // Per-candidate coordinate: nearest drawn row by y, then the owning
+      // glyph cell by x (overhang pixels clamp into the nearest band).
+      const coords = new Float32Array(pairCount)
+      for (let i = 0; i < pairCount; i++) {
+        const px = candidates[i * 2]
+        const py = candidates[i * 2 + 1]
+        let row = 0
+        let bestD = Infinity
+        for (let r = 0; r < rowY.length; r++) {
+          const d = Math.abs(py - rowY[r])
+          if (rows[r].length > 0 && d < bestD) {
+            bestD = d
+            row = r
+          }
+        }
+        const cells = rows[row]
+        let cell = cells[0]
+        for (const c of cells) {
+          if (px >= c.x0) cell = c
+          else break
+        }
+        const intra = (px - cell.x0) / Math.max(cell.x1 - cell.x0, 1)
+        coords[i] = charCoord(cell.index, intra, charCount)
+      }
+
+      const out = new Float32Array(n * 4)
+      const s = worldWidth / W
+      for (let i = 0; i < n; i++) {
+        const pick = (Math.random() * pairCount) | 0
+        const px = candidates[pick * 2] + Math.random()
+        const py = candidates[pick * 2 + 1] + Math.random()
+        out[i * 4] = (px - W / 2) * s
+        out[i * 4 + 1] = -(py - H / 2) * s
+        out[i * 4 + 2] = gauss() * 0.3
+        out[i * 4 + 3] = coords[pick]
+      }
+      return out
     },
   }
 }

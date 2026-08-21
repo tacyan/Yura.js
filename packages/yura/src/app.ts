@@ -46,6 +46,60 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 }
 
+/** Travel direction of a morph sweep across the target's coordinate ordering. */
+export type SweepDirection = 'ltr' | 'rtl' | 'center' | 'random'
+
+export interface MorphNowOptions {
+  /**
+   * 0..1 per-particle stagger: how much of the morph is spent sweeping across
+   * the target's delay/palette coordinate (characters, for text shapes).
+   * 0 (default) = uniform morph, exactly the previous behavior.
+   */
+  sweep?: number
+  /** Where the sweep starts. Default 'ltr' (reading order). */
+  direction?: SweepDirection
+  /** Reserved for lyric scheduling; unused by morphNow itself. */
+  hold?: number
+}
+
+/**
+ * TS mirror of the shader sweep math (WGSL sim / GLSL SIM_VS): a particle's
+ * effective morph progress given the global morphT, its 0..1 delay
+ * coordinate, and the stagger spread. Spread 0 collapses to clamp(morphT).
+ * (Pure; exported for tests.)
+ */
+export function sweepProgress(morphT: number, delayCoord: number, spread: number): number {
+  const s = Math.min(Math.abs(spread), 1)
+  const e = morphT * (1 + s) - delayCoord * s
+  return Math.min(Math.max(e, 0), 1)
+}
+
+/**
+ * Bakes a sweep direction into a generated shape's delay/palette coordinates
+ * (data[i*4+3]) in place. 'rtl' inverts reading order, 'center' radiates from
+ * the middle outward, 'random' assigns a deterministic per-particle hash
+ * (glitter assembly). Note the coordinate doubles as the color-gradient
+ * position, so redirecting the sweep redirects the gradient too — an
+ * intentional trade-off that keeps the particle layout at 16 bytes.
+ * (Pure; exported for tests.)
+ */
+export function applySweepDirection(
+  data: Float32Array<ArrayBuffer>,
+  direction: SweepDirection,
+): Float32Array<ArrayBuffer> {
+  if (direction === 'ltr') return data
+  for (let i = 3; i < data.length; i += 4) {
+    const w = data[i]
+    if (direction === 'rtl') data[i] = 1 - w
+    else if (direction === 'center') data[i] = Math.abs(w * 2 - 1)
+    else {
+      const h = Math.sin((i + 1) * 12.9898) * 43758.5453
+      data[i] = h - Math.floor(h)
+    }
+  }
+  return data
+}
+
 /** What `prefers-reduced-motion` means for one run mode. */
 export interface ReducedMotionPolicy {
   /** Start the rAF loop at all? */
@@ -244,9 +298,13 @@ export class YuraApp {
   /**
    * Morph the running swarm to a new shape right now (strings become text).
    * The automatic shape cycle pauses on the new shape until the app is
-   * reconfigured. Before run(), behaves like .shape().
+   * reconfigured. Before run(), behaves like .shape() (options are dropped).
+   *
+   * `sweep` staggers particles by their delay/palette coordinate so text
+   * shapes assemble character-by-character; `direction` re-aims the sweep.
+   * Defaults reproduce the previous uniform morph exactly.
    */
-  async morphNow(s: ShapeSpec | string): Promise<this> {
+  async morphNow(s: ShapeSpec | string, opts: MorphNowOptions = {}): Promise<this> {
     const spec = this.toShape(s)
     if (!this.renderer) {
       this.shape(spec)
@@ -254,6 +312,8 @@ export class YuraApp {
     }
     const data = await Promise.resolve(spec.generate(this.particleCount))
     if (this.disposed || !this.renderer) return this
+    const direction = opts.direction ?? 'ltr'
+    if (direction !== 'ltr') applySweepDirection(data, direction)
     const m = this.morph
     // Mid-flight: adopt the nearer endpoint as the new origin so the goal
     // interpolation barely snaps (the swarm itself always moves smoothly).
@@ -265,6 +325,10 @@ export class YuraApp {
     }
     if (m.pos === 0) this.renderer.writeTargetB(data)
     else this.renderer.writeTargetA(data)
+    // Per-particle sweep: the sign routes the shader to the DESTINATION
+    // buffer's delay coordinate (+ = targetB, - = targetA). 0 = uniform.
+    const spread = Math.min(Math.max(opts.sweep ?? 0, 0), 1)
+    this.renderer.morphSpread = m.pos === 0 ? spread : -spread
     this.renderer.morphT = m.pos
     m.phase = 'move'
     m.timer = 0
@@ -614,6 +678,9 @@ export class YuraApp {
       this.renderer.morphBoost = 0
       // Pinned by morphNow(): hold the shape until the next explicit morph.
       if (!this.morphPinned && m.timer >= HOLD_SECONDS) {
+        // The automatic cycle always morphs uniformly (legacy behavior);
+        // only explicit morphNow({ sweep }) staggers particles.
+        this.renderer.morphSpread = 0
         m.phase = 'move'
         m.timer = 0
       }

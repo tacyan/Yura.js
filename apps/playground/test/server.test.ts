@@ -17,6 +17,12 @@ test('GET / serves the playground page', async () => {
   // Recipe chips (docs-by-example) ship with the page.
   expect(html).toContain('word morph')
   expect(html).toContain('shape tour')
+  // Scene-kit + interop recipes (adoption demos for the new capabilities).
+  expect(html).toContain('mini game')
+  expect(html).toContain('particle fx')
+  expect(html).toContain('three.js')
+  expect(html).toContain('yuraLayer')
+  expect(html).toContain('esm.sh/three')
 })
 
 test('share -> fetch snippet -> load shared page round-trips', async () => {
@@ -73,6 +79,8 @@ test('GET /yura.js serves a browser bundle with CORS', async () => {
   expect(res.headers.get('access-control-allow-origin')).toBe('*')
   const js = await res.text()
   expect(js.length).toBeGreaterThan(10_000)
-  // The public API must survive bundling + minification.
+  // The public API must survive bundling + minification. `yuraLayer` (and the
+  // scene kit) back the mini game / particle fx / three.js interop recipes.
   expect(js).toContain('neon-galaxy')
+  expect(js).toContain('yuraLayer')
 })

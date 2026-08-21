@@ -86,6 +86,94 @@ yura('#stage')
   .run()
 `,
   },
+  {
+    label: 'mini game',
+    code: `import { yura } from 'yura'
+
+// ORB RUSH — WASD/arrows roll, Space jumps, R restarts. (Scene needs WebGPU.)
+const app = yura('#stage')
+const scene = app.scene({ gravity: -22, bounds: 11 })
+
+scene.add('plane', { size: 22, material: 'checker' })
+scene.add('cylinder', { size: [1.2, 2.6, 1.2], material: 'obsidian', position: [0, 1.3, 0], solid: true, shadow: true })
+const ball = scene.add('sphere', { radius: 0.45, material: 'chrome', position: [0, 3, 6], body: 'dynamic', shadow: true })
+ball.trail({ color: '#7dd3fc' })
+for (let i = 0; i < 8; i++) {
+  const a = (i / 8) * Math.PI * 2
+  scene.add('sphere', { radius: 0.28, material: 'gold', tag: 'orb', shadow: true, position: [Math.cos(a) * 7, 1, Math.sin(a) * 7] })
+}
+
+let score = 0
+const hud = scene.text('ORBS 0 / 8', { anchor: 'top' })
+scene.camera.follow(ball, { distance: 8, height: 3.6 })
+
+scene.onUpdate((dt, input) => {
+  ball.velocity[0] += input.x * 26 * dt
+  ball.velocity[2] -= input.y * 26 * dt
+  if (input.jump && ball.grounded) ball.velocity[1] = 8.5
+  if (input.pressed('KeyR')) { scene.reset(); score = 0; hud.set('ORBS 0 / 8') }
+})
+ball.onCollide((orb) => {
+  if (orb.tag !== 'orb' || !orb.alive) return
+  orb.remove()
+  scene.burst(orb.position, { color: '#fbbf24' })
+  hud.set(++score < 8 ? 'ORBS ' + score + ' / 8' : 'YOU WIN — press R')
+  if (score === 8) scene.celebrate()
+})
+app.run()
+`,
+  },
+  {
+    label: 'particle fx',
+    code: `import { yura } from 'yura'
+
+// FX kit — arrows/WASD nudge, Space hops, B bursts, C celebrates. (Needs WebGPU.)
+const app = yura('#stage')
+const scene = app.scene({ gravity: -18, bounds: 8 })
+
+scene.add('plane', { size: 18, material: 'checker' })
+const ball = scene.add('sphere', { radius: 0.5, material: 'chrome', position: [0, 2, 0], body: 'dynamic', shadow: true })
+ball.trail({ color: '#67e8f9' })
+
+scene.onUpdate((dt, input) => {
+  ball.velocity[0] += input.x * 20 * dt
+  ball.velocity[2] -= input.y * 20 * dt
+  if (input.jump && ball.grounded) ball.velocity[1] = 7
+  if (input.pressed('KeyB')) scene.burst(ball.position, { color: '#f472b6' })
+  if (input.pressed('KeyC')) scene.celebrate()
+})
+app.run()
+`,
+  },
+  {
+    label: 'three.js',
+    code: `// three.js interop — needs network access for the esm.sh CDN.
+import * as THREE from 'https://esm.sh/three@0.168.0'
+import { yuraLayer } from 'yura'
+
+const stage = document.getElementById('stage')
+const renderer = new THREE.WebGLRenderer({ antialias: true })
+renderer.setSize(stage.clientWidth, stage.clientHeight)
+stage.appendChild(renderer.domElement)
+const scene = new THREE.Scene()
+const camera = new THREE.PerspectiveCamera(60, stage.clientWidth / stage.clientHeight, 0.1, 100)
+camera.position.set(0, 1.6, 9)
+camera.lookAt(0, 1, 0)
+
+const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(1.2, 0.36, 200, 32), new THREE.MeshNormalMaterial())
+knot.position.y = 1
+scene.add(knot)
+
+// The 3-line integration: create the layer, attach it, sync each frame.
+const fx = await yuraLayer(renderer, camera, { preset: 'neon-galaxy', particles: 200_000, radius: 3.4 })
+fx.attach(knot)
+renderer.setAnimationLoop((t) => {
+  knot.rotation.y = t / 1500
+  renderer.render(scene, camera)
+  fx.sync()
+})
+`,
+  },
 ]
 
 export interface PlaygroundOptions {

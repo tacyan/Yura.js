@@ -21,7 +21,11 @@ struct SimParams {
   swirl: f32,
   maxSpeed: f32,
   boost: f32,               // extra turbulence during morph transitions
-  pad1: f32,
+  // Per-particle morph stagger. |x| = spread (0 = uniform legacy morph);
+  // the SIGN routes the delay coordinate to the morph's DESTINATION buffer:
+  // + reads targetB.w (morphT rising to 1), - reads 1-targetA.w (falling to 0),
+  // so the first character always lands first in either direction.
+  morphSpread: f32,
 }
 
 @group(0) @binding(0) var<uniform> P: SimParams;
@@ -53,7 +57,15 @@ fn sim(@builtin(global_invocation_id) gid: vec3<u32>) {
   let dt = clamp(P.dt, 0.0, 0.05);
 
   // NOTE: "target" is a reserved keyword in WGSL — do not rename this back.
-  let k = smoothstep(0.0, 1.0, P.morphT);
+  // Per-particle morph sweep: each particle's effective progress is the
+  // global morphT stretched by (1 + spread) and offset by its delay
+  // coordinate, so shapes assemble character-by-character. At spread 0 this
+  // reduces to clamp(morphT, 0, 1) — bit-exact legacy behavior.
+  let spread = abs(P.morphSpread);
+  var delay = targetB[i].w;
+  if (P.morphSpread < 0.0) { delay = 1.0 - targetA[i].w; }
+  let sweepT = clamp(P.morphT * (1.0 + spread) - delay * spread, 0.0, 1.0);
+  let k = smoothstep(0.0, 1.0, sweepT);
   let goal = mix(targetA[i].xyz, targetB[i].xyz, k);
   // Palette coordinate travels with the morph and rides in positions.w.
   let palette = mix(targetA[i].w, targetB[i].w, k);

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YURA LYRIC MOTION</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; background: #030308; color: #e2e8f0; }
+      body { font-family: 'Hiragino Sans', 'Noto Sans JP', ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+      #stage { position: fixed; inset: 0; }
+
+      /* Cyberpunk frame: corner brackets + scanline sheen, all pointer-through. */
+      .frame { position: fixed; inset: 18px; pointer-events: none; }
+      .frame::before, .frame::after,
+      .frame span::before, .frame span::after {
+        content: ''; position: absolute; width: 34px; height: 34px;
+        border: 1.5px solid rgba(34, 211, 238, 0.75);
+        filter: drop-shadow(0 0 6px rgba(34, 211, 238, 0.55));
+      }
+      .frame::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+      .frame::after { top: 0; right: 0; border-left: 0; border-bottom: 0; }
+      .frame span::before { bottom: 0; left: 0; border-right: 0; border-top: 0; border-color: rgba(244, 114, 182, 0.75); filter: drop-shadow(0 0 6px rgba(244, 114, 182, 0.55)); }
+      .frame span::after { bottom: 0; right: 0; border-left: 0; border-top: 0; border-color: rgba(244, 114, 182, 0.75); filter: drop-shadow(0 0 6px rgba(244, 114, 182, 0.55)); }
+      .scan {
+        position: fixed; inset: 0; pointer-events: none; mix-blend-mode: overlay; opacity: 0.35;
+        background: repeating-linear-gradient(0deg, transparent 0 3px, rgba(148, 163, 184, 0.09) 3px 4px);
+      }
+
+      .badge {
+        position: fixed; top: 30px; left: 50%; transform: translateX(-50%);
+        pointer-events: none; text-align: center; letter-spacing: 0.42em;
+        font-size: 11px; font-weight: 600; color: #67e8f9; text-indent: 0.42em;
+        text-shadow: 0 0 12px rgba(34, 211, 238, 0.8);
+      }
+      .badge small { display: block; margin-top: 5px; letter-spacing: 0.28em; text-indent: 0.28em; font-size: 9px; color: #f0abfc; text-shadow: 0 0 10px rgba(240, 171, 252, 0.7); }
+
+      .credit {
+        position: fixed; right: 30px; bottom: 26px; pointer-events: none;
+        font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: #475569;
+        letter-spacing: 0.18em; text-transform: uppercase;
+      }
+      .credit b { color: #7dd3fc; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="stage"></div>
+    <div class="scan"></div>
+    <div class="frame"><span></span></div>
+    <div class="badge">YURA LYRIC MOTION<small>PARTICLE KINETIC TYPOGRAPHY — 歌詞モーション</small></div>
+    <div class="credit"><b>yura.js</b> // 600k particles // char-by-char sweep</div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

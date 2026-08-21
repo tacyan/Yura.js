@@ -1,5 +1,16 @@
 import { test, expect } from 'bun:test'
-import { YuraScene, SceneInput, rollDelta, cameraFollowGoal } from '../src/scene'
+import {
+  YuraScene,
+  SceneInput,
+  rollDelta,
+  cameraFollowGoal,
+  stickAxes,
+  isTap,
+  combineAxes,
+  padDeadZone,
+  readGamepads,
+  clampToBounds,
+} from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
 
 // Scenes run headless before attach(): physics and collisions are pure JS.
@@ -324,4 +335,132 @@ test('reset clears particles and the sim still settles cleanly afterwards', () =
   expect(scene.fx.alive).toBe(0)
   for (let i = 1; i < 240; i++) scene.step(1 / 60, i / 60)
   expect(ball.position[1]).toBeCloseTo(0.5, 1) // physics keeps working post-reset
+})
+
+// --- universal input: virtual stick, tap-to-jump, gamepad, source combination ---
+
+test('stickAxes: dead zone, linear ramp to full at the radius, clamp beyond', () => {
+  expect(stickAxes(4, 0)).toEqual({ x: 0, y: 0 }) // inside the 8px dead zone
+  expect(stickAxes(64, 0).x).toBeCloseTo(1, 6) // full deflection at the radius
+  expect(stickAxes(36, 0).x).toBeCloseTo(0.5, 6) // halfway between dead zone and radius
+  expect(stickAxes(500, 0).x).toBeCloseTo(1, 6) // clamped past the radius
+  expect(stickAxes(0, -64).y).toBeCloseTo(1, 6) // drag up (screen -dy) = forward
+  expect(stickAxes(0, 64).y).toBeCloseTo(-1, 6) // drag down = backward
+})
+
+test('isTap: quick + small = tap; long or travelled presses are drags', () => {
+  expect(isTap(0.1, 4)).toBe(true)
+  expect(isTap(0.25, 4)).toBe(false) // held too long
+  expect(isTap(0.1, 30)).toBe(false) // moved too far
+  expect(isTap(0.2, 0)).toBe(false) // boundary is exclusive
+})
+
+test('combineAxes: the largest-magnitude source wins per axis', () => {
+  expect(combineAxes()).toBe(0)
+  expect(combineAxes(0.3, -0.8, 0.5)).toBe(-0.8)
+  expect(combineAxes(1, -0.4)).toBe(1)
+})
+
+test('padDeadZone: below 0.15 reads zero, above rescales smoothly to 1', () => {
+  expect(padDeadZone(0.1)).toBe(0)
+  expect(padDeadZone(0.15)).toBe(0)
+  expect(padDeadZone(0.575)).toBeCloseTo(0.5, 6)
+  expect(padDeadZone(1)).toBeCloseTo(1, 6)
+  expect(padDeadZone(-1)).toBeCloseTo(-1, 6)
+})
+
+test('a touch drag drives input.x/y and releasing returns the stick to zero', () => {
+  const input = new SceneInput()
+  input.pointerDown(1, 100, 100)
+  input.pointerMove(1, 164, 100) // 64px right = full deflection
+  expect(input.x).toBeCloseTo(1, 6)
+  expect(input.y).toBeCloseTo(0, 6)
+  input.pointerMove(1, 100, 36) // 64px up = forward
+  expect(input.y).toBeCloseTo(1, 6)
+  input.pointerUp(1)
+  expect(input.x).toBe(0)
+  expect(input.y).toBe(0)
+  expect(input.jump).toBe(false) // it travelled — a drag, not a tap
+})
+
+test('a quick small tap feeds the shared jump buffer', () => {
+  const input = new SceneInput()
+  input.pointerDown(1, 50, 50)
+  input.pointerMove(1, 54, 50) // 4px wiggle stays a tap
+  for (let i = 0; i < 3; i++) input.endFrame(1 / 60) // released after 50ms
+  input.pointerUp(1)
+  expect(input.jump).toBe(true)
+  expect(input.jump).toBe(false) // consumed like a Space tap
+})
+
+test('second-finger tap jumps while the first finger keeps steering', () => {
+  const input = new SceneInput()
+  input.pointerDown(1, 100, 100)
+  input.pointerMove(1, 164, 100)
+  for (let i = 0; i < 3; i++) input.endFrame(1 / 60)
+  input.pointerDown(2, 300, 200) // second finger = jump edge
+  expect(input.x).toBeCloseTo(1, 6) // stick untouched
+  expect(input.jump).toBe(true)
+  input.pointerUp(2)
+  input.pointerUp(1) // long drag ends without another jump
+  expect(input.jump).toBe(false)
+})
+
+test('keyboard, touch, and gamepad combine — largest magnitude wins per axis', () => {
+  const input = new SceneInput()
+  input.keyDown('KeyD')
+  input.pointerDown(1, 0, 0)
+  input.pointerMove(1, -36, 0) // stick says -0.5
+  expect(input.x).toBe(1) // keyboard is stronger
+  input.keyUp('KeyD')
+  expect(input.x).toBeCloseTo(-0.5, 6) // now the stick wins
+  input.applyPad({ x: 0.9, y: 0, jump: false })
+  expect(input.x).toBeCloseTo(0.9, 6) // pad out-deflects the stick
+  input.pointerMove(1, -64, 0)
+  expect(input.x).toBeCloseTo(-1, 6) // full stick beats the pad
+})
+
+test('gamepad A edge feeds the shared jump buffer and re-arms per press', () => {
+  const input = new SceneInput()
+  input.applyPad({ x: 0, y: 0, jump: true }) // press edge
+  input.applyPad({ x: 0, y: 0, jump: false }) // released before the frame read
+  expect(input.jump).toBe(true) // the edge was buffered
+  expect(input.jump).toBe(false) // consumed
+  input.applyPad({ x: 0, y: 0, jump: true })
+  expect(input.jump).toBe(true) // next press re-arms
+})
+
+test('readGamepads: dead-zones the left stick, folds pads, reads A/cross', () => {
+  expect(readGamepads(null)).toEqual({ x: 0, y: 0, jump: false })
+  expect(readGamepads([null, { axes: [0.1, -0.1], buttons: [{ pressed: false }] }])).toEqual({
+    x: 0,
+    y: 0,
+    jump: false,
+  })
+  const r = readGamepads([{ axes: [0.575, -1], buttons: [{ pressed: true }] }])
+  expect(r.x).toBeCloseTo(0.5, 6)
+  expect(r.y).toBeCloseTo(1, 6) // stick up (-1) = forward
+  expect(r.jump).toBe(true)
+  expect(readGamepads([{ axes: [1, 0], buttons: [{ pressed: true }], connected: false }]).x).toBe(0)
+})
+
+test('clampToBounds zeroes outward velocity at the wall, keeps inward', () => {
+  expect(clampToBounds(3, 2, 4.5)).toEqual({ position: 3, velocity: 2 }) // inside: untouched
+  expect(clampToBounds(4.7, 3, 4.5)).toEqual({ position: 4.5, velocity: 0 }) // outward: zeroed
+  expect(clampToBounds(4.7, -2, 4.5)).toEqual({ position: 4.5, velocity: -2 }) // inward survives
+  expect(clampToBounds(-4.7, -3, 4.5)).toEqual({ position: -4.5, velocity: 0 }) // far wall too
+})
+
+test('holding a direction into the arena wall pins the ball without jitter', () => {
+  const scene = new YuraScene({ gravity: -20, bounds: 5 })
+  scene.add('plane', { size: 12 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [3, 0.5, 0], body: 'dynamic' })
+  scene.onUpdate((dt) => {
+    ball.velocity[0] += 40 * dt // held right, straight into the wall
+  })
+  for (let i = 0; i < 120; i++) scene.step(1 / 60, i / 60)
+  for (let i = 120; i < 180; i++) {
+    scene.step(1 / 60, i / 60)
+    expect(ball.position[0]).toBe(4.5) // glued to the wall, not vibrating off it
+  }
 })

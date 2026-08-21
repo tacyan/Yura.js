@@ -146,6 +146,12 @@ export class WebGPUParticleRenderer {
   morphT = 0
   /** 0..1 extra turbulence while a morph transition is in flight. */
   morphBoost = 0
+  /**
+   * Per-particle morph stagger. |value| = spread (0 = uniform, legacy);
+   * the sign selects which target buffer's palette coordinate delays each
+   * particle (+ = targetB, the destination when morphT rises; - = targetA).
+   */
+  morphSpread = 0
   pointerWorld: Vec3 = [0, 0, 0]
   pointerStrength = 0
   /** Smoothed pointer NDC used for camera parallax. */
@@ -509,6 +515,7 @@ export class WebGPUParticleRenderer {
     this.simF32[12] = this.motion.swirl
     this.simF32[13] = this.motion.maxSpeed
     this.simF32[14] = this.morphBoost
+    this.simF32[15] = this.morphSpread
     d.queue.writeBuffer(this.simUB, 0, this.simData)
 
     // Trail decay per frame, framerate-independent. Compensate particle
