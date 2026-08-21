@@ -152,6 +152,22 @@ export function text(str: string, options: { font?: string; worldWidth?: number 
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillStyle = '#fff'
+        // Long strings (CJK especially) overflow the fixed canvas at the
+        // requested size, clipping the outer glyphs. Shrink px-sized fonts
+        // to fit; other units fall through unscaled.
+        const m = ctx.measureText(str)
+        const textH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent
+        const fit = Math.min(
+          1,
+          (w * 0.94) / Math.max(m.width, 1),
+          textH > 0 ? (h * 0.9) / textH : 1,
+        )
+        if (fit < 1) {
+          ctx.font = font.replace(
+            /(\d+(?:\.\d+)?)px/,
+            (_, px: string) => `${Math.max(8, Math.floor(Number(px) * fit))}px`,
+          )
+        }
         ctx.fillText(str, w / 2, h / 2)
       }, 1024, 400)
       return sampleCandidates(candidates, 1024, 400, n, worldWidth)
