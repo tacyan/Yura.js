@@ -170,7 +170,9 @@ function syncChips(): void {
 // ------------------------------------------------------------------ prompt
 
 promptEl.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter' || !app) return
+  // An IME confirm-Enter (isComposing / legacy 229) is not a submit — and
+  // blurring mid-composition makes Chrome re-commit the text, doubling it.
+  if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || !app) return
   stopLyrics()
   const word = promptEl.value.trim()
   void app.morphNow(word ? word.toUpperCase() : shapes.galaxy())
@@ -178,7 +180,7 @@ promptEl.addEventListener('keydown', (e) => {
 })
 
 window.addEventListener('keydown', (e) => {
-  if (document.activeElement === promptEl || !e.isTrusted || e.metaKey || e.ctrlKey || e.altKey) return
+  if (document.activeElement === promptEl || e.isComposing || !e.isTrusted || e.metaKey || e.ctrlKey || e.altKey) return
   const idx = Number(e.key) - 1
   if (idx >= 0 && idx < LOOKS.length) {
     currentLook = LOOKS[idx].id
