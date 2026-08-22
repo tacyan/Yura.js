@@ -247,7 +247,9 @@ function swapNavigator(value: unknown) {
 }
 
 test('acquireWebGPU returns null and warns YURA-001 when navigator.gpu is missing', async () => {
-  expect('gpu' in navigator).toBe(false) // bun's real navigator has no gpu
+  // Inject a gpu-less navigator: the runtime's own navigator may or may not
+  // expose gpu (bun >= 1.4 does), so the test must never depend on it.
+  const restore = swapNavigator({})
   const info = spyOn(console, 'info').mockImplementation(() => {})
   try {
     expect(await acquireWebGPU()).toBeNull()
@@ -255,6 +257,7 @@ test('acquireWebGPU returns null and warns YURA-001 when navigator.gpu is missin
     expect(info.mock.calls[0][0]).toContain('YURA-001')
   } finally {
     info.mockRestore()
+    restore()
   }
 })
 
