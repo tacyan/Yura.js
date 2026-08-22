@@ -335,13 +335,42 @@ fn skyFS(in: VOut) -> @location(0) vec4<f32> {
 // Camera-facing FX sprites: instanced quads, additive HDR blending.
 // Depth-tested against the mesh scene (no depth write) so bursts and trails
 // composite correctly behind geometry; bright cores feed the bloom pass.
-export const FX_WGSL = /* wgsl */ `
+//
+// buildFxWgsl(false) is the byte-exact legacy shader (locked by
+// model-renderer.test.ts). buildFxWgsl(true) is the soft-particle variant:
+// the scene depth buffer is bound read-only, both depths are linearized to
+// view-space distance, and sprite intensity ramps in over F.soft.x world
+// units of separation from the geometry behind — the same opt-in discipline
+// as the turbulence term in shaders.ts (disabled = identical output).
+export function buildFxWgsl(soft: boolean): string {
+  const softField = soft
+    ? '\n  // x: fade distance (world units), y: camera near, z: camera far.\n  soft: vec4<f32>,'
+    : ''
+  const softBinding = soft
+    ? '\n// Scene depth: same texture as the read-only depth attachment of the FX pass.\n@group(0) @binding(1) var sceneDepthTex: texture_depth_2d;'
+    : ''
+  const softFns = soft
+    ? `// View-space distance from a [0,1] NDC depth; keeps the fade in world units.
+fn linearFxDepth(ndcDepth: f32) -> f32 {
+  return F.soft.y * F.soft.z / (F.soft.z - ndcDepth * (F.soft.z - F.soft.y));
+}
+
+`
+    : ''
+  const softFade = soft
+    ? `
+  let sceneDepth = textureLoad(sceneDepthTex, vec2<i32>(in.pos.xy), 0);
+  let separation = linearFxDepth(sceneDepth) - linearFxDepth(in.pos.z);
+  let softFade = saturate(separation / F.soft.x);`
+    : ''
+  const softTerm = soft ? ' * softFade' : ''
+  return /* wgsl */ `
 struct FxFrame {
   viewProj: mat4x4<f32>,
   right: vec4<f32>,
-  up: vec4<f32>,
+  up: vec4<f32>,${softField}
 }
-@group(0) @binding(0) var<uniform> F: FxFrame;
+@group(0) @binding(0) var<uniform> F: FxFrame;${softBinding}
 
 struct VSOut {
   @builtin(position) pos: vec4<f32>,
@@ -367,12 +396,19 @@ fn vs(
   return out;
 }
 
-@fragment
+${softFns}@fragment
 fn fs(in: VSOut) -> @location(0) vec4<f32> {
   let d2 = dot(in.corner, in.corner);
   let falloff = max(1.0 - d2, 0.0);
   // Soft round sprite with a hot core; alpha=0 keeps additive blending pure.
-  let glow = falloff * falloff * (0.35 + 1.9 * falloff);
-  return vec4<f32>(in.color.rgb * (in.color.a * glow * 2.2), 0.0);
+  let glow = falloff * falloff * (0.35 + 1.9 * falloff);${softFade}
+  return vec4<f32>(in.color.rgb * (in.color.a * glow * 2.2${softTerm}), 0.0);
 }
 `
+}
+
+/** Legacy FX shader: exactly the historic source, byte for byte. */
+export const FX_WGSL = buildFxWgsl(false)
+
+/** Soft-particle FX shader: depth-fade variant of FX_WGSL. */
+export const FX_SOFT_WGSL = buildFxWgsl(true)

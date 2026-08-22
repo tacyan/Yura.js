@@ -631,6 +631,55 @@ test('user motion keys persist across repeated preset swaps, later motion() stil
   app.dispose()
 })
 
+// ── Explicit .look() vs .preset() — the userMotion pattern applied to looks ──
+
+import { looks } from '../src/looks'
+
+/** Typed window into YuraApp's private look state for white-box checks. */
+const lookInternals = (app: YuraApp) =>
+  app as unknown as {
+    lookParams: ReturnType<typeof looks.cinematic>
+    userLook: ReturnType<typeof looks.cinematic> | null
+  }
+
+test('an explicit look() survives a later preset() — order no longer matters', () => {
+  const app = headlessApp()
+  const li = lookInternals(app)
+  app.look(looks.sakura()).preset('aurora')
+  // The pinned look wins over the preset's look…
+  expect(li.lookParams).toEqual(looks.sakura())
+  // …while every other preset channel still applies as usual.
+  expect(internals(app).motionParams).toEqual({ ...resolvePreset('aurora').motion })
+  app.dispose()
+})
+
+test('preset switching without look() still replaces the look wholesale', () => {
+  const app = headlessApp()
+  const li = lookInternals(app)
+  app.preset('aurora')
+  expect(li.lookParams).toEqual(resolvePreset('aurora').look)
+  app.preset('cinematic')
+  expect(li.lookParams).toEqual(resolvePreset('cinematic').look)
+  expect(li.userLook).toBeNull()
+  app.dispose()
+})
+
+test('user look persists across repeated preset swaps, later look() still wins', () => {
+  const app = headlessApp()
+  const li = lookInternals(app)
+  app.preset('aurora').look('sakura').preset('cinematic')
+  expect(li.lookParams).toEqual(looks.sakura())
+  app.preset('cyberpunk')
+  expect(li.lookParams).toEqual(looks.sakura())
+
+  // A later look() re-pins: the newest explicit look is the one that sticks.
+  app.look('aurora')
+  expect(li.lookParams).toEqual(looks.aurora())
+  app.preset('cinematic')
+  expect(li.lookParams).toEqual(looks.aurora())
+  app.dispose()
+})
+
 test('the automatic cycle honours motion({ hold, morph, ease })', () => {
   const app = headlessApp()
   const i = internals(app)

@@ -284,3 +284,94 @@ test('non-finite option values fall back to safe defaults', () => {
   expect(n).toBe(8)
   for (let i = 0; i < n * FX_FLOATS; i++) expect(Number.isFinite(out[i])).toBe(true)
 })
+
+test('trail colorEnd fades spark color toward the tail', () => {
+  const pool = new FxPool(64, seeded(31))
+  const trail = new FxTrailEmitter(pool, {
+    color: '#ff0000', colorEnd: '#0000ff', intensity: 1, rate: 60, life: 1, jitter: 0,
+  })
+  trail.step(1 / 60, [0, 0, 0], [0, 0, 0])
+  expect(pool.alive).toBe(1)
+  const out = new Float32Array(64 * FX_FLOATS)
+  pool.writeInstances(out)
+  const r0 = out[4]
+  const b0 = out[6]
+  expect(r0).toBeGreaterThan(0.9)
+  expect(b0).toBeLessThan(0.1)
+  for (let i = 0; i < 30; i++) pool.step(1 / 60) // 0.5s < 0.7s minimum life
+  expect(pool.alive).toBe(1)
+  pool.writeInstances(out)
+  expect(out[4]).toBeLessThan(r0) // red drains away...
+  expect(out[6]).toBeGreaterThan(b0) // ...as blue blends in
+})
+
+test('trail width scales sprite size and nothing else', () => {
+  const run = (width?: number): { out: Float32Array; n: number } => {
+    const pool = new FxPool(256, seeded(32))
+    const trail = new FxTrailEmitter(pool, { rate: 600, life: 10, ...(width === undefined ? {} : { width }) })
+    trail.step(0.1, [1, 2, 3], [4, 0, 0])
+    const out = new Float32Array(256 * FX_FLOATS)
+    return { out, n: pool.writeInstances(out) }
+  }
+  const base = run()
+  const wide = run(2)
+  expect(base.n).toBeGreaterThan(0)
+  expect(wide.n).toBe(base.n)
+  for (let i = 0; i < base.n; i++) {
+    const o = i * FX_FLOATS
+    expect(wide.out[o]).toBe(base.out[o]) // position untouched
+    expect(wide.out[o + 3]).toBeCloseTo(base.out[o + 3] * 2, 6) // size doubled
+    expect(wide.out[o + 4]).toBe(base.out[o + 4]) // color untouched
+    expect(wide.out[o + 7]).toBe(base.out[o + 7]) // alpha untouched
+  }
+})
+
+test('trail fade reshapes the alpha decay curve (1 stays linear)', () => {
+  const run = (fade?: number): Float32Array => {
+    const pool = new FxPool(64, seeded(33))
+    const trail = new FxTrailEmitter(pool, { rate: 60, life: 1, ...(fade === undefined ? {} : { fade }) })
+    trail.step(1 / 60, [0, 0, 0], [0, 0, 0])
+    for (let i = 0; i < 24; i++) pool.step(1 / 60) // 0.4s into a >= 0.7s life
+    const out = new Float32Array(64 * FX_FLOATS)
+    const n = pool.writeInstances(out)
+    expect(n).toBe(1)
+    return out
+  }
+  const linear = run()
+  const sharp = run(2)
+  // fade = 2 squares the remaining-life fraction: alpha (1-t)^2 -> (1-t)^4.
+  expect(sharp[7]).toBeCloseTo(linear[7] * linear[7], 5)
+  expect(sharp[7]).toBeLessThan(linear[7]) // non-linear: dies out sooner
+  expect(sharp[3]).toBeLessThan(linear[3]) // size envelope shrinks with it
+})
+
+test('neutral new trail options leave default trails bit-identical', () => {
+  const run = (extra: Record<string, unknown>): Float32Array => {
+    const pool = new FxPool(256, seeded(42))
+    const trail = new FxTrailEmitter(pool, { rate: 120, color: '#ff8800', ...extra })
+    for (let i = 0; i < 12; i++) trail.step(1 / 60, [i * 0.05, 1, 0], [3, 0, 0])
+    for (let i = 0; i < 6; i++) pool.step(1 / 60)
+    const out = new Float32Array(256 * FX_FLOATS)
+    const n = pool.writeInstances(out)
+    return out.slice(0, n * FX_FLOATS)
+  }
+  expect(run({ width: 1, fade: 1 })).toEqual(run({}))
+  expect(run({ colorEnd: '#ff8800' })).toEqual(run({})) // end = start color
+})
+
+test('non-finite trail option values fall back to safe defaults', () => {
+  const pool = new FxPool(64, seeded(34))
+  const trail = new FxTrailEmitter(pool, {
+    rate: 60,
+    life: 10,
+    width: Number.NaN,
+    fade: Number.NaN,
+    colorEnd: [Number.NaN, 1, 0],
+  })
+  for (let i = 0; i < 8; i++) trail.step(1 / 60, [0, 0, 0], [0, 0, 0])
+  for (let i = 0; i < 10; i++) pool.step(1 / 60)
+  const out = new Float32Array(64 * FX_FLOATS)
+  const n = pool.writeInstances(out)
+  expect(n).toBe(8)
+  for (let i = 0; i < n * FX_FLOATS; i++) expect(Number.isFinite(out[i])).toBe(true)
+})

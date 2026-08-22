@@ -12,7 +12,7 @@ import {
 import { buildPostWgsl } from './shaders'
 import { gpuBlendState, resolveBlendMode, resolveToneMapping, type BlendMode, type ToneMapping } from './blend'
 import { ViewCache } from './view-cache'
-import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL, FX_WGSL } from './model-shaders'
+import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL, FX_WGSL, FX_SOFT_WGSL } from './model-shaders'
 import { loadGLB, type GLTFModel } from './gltf'
 import type { MeshGeometry } from './meshes'
 import type { LookParams } from './renderer'
@@ -20,6 +20,20 @@ import type { LookParams } from './renderer'
 const ENV_SIZE = 256
 const ENV_MIPS = 7
 const SHADOW_SIZE = 2048
+
+/** Camera frustum planes; also feed the soft-particle depth linearization. */
+const MODEL_CAMERA_NEAR = 0.05
+const MODEL_CAMERA_FAR = 200
+
+/**
+ * Default soft-particle fade distance (world units) for scene-mode FX
+ * sprites. 0 = off: the FX path stays bit-identical to the legacy shader
+ * and pipeline (same discipline as DEFAULT_TURBULENCE in shaders.ts).
+ */
+export const DEFAULT_SOFT_PARTICLES = 0
+
+/** FX frame uniform floats: viewProj (16) + right (4) + up (4) + soft params (4). */
+const FX_FRAME_FLOATS = 28
 
 /** Direction of the key light (matches the analytic light fed to the PBR shader). */
 const MODEL_LIGHT_DIR: Vec3 = [-0.5, 0.5, -0.65]
@@ -205,7 +219,11 @@ export class WebGPUModelRenderer {
   private fxCapacity = 0
   private fxData: Float32Array<ArrayBuffer> | null = null
   private fxCount = 0
-  private fxFrameData = new Float32Array(24)
+  private fxFrameData = new Float32Array(FX_FRAME_FLOATS)
+  // Soft-particle state: module built lazily on first activation; the flag
+  // mirrors look.softParticles > 0 so toggling rebuilds the FX pipeline once.
+  private fxSoftModule: GPUShaderModule | null = null
+  private appliedFxSoft = false
 
   look: LookParams
   colorA: Vec3 = [0.05, 0.3, 0.5]
@@ -375,7 +393,7 @@ export class WebGPUModelRenderer {
     this.streak1UB = uniform('yura-mstreak1-ub', 64)
     this.streak2UB = uniform('yura-mstreak2-ub', 64)
     this.compositeUB = uniform('yura-mcomposite-ub', 64)
-    this.fxUB = uniform('yura-fx-ub', 96)
+    this.fxUB = uniform('yura-fx-ub', FX_FRAME_FLOATS * 4)
 
     // FX sprites: instanced camera-facing quads blended into the HDR target
     // with the look's blend mode (additive by default), depth-tested against
@@ -385,11 +403,14 @@ export class WebGPUModelRenderer {
   }
 
   private buildFxPipeline(): void {
+    // Pipeline selection keeps the default path byte-identical to the legacy
+    // descriptor: the soft variant only swaps in the depth-fade module.
+    const module = this.appliedFxSoft ? (this.fxSoftModule as GPUShaderModule) : this.fxModule
     this.fxPipeline = this.device.createRenderPipeline({
       label: 'yura-fx',
       layout: 'auto',
       vertex: {
-        module: this.fxModule,
+        module,
         entryPoint: 'vs',
         buffers: [
           {
@@ -403,7 +424,7 @@ export class WebGPUModelRenderer {
         ],
       },
       fragment: {
-        module: this.fxModule,
+        module,
         entryPoint: 'fs',
         targets: [{ format: 'rgba16float', blend: gpuBlendState(this.appliedBlendMode) }],
       },
@@ -447,8 +468,13 @@ export class WebGPUModelRenderer {
    */
   private syncLookModes(): void {
     const blend = resolveBlendMode(this.look.blendMode)
-    if (blend !== this.appliedBlendMode) {
+    const soft = (this.look.softParticles ?? DEFAULT_SOFT_PARTICLES) > 0
+    if (blend !== this.appliedBlendMode || soft !== this.appliedFxSoft) {
       this.appliedBlendMode = blend
+      this.appliedFxSoft = soft
+      if (soft && !this.fxSoftModule) {
+        this.fxSoftModule = this.device.createShaderModule({ label: 'yura-fx-soft', code: FX_SOFT_WGSL })
+      }
       this.buildFxPipeline()
       this.rebuildFxBG()
     }
@@ -551,9 +577,16 @@ export class WebGPUModelRenderer {
   }
 
   private rebuildFxBG(): void {
+    const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: this.fxUB } }]
+    if (this.appliedFxSoft) {
+      // The soft variant samples the scene depth buffer. Before the first
+      // resize() there is no depth target yet; resize() rebuilds this BG.
+      if (!this.depthTex) return
+      entries.push({ binding: 1, resource: this.viewCache.getView(this.depthTex) })
+    }
     this.fxBG = this.device.createBindGroup({
       layout: this.fxPipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.fxUB } }],
+      entries,
     })
   }
 
@@ -863,7 +896,9 @@ export class WebGPUModelRenderer {
       label: 'yura-mdepth',
       size: { width, height },
       format: 'depth24plus',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      // TEXTURE_BINDING lets the soft-particle FX pass read the scene depth
+      // while the same texture is attached read-only for the depth test.
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     })
 
     const writeDir = (buffer: GPUBuffer, dx: number, dy: number) => {
@@ -903,6 +938,8 @@ export class WebGPUModelRenderer {
     this.streak1BG = blurBG(bloomAView, this.streak1UB)
     this.streak2BG = blurBG(bloomBView, this.streak2UB)
     this.rebuildCompositeBG()
+    // The soft FX bind group references the recreated depth texture.
+    if (this.appliedFxSoft) this.rebuildFxBG()
   }
 
   /**
@@ -1033,7 +1070,7 @@ export class WebGPUModelRenderer {
     }
 
     const aspect = this.width / this.height
-    const proj = perspective((45 * Math.PI) / 180, aspect, 0.05, 200)
+    const proj = perspective((45 * Math.PI) / 180, aspect, MODEL_CAMERA_NEAR, MODEL_CAMERA_FAR)
     const view = lookAt(this.eye, target, [0, 1, 0])
     const viewProj = multiply(proj, view)
     const invVP = invert(viewProj) ?? identity()
@@ -1048,6 +1085,12 @@ export class WebGPUModelRenderer {
     this.fxFrameData[21] = view[5]
     this.fxFrameData[22] = view[9]
     this.fxFrameData[23] = 0
+    // Soft-particle params (ignored by the legacy shader, which only reads
+    // the first 24 floats): fade distance + frustum planes for linearization.
+    this.fxFrameData[24] = this.look.softParticles ?? DEFAULT_SOFT_PARTICLES
+    this.fxFrameData[25] = MODEL_CAMERA_NEAR
+    this.fxFrameData[26] = MODEL_CAMERA_FAR
+    this.fxFrameData[27] = 0
     d.queue.writeBuffer(this.fxUB, 0, this.fxFrameData)
     if (this.fxCount > 0 && this.fxData) {
       if (!this.fxBuffer || this.fxCapacity < this.fxCount) {
@@ -1200,14 +1243,39 @@ export class WebGPUModelRenderer {
       }
     }
     // FX sprites last: additive on top of opaques + translucents, still
-    // occluded by geometry via the depth test.
-    if (this.fxCount > 0 && this.fxBuffer) {
+    // occluded by geometry via the depth test. With soft particles enabled
+    // the draw moves to its own pass below (unchanged draw order) so the
+    // depth buffer can be bound for the fade.
+    if (this.fxCount > 0 && this.fxBuffer && !this.appliedFxSoft) {
       scene.setPipeline(this.fxPipeline)
       scene.setBindGroup(0, this.fxBG)
       scene.setVertexBuffer(0, this.fxBuffer)
       scene.draw(4, this.fxCount)
     }
     scene.end()
+
+    if (this.fxCount > 0 && this.fxBuffer && this.appliedFxSoft) {
+      // Soft-particle FX pass: same HDR target (loadOp 'load') and the same
+      // depth test, but the depth attachment is read-only so the very texture
+      // being tested against can legally be bound as texture_depth_2d.
+      const fx = enc.beginRenderPass({
+        label: 'yura-fx-soft',
+        colorAttachments: [{
+          view: this.viewCache.getView(this.hdrTex),
+          loadOp: 'load',
+          storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+          view: this.viewCache.getView(this.depthTex),
+          depthReadOnly: true,
+        },
+      })
+      fx.setPipeline(this.fxPipeline)
+      fx.setBindGroup(0, this.fxBG)
+      fx.setVertexBuffer(0, this.fxBuffer)
+      fx.draw(4, this.fxCount)
+      fx.end()
+    }
 
     const fullscreen = (label: string, pipeline: GPURenderPipeline, bg: GPUBindGroup, view: GPUTextureView) => {
       const pass = enc.beginRenderPass({

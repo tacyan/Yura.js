@@ -22,6 +22,7 @@ import {
   sweptCylinderTOI,
 } from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
+import { FX_FLOATS } from '../src/fx'
 
 // Scenes run headless before attach(): physics and collisions are pure JS.
 
@@ -849,4 +850,36 @@ test('every mesh-asset shape is listed in SHAPE_NAMES and the YURA-013 error', (
   const message = (err as YuraError).message
   // SHAPE_NAMES is the single source of truth, so each name flows into the list.
   for (const shape of MESH_ASSET_SHAPES) expect(message).toContain(shape)
+})
+
+test('obj.trail passes colorEnd, width, and fade through to the FX emitter', () => {
+  const run = (opts: Record<string, unknown>): { out: Float32Array; n: number } => {
+    const scene = new YuraScene({})
+    const obj = scene.add('sphere', { radius: 0.5, position: [0, 3, 0] })
+    obj.trail({ rate: 60, life: 10, color: '#ff0000', intensity: 1, ...opts })
+    for (let i = 0; i < 60; i++) scene.step(1 / 60, i / 60)
+    const out = new Float32Array(scene.fx.capacity * FX_FLOATS)
+    const n = scene.fx.writeInstances(out)
+    expect(n).toBeGreaterThan(0)
+    return { out, n }
+  }
+
+  // Defaults: pure-red sparks, small sprites, linear fade barely bitten after 1s.
+  const base = run({})
+  for (let i = 0; i < base.n; i++) {
+    const o = i * FX_FLOATS
+    expect(base.out[o + 6]).toBe(0) // no blue without colorEnd
+    expect(base.out[o + 3]).toBeLessThan(0.15) // size 0.11 x <= 1.3 jitter
+    expect(base.out[o + 7]).toBeGreaterThan(0.7) // (1 - 1/7)^2 lower bound
+  }
+
+  const custom = run({ colorEnd: '#0000ff', width: 5, fade: 8 })
+  let minAlpha = 1
+  for (let i = 0; i < custom.n; i++) {
+    const o = i * FX_FLOATS
+    expect(custom.out[o + 6]).toBeGreaterThan(0) // colorEnd blends blue in with age
+    expect(custom.out[o + 3]).toBeGreaterThan(0.2) // width 5: 0.55 x 5 x 0.11 x 0.7
+    minAlpha = Math.min(minAlpha, custom.out[o + 7])
+  }
+  expect(minAlpha).toBeLessThan(0.5) // fade 8 collapses the oldest sparks
 })

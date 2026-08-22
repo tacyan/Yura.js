@@ -73,6 +73,21 @@ export interface TrailOptions {
   jitter?: number
   /** HDR brightness multiplier. Default 1.6. */
   intensity?: number
+  /**
+   * End color reached at the end of each particle's life, so the trail fades
+   * toward its tail. Interpolated linearly from the start color by
+   * t = age / life in writeInstances. A hex string, or a linear-RGB triple
+   * (multiplied by `intensity`). Default: no color shift.
+   */
+  colorEnd?: string | [number, number, number]
+  /** Extra multiplier on the sprite radius (`size * width`). Default 1. */
+  width?: number
+  /**
+   * Exponent shaping the lifetime fade curve: the linear remaining-life
+   * fraction is raised to this power before driving sprite size and alpha.
+   * 1 keeps the default linear fade; >1 dies out sooner, <1 lingers. Default 1.
+   */
+  fade?: number
 }
 
 /** Options for a fireworks-like multi-burst celebration. */
@@ -141,6 +156,7 @@ export class FxPool {
   private er: Float32Array
   private eg: Float32Array
   private eb: Float32Array
+  private fpow: Float32Array
 
   private count = 0
   private cursor = 0
@@ -169,6 +185,7 @@ export class FxPool {
     this.er = new Float32Array(n)
     this.eg = new Float32Array(n)
     this.eb = new Float32Array(n)
+    this.fpow = new Float32Array(n)
   }
 
   /** Number of currently live particles. */
@@ -360,7 +377,9 @@ export class FxPool {
     const n = Math.min(this.count, Math.floor(out.length / FX_FLOATS))
     for (let i = 0; i < n; i++) {
       const t = Math.min(Math.max(this.age[i] / this.life[i], 0), 1)
-      const fade = 1 - t
+      // Per-particle fade exponent shapes the decay curve (1 = linear default).
+      const k = this.fpow[i]
+      const fade = k === 1 ? 1 - t : Math.pow(1 - t, k)
       const o = i * FX_FLOATS
       out[o] = this.px[i]
       out[o + 1] = this.py[i]
@@ -389,7 +408,7 @@ export class FxPool {
     life: number, size: number,
     r: number, g: number, b: number,
     gravity: number, drag: number,
-    dragLin = 0, endR = r, endG = g, endB = b,
+    dragLin = 0, endR = r, endG = g, endB = b, fadeExp = 1,
   ): void {
     let i: number
     if (this.count < this.capacity) {
@@ -416,6 +435,7 @@ export class FxPool {
     this.er[i] = fin(endR, 0)
     this.eg[i] = fin(endG, 0)
     this.eb[i] = fin(endB, 0)
+    this.fpow[i] = Math.max(fin(fadeExp, 1), 1e-3)
   }
 
   /** Injected rng, shared with emitters bound to this pool. */
@@ -444,6 +464,7 @@ export class FxPool {
       this.er[i] = this.er[last]
       this.eg[i] = this.eg[last]
       this.eb[i] = this.eb[last]
+      this.fpow[i] = this.fpow[last]
     }
     if (this.cursor >= this.count) this.cursor = 0
   }
@@ -462,6 +483,9 @@ export class FxTrailEmitter {
   private size: number
   private jitter: number
   private intensity: number
+  private endColor: Vec3 | null
+  private width: number
+  private fade: number
   private acc = 0
 
   constructor(pool: FxPool, opts: TrailOptions = {}) {
@@ -472,6 +496,16 @@ export class FxTrailEmitter {
     this.size = opts.size ?? 0.11
     this.jitter = opts.jitter ?? 0.12
     this.intensity = opts.intensity ?? 1.6
+    // Optional end color (linear-RGB), resolved the same way as burst colorEnd.
+    const ce = opts.colorEnd
+    this.endColor =
+      typeof ce === 'string'
+        ? hexToLinear(ce)
+        : Array.isArray(ce)
+          ? [fin(ce[0], 0), fin(ce[1], 0), fin(ce[2], 0)]
+          : null
+    this.width = Math.max(fin(opts.width, 1), 0)
+    this.fade = fin(opts.fade, 1)
   }
 
   /** Emits `rate * dt` particles (accumulated) at `position`, drifting against `velocity`. */
@@ -483,6 +517,8 @@ export class FxTrailEmitter {
     while (n-- > 0) {
       const j = this.jitter
       const c = this.palette[Math.floor(rng() * this.palette.length) % this.palette.length]
+      // End color defaults to the particle's start color (no shift), matching burst.
+      const end = this.endColor ?? c
       this.pool.spawn(
         position[0] + (rng() * 2 - 1) * j,
         position[1] + (rng() * 2 - 1) * j,
@@ -491,10 +527,13 @@ export class FxTrailEmitter {
         -velocity[1] * 0.2 + (rng() * 2 - 1) * 0.4,
         -velocity[2] * 0.2 + (rng() * 2 - 1) * 0.4,
         this.life * (0.7 + 0.45 * rng()),
-        this.size * (0.7 + 0.6 * rng()),
+        this.size * this.width * (0.7 + 0.6 * rng()),
         c[0] * this.intensity, c[1] * this.intensity, c[2] * this.intensity,
         0,
         2.5,
+        0,
+        end[0] * this.intensity, end[1] * this.intensity, end[2] * this.intensity,
+        this.fade,
       )
     }
   }

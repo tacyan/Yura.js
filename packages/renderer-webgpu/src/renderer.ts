@@ -51,6 +51,7 @@ export interface LookParams {
   nebula: number
   /** Procedural starfield amount. */
   stars: number
+  softParticles?: number // scene-mode FX depth-fade distance in world units; 0/undefined = off (bit-exact legacy path)
   /**
    * Particle blend mode. 'additive' (default) is the classic order-free HDR
    * accumulation; 'alpha' is premultiplied over; 'screen' never clips.

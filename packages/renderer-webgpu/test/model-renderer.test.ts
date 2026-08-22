@@ -1,8 +1,9 @@
 import { test, expect } from 'bun:test'
 import { ortho, lookAt, multiply, transform4, type Vec3 } from '@yura/core'
-import { WebGPUModelRenderer, computeLightViewProj } from '../src/model-renderer'
+import { WebGPUModelRenderer, computeLightViewProj, DEFAULT_SOFT_PARTICLES } from '../src/model-renderer'
 import type { SceneMaterial } from '../src/model-renderer'
 import { POST_WGSL } from '../src/shaders'
+import { FX_WGSL, FX_SOFT_WGSL, buildFxWgsl } from '../src/model-shaders'
 import { gpuBlendState } from '../src/blend'
 import type { LookParams } from '../src/renderer'
 import type { MeshGeometry } from '../src/meshes'
@@ -66,6 +67,8 @@ function makeFakeGPU() {
   const shaderModules: { label?: string; code: string }[] = []
   const pipelines: FakePipelineDesc[] = []
   const bindGroups: { layout: unknown }[] = []
+  const passes: Record<string, unknown>[] = []
+  const writes: { label?: string; f32: Float32Array }[] = []
   const pass = {
     setPipeline() {}, setBindGroup() {}, setVertexBuffer() {}, setIndexBuffer() {},
     draw() {}, drawIndexed() {}, end() {},
@@ -95,8 +98,22 @@ function makeFakeGPU() {
       bindGroups.push(desc)
       return {}
     },
-    createCommandEncoder: () => ({ beginRenderPass: () => pass, finish: () => ({}) }),
-    queue: { writeBuffer() {}, writeTexture() {}, submit() {}, copyExternalImageToTexture() {} },
+    createCommandEncoder: () => ({
+      beginRenderPass: (desc: Record<string, unknown>) => {
+        passes.push(desc)
+        return pass
+      },
+      finish: () => ({}),
+    }),
+    queue: {
+      writeBuffer(buffer: FakeBuffer, _offset: number, data: ArrayBufferView | ArrayBuffer) {
+        const view = ArrayBuffer.isView(data)
+          ? new Float32Array(data.buffer, data.byteOffset, data.byteLength >>> 2)
+          : new Float32Array(data)
+        writes.push({ label: buffer.desc.label, f32: Float32Array.from(view) })
+      },
+      writeTexture() {}, submit() {}, copyExternalImageToTexture() {},
+    },
     lost: new Promise(() => {}),
     destroy() {
       this.destroyed = true
@@ -115,7 +132,7 @@ function makeFakeGPU() {
     height: 0,
     getContext: (kind: string) => (kind === 'webgpu' ? context : null),
   }
-  return { device, context, canvas, buffers, textures, shaderModules, pipelines, bindGroups }
+  return { device, context, canvas, buffers, textures, shaderModules, pipelines, bindGroups, passes, writes }
 }
 
 const LOOK: LookParams = {
@@ -374,4 +391,185 @@ test('computeLightViewProj maps the world origin inside NDC', () => {
     expect(z / w).toBeGreaterThan(0)
     expect(z / w).toBeLessThan(1)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Soft particles (LookParams.softParticles): default 0 must stay bit-exact
+// legacy; > 0 swaps in the depth-fade FX variant exactly once.
+// ---------------------------------------------------------------------------
+
+// Byte-exact snapshot of the historic FX shader. buildFxWgsl(false) — the
+// default softParticles=0 path — must reproduce it forever.
+const LEGACY_FX_WGSL = `
+struct FxFrame {
+  viewProj: mat4x4<f32>,
+  right: vec4<f32>,
+  up: vec4<f32>,
+}
+@group(0) @binding(0) var<uniform> F: FxFrame;
+
+struct VSOut {
+  @builtin(position) pos: vec4<f32>,
+  @location(0) corner: vec2<f32>,
+  @location(1) color: vec4<f32>,
+}
+
+@vertex
+fn vs(
+  @builtin(vertex_index) vi: u32,
+  @location(0) centerSize: vec4<f32>,
+  @location(1) colorAlpha: vec4<f32>,
+) -> VSOut {
+  var corners = array<vec2<f32>, 4>(
+    vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
+  );
+  let c = corners[vi];
+  let world = centerSize.xyz + (F.right.xyz * c.x + F.up.xyz * c.y) * centerSize.w;
+  var out: VSOut;
+  out.pos = F.viewProj * vec4<f32>(world, 1.0);
+  out.corner = c;
+  out.color = colorAlpha;
+  return out;
+}
+
+@fragment
+fn fs(in: VSOut) -> @location(0) vec4<f32> {
+  let d2 = dot(in.corner, in.corner);
+  let falloff = max(1.0 - d2, 0.0);
+  // Soft round sprite with a hot core; alpha=0 keeps additive blending pure.
+  let glow = falloff * falloff * (0.35 + 1.9 * falloff);
+  return vec4<f32>(in.color.rgb * (in.color.a * glow * 2.2), 0.0);
+}
+`
+
+function oneFxSprite(): Float32Array<ArrayBuffer> {
+  // x, y, z, size, r, g, b, alpha
+  return new Float32Array([0, 0, 0, 0.1, 1, 1, 1, 1])
+}
+
+test('default softParticles compiles the exact legacy FX shader and pipeline descriptor', async () => {
+  expect(DEFAULT_SOFT_PARTICLES).toBe(0)
+  expect(buildFxWgsl(false)).toBe(LEGACY_FX_WGSL)
+  expect(FX_WGSL).toBe(LEGACY_FX_WGSL)
+
+  const { shaderModules, pipelines } = await makeRenderer()
+  const fxModules = shaderModules.filter((m) => m.label === 'yura-fx')
+  expect(fxModules.length).toBe(1)
+  expect(fxModules[0]!.code).toBe(FX_WGSL)
+  expect(shaderModules.filter((m) => m.label === 'yura-fx-soft').length).toBe(0)
+
+  const fx = fxPipelines(pipelines)
+  expect(fx.length).toBe(1)
+  expect(fx[0]).toEqual({
+    label: 'yura-fx',
+    layout: 'auto',
+    vertex: {
+      module: {},
+      entryPoint: 'vs',
+      buffers: [
+        {
+          arrayStride: 32,
+          stepMode: 'instance',
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x4' },
+            { shaderLocation: 1, offset: 16, format: 'float32x4' },
+          ],
+        },
+      ],
+    },
+    fragment: {
+      module: {},
+      entryPoint: 'fs',
+      targets: [{ format: 'rgba16float', blend: gpuBlendState('additive') }],
+    },
+    primitive: { topology: 'triangle-strip', cullMode: 'none' },
+    depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
+  } as unknown as FakePipelineDesc)
+})
+
+test('softParticles>0 rebuilds the FX pipeline exactly once and feeds the fade uniform', async () => {
+  const { r, pipelines, shaderModules, bindGroups, writes } = await makeRenderer()
+  r.addMesh(triangleGeo(), PBR_MAT, { shadow: true })
+  r.resize(64, 64)
+  r.frame(1 / 60, 0)
+  const lastFxUB = () => {
+    const fxWrites = writes.filter((w) => w.label === 'yura-fx-ub')
+    return fxWrites[fxWrites.length - 1]!.f32
+  }
+  expect(lastFxUB()[24]).toBe(0)
+  const pipesBefore = pipelines.length
+  const modulesBefore = shaderModules.length
+  const bgBefore = bindGroups.length
+
+  r.look = { ...LOOK, softParticles: 0.35 }
+  r.frame(1 / 60, 1 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 1)
+  expect(pipelines[pipelines.length - 1]!.label).toBe('yura-fx')
+  expect(shaderModules.length).toBe(modulesBefore + 1)
+  const softModule = shaderModules[shaderModules.length - 1]!
+  expect(softModule.label).toBe('yura-fx-soft')
+  expect(softModule.code).toBe(FX_SOFT_WGSL)
+  expect(softModule.code).toBe(buildFxWgsl(true))
+  expect(softModule.code).toContain('texture_depth_2d')
+  expect(softModule.code).toContain('saturate(separation / F.soft.x)')
+  expect(bindGroups.length).toBe(bgBefore + 1)
+  const softBG = bindGroups[bindGroups.length - 1] as unknown as { entries: { binding: number }[] }
+  expect(softBG.entries.map((e) => e.binding)).toEqual([0, 1])
+
+  // Uniform carries fade distance + frustum planes for depth linearization.
+  const u = lastFxUB()
+  expect(u.length).toBe(28)
+  expect(u[24]).toBeCloseTo(0.35, 5)
+  expect(u[25]).toBeCloseTo(0.05, 5)
+  expect(u[26]).toBe(200)
+
+  // Steady frames and fade-distance tweaks touch only the uniform.
+  r.frame(1 / 60, 2 / 60)
+  r.look = { ...LOOK, softParticles: 0.9 }
+  r.frame(1 / 60, 3 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 1)
+  expect(shaderModules.length).toBe(modulesBefore + 1)
+  expect(bindGroups.length).toBe(bgBefore + 1)
+  expect(lastFxUB()[24]).toBeCloseTo(0.9, 5)
+
+  // Back to 0: one rebuild restores the legacy pipeline, no new module.
+  r.look = { ...LOOK, softParticles: 0 }
+  r.frame(1 / 60, 4 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 2)
+  expect(shaderModules.length).toBe(modulesBefore + 1)
+  expect(lastFxUB()[24]).toBe(0)
+  r.frame(1 / 60, 5 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 2)
+})
+
+test('FX draws inside the scene pass by default; soft mode adds a read-only depth pass', async () => {
+  const { r, passes } = await makeRenderer()
+  r.resize(64, 64)
+  r.setFX(oneFxSprite(), 1)
+
+  r.frame(1 / 60, 0)
+  expect(passes.filter((p) => p.label === 'yura-fx-soft').length).toBe(0)
+
+  r.look = { ...LOOK, softParticles: 0.25 }
+  r.frame(1 / 60, 1 / 60)
+  const soft = passes.filter((p) => p.label === 'yura-fx-soft')
+  expect(soft.length).toBe(1)
+  const desc = soft[0] as unknown as {
+    colorAttachments: { loadOp?: string; storeOp?: string }[]
+    depthStencilAttachment: { depthReadOnly?: boolean; depthLoadOp?: string; depthStoreOp?: string }
+  }
+  // HDR target is accumulated, not cleared; depth is attached strictly
+  // read-only (no load/store ops allowed) so the same texture can be bound
+  // as texture_depth_2d for the fade.
+  expect(desc.colorAttachments[0]!.loadOp).toBe('load')
+  expect(desc.colorAttachments[0]!.storeOp).toBe('store')
+  expect(desc.depthStencilAttachment.depthReadOnly).toBe(true)
+  expect(desc.depthStencilAttachment.depthLoadOp).toBeUndefined()
+  expect(desc.depthStencilAttachment.depthStoreOp).toBeUndefined()
+
+  // The scene pass no longer hosts the FX draw in soft mode; back at 0 the
+  // dedicated pass disappears again.
+  r.look = { ...LOOK, softParticles: 0 }
+  r.frame(1 / 60, 2 / 60)
+  expect(passes.filter((p) => p.label === 'yura-fx-soft').length).toBe(1)
 })

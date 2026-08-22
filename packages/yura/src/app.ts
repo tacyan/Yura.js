@@ -531,6 +531,14 @@ export class YuraApp {
    * instead of being silently discarded (mirrors `shapeOverridden`).
    */
   private userMotion: Partial<MotionParams> = {}
+  /**
+   * The look the user set explicitly via `.look()`. `preset()` keeps it
+   * instead of swapping in the preset's look, so
+   * `.look(looks.sakura()).preset('aurora')` works in either order
+   * (mirrors `userMotion`; look() always supplies a whole LookParams,
+   * so retention is the full value rather than a per-key merge).
+   */
+  private userLook: LookParams | null = null
   private shapeSeq: ShapeSpec[] = [shapeRegistry.galaxy()]
   private shapeOverridden = false
   /** Pointer reactivity ships ON — the zero-config path is the flagship path. */
@@ -676,6 +684,7 @@ export class YuraApp {
     } else {
       this.lookParams = l
     }
+    this.userLook = this.lookParams
     this.lookExplicit = true
     return this
   }
@@ -717,7 +726,9 @@ export class YuraApp {
     this.particleCount = p.particles
     this.colorA = p.colorA
     this.colorB = p.colorB
-    this.lookParams = p.look
+    // The preset look applies only when the user never pinned one through
+    // .look() — an explicit look survives preset swaps, see userLook.
+    this.lookParams = this.userLook ?? p.look
     // Preset motion replaces preset-era values, but keys the user set
     // explicitly through .motion() win — see userMotion.
     this.motionParams = { ...p.motion, ...this.userMotion }
