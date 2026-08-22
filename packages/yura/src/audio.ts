@@ -66,10 +66,13 @@ export interface GameAudio {
   land(intensity?: number): void
   /** Small ascending arpeggio. */
   win(): void
-  /** Master volume, clamped to 0..1. */
+  /** Master volume, clamped to 0..1. Non-finite assignments are ignored. */
   volume: number
-  /** Toggle mute. Returns the new muted state. */
-  mute(): boolean
+  /**
+   * Mute (`true`), unmute (`false`), or toggle when omitted. Silences output
+   * via the master gain while keeping `volume`. Returns the new muted state.
+   */
+  mute(on?: boolean): boolean
   /** Current muted state. */
   readonly muted: boolean
 }
@@ -130,8 +133,8 @@ export function gameAudio(): GameAudio {
     land(intensity = 1) { play(landTone(intensity)) },
     win() { for (const t of winTones()) play(t) },
     get volume() { return volume },
-    set volume(v: number) { volume = clamp01(v); apply() },
-    mute() { muted = !muted; apply(); return muted },
+    set volume(v: number) { if (Number.isFinite(v)) { volume = clamp01(v); apply() } },
+    mute(on = !muted) { muted = on; apply(); return muted },
     get muted() { return muted },
   }
 }

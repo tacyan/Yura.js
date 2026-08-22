@@ -8,6 +8,7 @@ import {
   aurora,
   neon,
   studio,
+  sakura,
   shapes,
   materials,
   matte,
@@ -42,13 +43,20 @@ test('yura entry point is exported', () => {
 })
 
 test('every look is exported, by name and in the registry', () => {
-  const named = { cinematic, cyberpunk, aurora, neon, studio }
+  const named = { cinematic, cyberpunk, aurora, neon, studio, sakura }
   for (const [name, fn] of Object.entries(named)) {
     expect(typeof fn).toBe('function')
     expect(typeof looks[name as LookName]).toBe('function')
   }
-  // README table promises exactly these five looks.
-  expect(Object.keys(looks).sort()).toEqual(['aurora', 'cinematic', 'cyberpunk', 'neon', 'studio'])
+  // README table promises exactly these six looks.
+  expect(Object.keys(looks).sort()).toEqual([
+    'aurora',
+    'cinematic',
+    'cyberpunk',
+    'neon',
+    'sakura',
+    'studio',
+  ])
   // Each look produces complete LookParams.
   for (const fn of Object.values(looks)) {
     const p = fn()

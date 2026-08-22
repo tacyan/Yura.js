@@ -72,8 +72,9 @@ lyrics(app, [
     label: 'aurora',
     code: `import { yura } from 'yura'
 
-// One line — pointer reactivity is on by default.
-yura('#stage').preset('aurora').run()
+// One line — pointer reactivity is on by default, and turbulence blends in
+// divergence-free curl noise so the sheets ripple like a living fluid.
+yura('#stage').preset('aurora').motion({ turbulence: 0.8 }).run()
 `,
   },
   {

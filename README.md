@@ -214,7 +214,12 @@ custom `f(0)=0, f(1)=1` function:
 ```ts
 app.motion({ hold: 2.2, morph: 1.4, ease: 'expo' })   // automatic shape cycle
 app.morphNow(shapes.helix({ turns: 5 }), { duration: 0.8, ease: 'back' })
+app.motion({ turbulence: 0.8, turbulenceScale: 0.35 }) // organic fluid drift
 ```
+
+The same call tunes the physics: `turbulence` adds divergence-free curl
+noise — fluid-like swirls with zero clumping — and at the default `0` the
+term vanishes from the shader math, so it costs nothing until you turn it on.
 
 (`shapes.box()`, `shapes.cone()`, and `shapes.helix()` are morph targets too,
 next to `galaxy`, `sphere`, `ring`, `vortex`, `flow`, `text`, and `image`.)
@@ -237,7 +242,7 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 | `lyrics(app, lines, opts)` | timed lines (or bare strings auto-timed `every` seconds apart) → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop`, per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
 | `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, `volume`, `mute()`; context created lazily on first user gesture |
 | `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `box` `cone` `helix` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
-| `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` — each takes `Partial<LookParams>` overrides, e.g. `neon({ blendMode: 'alpha', toneMapping: 'reinhard' })` |
+| `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` `sakura` — each takes `Partial<LookParams>` overrides, e.g. `neon({ blendMode: 'alpha', toneMapping: 'reinhard' })` |
 | `eases` | named morph curves `cubic` `expo` `back` `smooth` `linear` for `.motion({ ease })` / `morphNow({ ease })`; any `f(0)=0, f(1)=1` function is also accepted |
 | `materials` | `matte` `plastic` `metal` `neon(hex)` + named presets (`chrome`, `gold`, `obsidian`, `checker`, …) |
 

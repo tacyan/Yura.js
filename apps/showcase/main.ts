@@ -69,6 +69,9 @@ async function boot(): Promise<void> {
   app = yura(stage, { quality: 'auto', backend: backendOpt })
   if (storm) helixStorm(app)
   else app.preset(currentLook).particles(currentCount).interactive()
+  // Aurora only: a whisper of divergence-free curl-noise turbulence so the
+  // sheets ripple like real solar wind. Every other look keeps its exact feel.
+  if (currentLook === 'aurora') app.motion({ turbulence: 0.6 })
   await app.run()
   ;(window as unknown as { __yura: unknown }).__yura = app
   app.onStats((s) => {

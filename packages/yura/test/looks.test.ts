@@ -1,25 +1,43 @@
 import { test, expect } from 'bun:test'
-import { looks, cinematic, cyberpunk, aurora, neon, studio } from '../src/index'
+import { looks, cinematic, cyberpunk, aurora, neon, studio, sakura } from '../src/index'
 import type { LookParams, LookName } from '../src/index'
 
-const LOOK_NAMES = ['aurora', 'cinematic', 'cyberpunk', 'neon', 'studio'] as const
+const LOOK_NAMES = ['aurora', 'cinematic', 'cyberpunk', 'neon', 'sakura', 'studio'] as const
+
+// Optional LookParams keys that hold enum strings, not numbers. Looks may
+// declare them (sakura does); every other key is a required numeric field.
+const OPTIONAL_LOOK_KEYS: readonly string[] = ['blendMode', 'toneMapping']
+const BLEND_MODES: readonly string[] = ['additive', 'alpha', 'screen']
+const TONE_MAPPINGS: readonly string[] = ['aces', 'reinhard', 'linear']
+
+const coreKeys = (p: LookParams): string[] =>
+  Object.keys(p)
+    .filter((k) => !OPTIONAL_LOOK_KEYS.includes(k))
+    .sort()
 
 const flatten = (p: LookParams): number[] =>
-  Object.values(p).flatMap((v) => (Array.isArray(v) ? v : [v as number]))
+  Object.entries(p)
+    .filter(([key]) => !OPTIONAL_LOOK_KEYS.includes(key))
+    .flatMap(([, v]) => (Array.isArray(v) ? v : [v as number]))
 
-test('looks registry keys match exactly {cinematic, cyberpunk, aurora, neon, studio}', () => {
+test('looks registry keys match exactly {cinematic, cyberpunk, aurora, neon, studio, sakura}', () => {
   expect(Object.keys(looks).sort()).toEqual([...LOOK_NAMES])
-  const named = { cinematic, cyberpunk, aurora, neon, studio }
+  const named = { cinematic, cyberpunk, aurora, neon, studio, sakura }
   for (const [name, fn] of Object.entries(named)) {
     expect(looks[name as LookName]).toBe(fn)
   }
 })
 
-test('every look returns the same field set', () => {
-  const reference = Object.keys(studio()).sort()
+test('every look returns the same core field set, plus only known optional keys', () => {
+  const reference = coreKeys(studio())
   expect(reference.length).toBeGreaterThan(0)
   for (const name of LOOK_NAMES) {
-    expect(Object.keys(looks[name]()).sort()).toEqual(reference)
+    const p = looks[name]()
+    expect(coreKeys(p)).toEqual(reference)
+    const extras = Object.keys(p).filter((k) => !reference.includes(k))
+    for (const extra of extras) {
+      expect(OPTIONAL_LOOK_KEYS).toContain(extra)
+    }
   }
 })
 
@@ -70,7 +88,23 @@ test('look values stay within sane ranges', () => {
 
     expect(p.nebula).toBeGreaterThanOrEqual(0)
     expect(p.nebula).toBeLessThanOrEqual(2)
+
+    if (p.blendMode !== undefined) expect(BLEND_MODES).toContain(p.blendMode)
+    if (p.toneMapping !== undefined) expect(TONE_MAPPINGS).toContain(p.toneMapping)
   }
+})
+
+test('sakura declares its Japanese-dusk pipeline: screen blend + reinhard', () => {
+  const p = sakura()
+  expect(p.blendMode).toBe('screen')
+  expect(p.toneMapping).toBe('reinhard')
+  // Restrained bloom: gentler than the flashy looks (cyberpunk is 1.2).
+  expect(p.bloomStrength).toBeLessThan(0.6)
+  // Petal pink lifted toward white: red leads, blue sits above green.
+  const [r, g, b] = p.hot
+  expect(r).toBeGreaterThan(g)
+  expect(r).toBeGreaterThan(b)
+  expect(b).toBeGreaterThan(g)
 })
 
 test('overrides win over defaults and calls return fresh objects', () => {

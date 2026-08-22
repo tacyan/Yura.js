@@ -3,7 +3,7 @@ export type { EaseFn, EaseName, Ease, MotionTimingOptions, GameSetup } from './a
 export type { YuraOptions, YuraStats } from './app'
 export { shapes, galaxy, sphere, ring, vortex, flow, box, cone, helix, text, image } from './shapes'
 export type { ShapeSpec } from './shapes'
-export { looks, cinematic, cyberpunk, aurora, neon, studio } from './looks'
+export { looks, cinematic, cyberpunk, aurora, neon, studio, sakura } from './looks'
 export type { LookName } from './looks'
 export { presetNames, resolvePreset } from './presets'
 export type { PresetConfig } from './presets'

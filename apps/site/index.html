@@ -63,11 +63,11 @@
     <div class="grid">
       <a class="card" href="./showcase/">
         <h2>Showcase</h2>
-        <p>One million live particles. Type a word — the swarm obeys. Lyric-motion act included.</p>
+        <p>One million live particles, five looks. Curl-noise aurora, Helix Storm's aimed color-fade bursts, one-line HUD.</p>
       </a>
       <a class="card" href="./lyrics/">
         <h2>Lyric Motion</h2>
-        <p>Kinetic typography: Japanese-first lines assembling character by character.</p>
+        <p>Kinetic typography: Japanese-first lines auto-timed to one beat, assembling character by character.</p>
       </a>
       <a class="card" href="./hello/">
         <h2>Hello</h2>
@@ -79,13 +79,14 @@
       </a>
       <a class="card" href="./game/">
         <h2>ORB RUSH</h2>
-        <p>The README mini-game, live: roll, jump, collect ten orbs. Physics and FX in ~30 lines.</p>
+        <p>The README mini-game: one game() call — roll, jump, collect ten orbs. Physics, HUD, FX in ~30 lines.</p>
       </a>
     </div>
 
     <p class="note">
       Demos need <b>WebGPU</b> (Chrome / Edge 113+; particle swarms fall back to WebGL2).<br />
       Use it in your project: <code>npm install yurayura</code><br />
+      Dial the look: <code>blendMode</code> screen/alpha, <code>toneMapping</code> reinhard/linear, <code>eases</code>-timed morphs through box / cone / helix shapes, and divergence-free curl-noise <code>turbulence</code> — costs nothing at its default 0.<br />
       Or run everything locally — playground, live-share, benchmarks:<br />
       <code>git clone https://github.com/tacyan/Yura.js && cd Yura.js && bun install && bun run play</code>
     </p>
