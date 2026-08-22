@@ -134,6 +134,9 @@ export function sakura(overrides: Partial<LookParams> = {}): LookParams {
     streak: 0.2,
     nebula: 0.7,
     stars: 0.5,
+    // Scene-mode FX depth-fade distance (world units): petals melt into
+    // nearby geometry over ~2-3 sprite radii instead of hard-clipping.
+    softParticles: 0.3,
     blendMode: 'screen',
     toneMapping: 'reinhard',
     ...overrides,

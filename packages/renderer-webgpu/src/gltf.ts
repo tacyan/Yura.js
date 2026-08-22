@@ -101,6 +101,14 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
   if (buf.byteLength < 20 || view.getUint32(0, true) !== 0x46546c67) {
     throw new YuraError(CODES.ASSET_LOAD_FAILED, 'Not a GLB file (bad magic).', 'Export your model as .glb (binary glTF 2.0).')
   }
+  const version = view.getUint32(4, true)
+  if (version !== 2) {
+    throw new YuraError(
+      CODES.ASSET_LOAD_FAILED,
+      `Unsupported GLB container version ${version} (expected 2).`,
+      'Re-export your model as binary glTF 2.0 (.glb).',
+    )
+  }
   let json: GltfJson | null = null
   let bin: Uint8Array<ArrayBuffer> | null = null
   let offset = 12
@@ -108,6 +116,13 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     const len = view.getUint32(offset, true)
     const type = view.getUint32(offset + 4, true)
     const start = offset + 8
+    if (start + len > buf.byteLength) {
+      throw new YuraError(
+        CODES.ASSET_LOAD_FAILED,
+        `GLB chunk at byte ${offset} declares ${len} bytes but the file ends at byte ${buf.byteLength}.`,
+        'The file is truncated or corrupt. Re-export the .glb.',
+      )
+    }
     if (type === 0x4e4f534a) {
       json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, start, len))) as GltfJson
     } else if (type === 0x004e4942) {
@@ -146,7 +161,6 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
         let v: number
         switch (acc.componentType) {
           case 5126: v = dv.getFloat32(o, true); break
-          case 5125: v = dv.getUint32(o, true); break
           case 5123: v = dv.getUint16(o, true); if (acc.normalized) v /= 65535; break
           case 5121: v = dv.getUint8(o); if (acc.normalized) v /= 255; break
           case 5122: v = dv.getInt16(o, true); if (acc.normalized) v = Math.max(v / 32767, -1); break
@@ -156,6 +170,28 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
       }
     }
     return { data: out, comps, count: acc.count }
+  }
+
+  // Index accessors (SCALAR uint32/uint16/uint8) stay on an integer path so
+  // uint32 indices above 2^24 are never rounded through a Float32.
+  const readIndices = (idx: number): Uint32Array<ArrayBuffer> => {
+    const acc = json!.accessors![idx]
+    const out = new Uint32Array(acc.count)
+    if (acc.bufferView === undefined) return out
+    const bv = json!.bufferViews![acc.bufferView]
+    const src = buffers[bv.buffer]
+    const base = src.byteOffset + (bv.byteOffset ?? 0) + (acc.byteOffset ?? 0)
+    const compSize = COMP_SIZE[acc.componentType]
+    const dv = new DataView(src.buffer)
+    for (let i = 0; i < acc.count; i++) {
+      const o = base + i * compSize
+      switch (acc.componentType) {
+        case 5125: out[i] = dv.getUint32(o, true); break
+        case 5123: out[i] = dv.getUint16(o, true); break
+        default: out[i] = dv.getUint8(o); break
+      }
+    }
+    return out
   }
 
   // Images: decode embedded or external to ImageBitmaps.
@@ -242,9 +278,7 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
           : new Float32Array(pos.count * 2)
         let indices: Uint32Array<ArrayBuffer>
         if (prim.indices !== undefined) {
-          const idxData = readAccessor(prim.indices).data
-          indices = new Uint32Array(idxData.length)
-          for (let i = 0; i < idxData.length; i++) indices[i] = idxData[i]
+          indices = readIndices(prim.indices)
         } else {
           indices = new Uint32Array(pos.count)
           for (let i = 0; i < pos.count; i++) indices[i] = i
@@ -271,10 +305,10 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
 
   const sceneNodes = json.scenes?.[json.scene ?? 0]?.nodes ?? (json.nodes ? json.nodes.map((_, i) => i) : [])
   const roots = new Set(sceneNodes)
-  if (json.scenes === undefined && json.nodes) {
-    // No scene: treat only unparented nodes as roots.
-    for (const n of json.nodes) for (const c of n.children ?? []) roots.delete(c)
-  }
+  // Valid scene.nodes entries are always unparented, so pruning every child is
+  // a no-op for them — and it stops double visits when we fell back to "all
+  // nodes" (no scenes array, or the selected scene declares no node list).
+  for (const n of json.nodes ?? []) for (const c of n.children ?? []) roots.delete(c)
   for (const idx of roots) visit(idx, identity())
 
   if (primitives.length === 0) {

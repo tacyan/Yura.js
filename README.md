@@ -114,7 +114,8 @@ What you get for free:
 - **Shadows** — shadow-mapped meshes plus automatic ground blob shadows.
 - **Particle FX one-liners** — `scene.burst(pos)`, `obj.trail()`,
   `scene.celebrate()` render through the same GPU pipeline as everything else.
-  Bursts take direction when you want more than a pop:
+  Bursts take direction when you want more than a pop, and trails take a
+  color ramp, width, and fade curve:
 
   ```ts
   scene.burst(player.position, {
@@ -122,6 +123,7 @@ What you get for free:
     shape: 'disc', radius: 0.8,                  // spawn volume: 'sphere' | 'disc' | 'box'
     colorEnd: '#7c3aed', drag: 2,                // fade to violet over life; air drag
   })
+  player.trail({ color: '#4cc9f0', colorEnd: '#1e3a8a', width: 2, fade: 2 })  // cyan → deep blue tail, 2× width, quicker fade-out
   ```
 - **Zero assets** — seven procedural shapes (`sphere`, `box`, `torus`,
   `knot`, `cylinder`, `plane`, `disc`) and curated PBR materials
@@ -275,6 +277,10 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   app.look(looks.neon({ blendMode: 'alpha', toneMapping: 'reinhard' }))
   // blendMode: 'additive' | 'alpha' | 'screen' · toneMapping: 'aces' | 'reinhard' | 'linear'
   ```
+
+  `softParticles` is a look param too: a world-unit depth-fade so scene-mode
+  FX sprites melt into nearby geometry instead of clipping (the `sakura`
+  look ships with it on; the default 0 keeps it off at zero cost).
 - **Interaction** — hover repels particles; click detonates a shockwave.
 - **glTF 2.0 / PBR** — `.model('/file.glb')` loads GLB and renders
   Cook-Torrance GGX with IBL from a procedural studio environment (no LUT,

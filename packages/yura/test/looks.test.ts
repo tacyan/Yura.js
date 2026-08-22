@@ -4,9 +4,10 @@ import type { LookParams, LookName } from '../src/index'
 
 const LOOK_NAMES = ['aurora', 'cinematic', 'cyberpunk', 'neon', 'sakura', 'studio'] as const
 
-// Optional LookParams keys that hold enum strings, not numbers. Looks may
-// declare them (sakura does); every other key is a required numeric field.
-const OPTIONAL_LOOK_KEYS: readonly string[] = ['blendMode', 'toneMapping']
+// Optional LookParams keys. Looks may declare them (sakura does); every
+// other key is a required numeric field. blendMode/toneMapping hold enum
+// strings; softParticles is the numeric scene-mode FX depth-fade distance.
+const OPTIONAL_LOOK_KEYS: readonly string[] = ['blendMode', 'toneMapping', 'softParticles']
 const BLEND_MODES: readonly string[] = ['additive', 'alpha', 'screen']
 const TONE_MAPPINGS: readonly string[] = ['aces', 'reinhard', 'linear']
 
@@ -91,6 +92,11 @@ test('look values stay within sane ranges', () => {
 
     if (p.blendMode !== undefined) expect(BLEND_MODES).toContain(p.blendMode)
     if (p.toneMapping !== undefined) expect(TONE_MAPPINGS).toContain(p.toneMapping)
+    if (p.softParticles !== undefined) {
+      expect(Number.isFinite(p.softParticles)).toBe(true)
+      expect(p.softParticles).toBeGreaterThanOrEqual(0)
+      expect(p.softParticles).toBeLessThanOrEqual(2)
+    }
   }
 })
 
@@ -98,6 +104,10 @@ test('sakura declares its Japanese-dusk pipeline: screen blend + reinhard', () =
   const p = sakura()
   expect(p.blendMode).toBe('screen')
   expect(p.toneMapping).toBe('reinhard')
+  // Soft particles on, and subtle: a sub-world-unit depth fade so petals
+  // melt into geometry instead of hard-clipping.
+  expect(p.softParticles).toBeGreaterThan(0)
+  expect(p.softParticles).toBeLessThan(1)
   // Restrained bloom: gentler than the flashy looks (cyberpunk is 1.2).
   expect(p.bloomStrength).toBeLessThan(0.6)
   // Petal pink lifted toward white: red leads, blue sits above green.

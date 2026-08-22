@@ -207,7 +207,38 @@ test('parseGLB rejects a chunk whose declared length overruns the buffer', async
   dv.setUint32(8, 20, true)
   dv.setUint32(12, 0x1000, true) // declared chunk length far past the buffer end
   dv.setUint32(16, CHUNK_JSON, true)
-  expect(parseGLB(buf)).rejects.toThrow()
+  const err = await caught(parseGLB(buf))
+  expect(err.code).toBe(ASSET_LOAD_FAILED)
+  expect(err.message).toContain('declares 4096 bytes')
+})
+
+test('parseGLB rejects a BIN chunk that overruns instead of silently truncating', async () => {
+  const { json, bin } = triangleAsset()
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(json))
+  const glb = buildGLBChunks([
+    { type: CHUNK_JSON, data: jsonBytes },
+    { type: CHUNK_BIN, data: bin },
+  ])
+  // Inflate the BIN chunk's declared length past the end of the buffer.
+  const binHeader = 12 + 8 + align4(jsonBytes.length)
+  const dv = new DataView(glb)
+  dv.setUint32(binHeader, dv.getUint32(binHeader, true) + 64, true)
+  const err = await caught(parseGLB(glb))
+  expect(err.code).toBe(ASSET_LOAD_FAILED)
+})
+
+test('parseGLB rejects an unsupported GLB container version with YURA-020', async () => {
+  const { json, bin } = triangleAsset()
+  const glb = buildGLBChunks(
+    [
+      { type: CHUNK_JSON, data: new TextEncoder().encode(JSON.stringify(json)) },
+      { type: CHUNK_BIN, data: bin },
+    ],
+    { version: 1 },
+  )
+  const err = await caught(parseGLB(glb))
+  expect(err.code).toBe(ASSET_LOAD_FAILED)
+  expect(err.message).toContain('version 1')
 })
 
 // ---------------------------------------------------------------------------
@@ -294,11 +325,12 @@ test('parseGLB decodes every component type with normalization', async () => {
   const uvA = new Uint8Array([0, 255, 255, 0, 128, 64]) // 5121 normalized
   const idxA = new Uint32Array([0, 1, 2]) // 5125
   const normB = new Int8Array([127, 0, 0, 0, 127, 0, -128, 0, 0]) // 5120 normalized
-  const { bin, offsets } = packBin([positions, normA, uvA, idxA, normB])
+  const uvB = new Uint16Array([0, 65535, 32768, 0, 65535, 65535]) // 5123 normalized
+  const { bin, offsets } = packBin([positions, normA, uvA, idxA, normB, uvB])
   const json = {
     asset: { version: '2.0' },
     buffers: [{ byteLength: bin.byteLength }],
-    bufferViews: [positions, normA, uvA, idxA, normB].map((arr, i) => ({
+    bufferViews: [positions, normA, uvA, idxA, normB, uvB].map((arr, i) => ({
       buffer: 0,
       byteOffset: offsets[i],
       byteLength: arr.byteLength,
@@ -309,12 +341,13 @@ test('parseGLB decodes every component type with normalization', async () => {
       { bufferView: 2, componentType: 5121, count: 3, type: 'VEC2', normalized: true },
       { bufferView: 3, componentType: 5125, count: 3, type: 'SCALAR' },
       { bufferView: 4, componentType: 5120, count: 3, type: 'VEC3', normalized: true },
+      { bufferView: 5, componentType: 5123, count: 3, type: 'VEC2', normalized: true },
     ],
     meshes: [
       {
         primitives: [
           { attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2 }, indices: 3 },
-          { attributes: { POSITION: 0, NORMAL: 4 } },
+          { attributes: { POSITION: 0, NORMAL: 4, TEXCOORD_0: 5 } },
         ],
       },
     ],
@@ -337,8 +370,66 @@ test('parseGLB decodes every component type with normalization', async () => {
   // Int8 normalized: 127 -> 1, -128 clamps to -1.
   expect(b.normals[0]).toBeCloseTo(1)
   expect(b.normals[6]).toBeCloseTo(-1)
-  // Second primitive has no TEXCOORD_0: zero-filled UVs.
-  expect(Array.from(b.uvs)).toEqual([0, 0, 0, 0, 0, 0])
+  // Uint16 normalized: 65535 -> 1, 32768 -> 32768/65535.
+  expect(b.uvs[0]).toBeCloseTo(0)
+  expect(b.uvs[1]).toBeCloseTo(1)
+  expect(b.uvs[2]).toBeCloseTo(32768 / 65535)
+})
+
+test('parseGLB keeps uint32 indices above 2^24 exact', async () => {
+  const positions = new Float32Array(TRI)
+  const big = 2 ** 24 + 1 // 16777217 is not representable in a Float32
+  const indices = new Uint32Array([0, 1, big])
+  const { bin, offsets } = packBin([positions, indices])
+  const json = {
+    asset: { version: '2.0' },
+    buffers: [{ byteLength: bin.byteLength }],
+    bufferViews: [
+      { buffer: 0, byteOffset: offsets[0], byteLength: positions.byteLength },
+      { buffer: 0, byteOffset: offsets[1], byteLength: indices.byteLength },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5125, count: 3, type: 'SCALAR' },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+  }
+  const model = await parseGLB(buildGLB(json, bin))
+  expect(Array.from(model.primitives[0].indices)).toEqual([0, 1, big])
+})
+
+test('parseGLB reads uint8 indices and zero-fills index accessors without a bufferView', async () => {
+  const positions = new Float32Array(TRI)
+  const idx8 = new Uint8Array([2, 1, 0])
+  const { bin, offsets } = packBin([positions, idx8])
+  const json = {
+    asset: { version: '2.0' },
+    buffers: [{ byteLength: bin.byteLength }],
+    bufferViews: [
+      { buffer: 0, byteOffset: offsets[0], byteLength: positions.byteLength },
+      { buffer: 0, byteOffset: offsets[1], byteLength: idx8.byteLength },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5121, count: 3, type: 'SCALAR' },
+      { componentType: 5125, count: 3, type: 'SCALAR' },
+    ],
+    meshes: [
+      {
+        primitives: [
+          { attributes: { POSITION: 0 }, indices: 1 },
+          { attributes: { POSITION: 0 }, indices: 2 },
+        ],
+      },
+    ],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+  }
+  const model = await parseGLB(buildGLB(json, bin))
+  expect(Array.from(model.primitives[0].indices)).toEqual([2, 1, 0])
+  expect(Array.from(model.primitives[1].indices)).toEqual([0, 0, 0])
 })
 
 test('parseGLB honors byteStride and byteOffset for interleaved vertex data', async () => {
@@ -483,6 +574,17 @@ test('parseGLB applies node matrix transforms and infers roots without scenes', 
   expect(model.max[0]).toBeCloseTo(2)
   expect(model.min[2]).toBeCloseTo(2)
   expect(model.max[2]).toBeCloseTo(2)
+})
+
+test('parseGLB visits children once when scenes exist but declare no node list', async () => {
+  const { json, bin } = triangleAsset()
+  json.nodes = [{ children: [1], translation: [1, 0, 0] }, { mesh: 0 }]
+  json.scenes = [{}] // scene present, but without an explicit root list
+  const model = await parseGLB(buildGLB(json, bin))
+  // Node 1 must be visited only via its parent, never again as a root.
+  expect(model.primitives.length).toBe(1)
+  expect(model.min[0]).toBeCloseTo(1)
+  expect(model.max[0]).toBeCloseTo(2)
 })
 
 test('parseGLB skips non-triangle and position-less primitives, clamps material index', async () => {
