@@ -18,6 +18,18 @@ import type { LookParams } from './renderer'
 const ENV_SIZE = 256
 const ENV_MIPS = 7
 const SHADOW_SIZE = 2048
+/** Boot framing for the orbit camera — a stylish three-quarter view. */
+const ModelHome: { yaw: number; pitch: number; distance: number } = {
+  yaw: Math.PI + 0.93,
+  pitch: 0.1,
+  distance: 3.2,
+}
+/** Double-click target: the model's FRONT (glTF forward faces yaw 0). */
+const ModelFront: { yaw: number; pitch: number; distance: number } = {
+  yaw: 0,
+  pitch: 0.08,
+  distance: 3.2,
+}
 
 interface GpuPrimitive {
   positions: GPUBuffer
@@ -150,15 +162,23 @@ export class WebGPUModelRenderer {
   /** Half-extent of the shadow-casting area around the origin. */
   shadowArea = 4
   /** Orbit camera state, driven by the app's pointer handlers. */
-  yaw = Math.PI + 0.93
-  pitch = 0.1
-  distance = 3.2
+  yaw = ModelHome.yaw
+  pitch = ModelHome.pitch
+  distance = ModelHome.distance
   autoRotate = 0.12
   /** When set, overrides the orbit camera (game follow-cams etc.). */
   cameraPose: { eye: Vec3; target: Vec3 } | null = null
   private yawVel = 0
   private pitchVel = 0
   private idleTime = 10
+  /** Seconds since the last direct drag delta — gates inertia integration. */
+  private directAge = 10
+  /** Click-to-aim / reset goals — eased in frame(), cancelled by dragging. */
+  private goalYaw: number | null = null
+  private goalPitch: number | null = null
+  private goalDistance: number | null = null
+  private targetOffset: [number, number, number] = [0, 0, 0]
+  private resetOffset = false
 
   private eye: Vec3 = [0, 0, 3.2]
 
@@ -786,14 +806,58 @@ export class WebGPUModelRenderer {
     })
   }
 
+  /**
+   * Direct grab: the delta lands on the camera immediately (1:1 with the
+   * cursor), and doubles as the flick velocity released as inertia once
+   * pointer events stop (~60Hz event rate assumed).
+   */
   rotateBy(dx: number, dy: number): void {
-    this.yawVel = dx
-    this.pitchVel = dy
+    this.yaw += dx
+    this.pitch += dy
+    this.yawVel = dx * 60
+    this.pitchVel = dy * 60
+    this.directAge = 0
+    this.goalYaw = null
+    this.goalPitch = null
     this.idleTime = 0
   }
 
   zoomBy(factor: number): void {
     this.distance = Math.min(Math.max(this.distance * factor, 1.6), 7)
+    this.goalDistance = null
+    this.idleTime = 0
+  }
+
+  /** Eased orbit toward an absolute yaw/pitch — click-to-aim. */
+  aimTo(yaw: number, pitch: number): void {
+    this.goalYaw = yaw
+    this.goalPitch = Math.min(Math.max(pitch, -1.25), 1.25)
+    this.yawVel = 0
+    this.pitchVel = 0
+    this.idleTime = 0
+  }
+
+  /** Slide the orbit centre in the camera plane (drag-to-pan). */
+  panBy(dx: number, dy: number): void {
+    // Camera right = (cos yaw, 0, -sin yaw); up ≈ world Y for small pitches.
+    const s = this.distance * 0.001
+    this.targetOffset[0] += (Math.cos(this.yaw) * dx) * s
+    this.targetOffset[2] += (-Math.sin(this.yaw) * dx) * s
+    this.targetOffset[1] += dy * s
+    const len = Math.hypot(...this.targetOffset)
+    if (len > 2) for (let i = 0; i < 3; i++) this.targetOffset[i] *= 2 / len
+    this.idleTime = 0
+  }
+
+  /** Ease to the model's front framing (double-click), shortest way round. */
+  resetView(): void {
+    const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a))
+    this.goalYaw = this.yaw - wrap(this.yaw - ModelFront.yaw)
+    this.goalPitch = ModelFront.pitch
+    this.goalDistance = ModelFront.distance
+    this.resetOffset = true
+    this.yawVel = 0
+    this.pitchVel = 0
     this.idleTime = 0
   }
 
@@ -819,21 +883,52 @@ export class WebGPUModelRenderer {
       this.eye = this.cameraPose.eye
       target = this.cameraPose.target
     } else {
-      // Orbit camera: drag velocity with inertia, auto-rotate after idle.
+      // Orbit camera: direct grab while dragging (rotateBy applies deltas
+      // 1:1), flick inertia once pointer events stop, auto-rotate after idle.
       this.idleTime += dt
-      this.yaw += this.yawVel * dt
-      this.pitch += this.pitchVel * dt
+      this.directAge += dt
+      if (this.directAge > 0.08) {
+        this.yaw += this.yawVel * dt
+        this.pitch += this.pitchVel * dt
+      }
       this.yawVel *= Math.exp(-dt * 4)
       this.pitchVel *= Math.exp(-dt * 4)
-      if (this.idleTime > 2.5) {
+      // Eased goals from click-to-aim / double-click reset.
+      const k = 1 - Math.exp(-dt * 6)
+      if (this.goalYaw !== null) {
+        this.yaw += (this.goalYaw - this.yaw) * k
+        if (Math.abs(this.goalYaw - this.yaw) < 0.002) this.goalYaw = null
+      }
+      if (this.goalPitch !== null) {
+        this.pitch += (this.goalPitch - this.pitch) * k
+        if (Math.abs(this.goalPitch - this.pitch) < 0.002) this.goalPitch = null
+      }
+      if (this.goalDistance !== null) {
+        this.distance += (this.goalDistance - this.distance) * k
+        if (Math.abs(this.goalDistance - this.distance) < 0.01) this.goalDistance = null
+      }
+      if (this.resetOffset) {
+        let live = false
+        for (let i = 0; i < 3; i++) {
+          this.targetOffset[i] *= 1 - k
+          if (Math.abs(this.targetOffset[i]) > 0.005) live = true
+        }
+        if (!live) {
+          this.targetOffset = [0, 0, 0]
+          this.resetOffset = false
+        }
+      }
+      if (this.goalYaw === null && this.goalPitch === null && this.idleTime > 2.5) {
         this.yaw += this.autoRotate * dt * Math.min((this.idleTime - 2.5) / 2, 1)
       }
       this.pitch = Math.min(Math.max(this.pitch, -1.25), 1.25)
       const cp = Math.cos(this.pitch)
+      const off = this.targetOffset
+      target = [off[0], off[1], off[2]]
       this.eye = [
-        Math.sin(this.yaw) * cp * this.distance,
-        Math.sin(this.pitch) * this.distance,
-        Math.cos(this.yaw) * cp * this.distance,
+        off[0] + Math.sin(this.yaw) * cp * this.distance,
+        off[1] + Math.sin(this.pitch) * this.distance,
+        off[2] + Math.cos(this.yaw) * cp * this.distance,
       ]
     }
 

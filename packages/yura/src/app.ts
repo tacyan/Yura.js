@@ -76,6 +76,24 @@ export function sweepProgress(morphT: number, delayCoord: number, spread: number
 }
 
 /**
+ * Click-to-aim: yaw/pitch delta that swings the orbit camera so the clicked
+ * canvas point moves toward center — same direction a drag of that point to
+ * center would take. Deltas scale with the click's offset from center and
+ * cap at ±0.7 (yaw) / ±0.45 (pitch) rad per click. (Pure; exported for tests.)
+ */
+export function clickAimDelta(
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): { yaw: number; pitch: number } {
+  if (width <= 0 || height <= 0) return { yaw: 0, pitch: 0 }
+  const nx = Math.min(Math.max(x / width - 0.5, -0.5), 0.5)
+  const ny = Math.min(Math.max(y / height - 0.5, -0.5), 0.5)
+  return { yaw: -nx * 1.4 + 0, pitch: -ny * 0.9 + 0 } // +0 normalizes -0
+}
+
+/**
  * Bakes a sweep direction into a generated shape's delay/palette coordinates
  * (data[i*4+3]) in place. 'rtl' inverts reading order, 'center' radiates from
  * the middle outward, 'random' assigns a deterministic per-particle hash
@@ -776,23 +794,47 @@ export class YuraApp {
     if (!this.pointerEnabled) return
     const el = this.container
     let dragging = false
+    let panning = false
     let lastX = 0
     let lastY = 0
+    let downX = 0
+    let downY = 0
+    let downAt = 0
     const onDown = (e: PointerEvent) => {
       dragging = true
-      lastX = e.clientX
-      lastY = e.clientY
+      panning = e.button === 2 || e.shiftKey
+      lastX = downX = e.clientX
+      lastY = downY = e.clientY
+      downAt = performance.now()
       el.setPointerCapture?.(e.pointerId)
     }
     const onMove = (e: PointerEvent) => {
       if (!dragging || !this.modelRenderer) return
-      this.modelRenderer.rotateBy((e.clientX - lastX) * 0.006, (e.clientY - lastY) * 0.006)
+      if (panning) this.modelRenderer.panBy(-(e.clientX - lastX), e.clientY - lastY)
+      else this.modelRenderer.rotateBy((e.clientX - lastX) * 0.006, (e.clientY - lastY) * 0.006)
       lastX = e.clientX
       lastY = e.clientY
     }
-    const onUp = () => {
+    const onUp = (e: PointerEvent) => {
+      if (dragging && !panning && this.modelRenderer) {
+        // A quick, still press is a CLICK: aim the camera at that spot.
+        const moved = Math.hypot(e.clientX - downX, e.clientY - downY)
+        if (moved < 6 && performance.now() - downAt < 250) {
+          const rect = el.getBoundingClientRect()
+          const d = clickAimDelta(e.clientX - rect.left, e.clientY - rect.top, rect.width, rect.height)
+          const r = this.modelRenderer
+          r.aimTo(r.yaw + d.yaw, r.pitch + d.pitch)
+        }
+      }
       dragging = false
+      panning = false
     }
+    const onLeave = () => {
+      dragging = false
+      panning = false
+    }
+    const onDbl = () => this.modelRenderer?.resetView()
+    const onCtx = (e: Event) => e.preventDefault() // right-drag pans
     const onWheel = (e: WheelEvent) => {
       if (!this.modelRenderer) return
       e.preventDefault()
@@ -801,13 +843,17 @@ export class YuraApp {
     el.addEventListener('pointerdown', onDown)
     el.addEventListener('pointermove', onMove)
     el.addEventListener('pointerup', onUp)
-    el.addEventListener('pointerleave', onUp)
+    el.addEventListener('pointerleave', onLeave)
+    el.addEventListener('dblclick', onDbl)
+    el.addEventListener('contextmenu', onCtx)
     el.addEventListener('wheel', onWheel, { passive: false })
     this.cleanups.push(() => {
       el.removeEventListener('pointerdown', onDown)
       el.removeEventListener('pointermove', onMove)
       el.removeEventListener('pointerup', onUp)
-      el.removeEventListener('pointerleave', onUp)
+      el.removeEventListener('pointerleave', onLeave)
+      el.removeEventListener('dblclick', onDbl)
+      el.removeEventListener('contextmenu', onCtx)
       el.removeEventListener('wheel', onWheel)
     })
   }

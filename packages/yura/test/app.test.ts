@@ -271,3 +271,24 @@ test('after a reset, attach() would re-realize: realize() only skips non-null ha
   resetSceneHandles(scene)
   expect(obj.handle).toBeNull() // realize()'s skip-condition is cleared
 })
+
+import { clickAimDelta } from '../src/app'
+
+test('clickAimDelta: center click does not move the camera', () => {
+  expect(clickAimDelta(500, 300, 1000, 600)).toEqual({ yaw: 0, pitch: 0 })
+})
+
+test('clickAimDelta: right/bottom clicks swing toward the point (drag-direction signs)', () => {
+  const right = clickAimDelta(1000, 300, 1000, 600)
+  expect(right.yaw).toBeCloseTo(-0.7, 5) // right edge → yaw decreases, capped
+  expect(right.pitch).toBeCloseTo(0, 5)
+  const bottom = clickAimDelta(500, 600, 1000, 600)
+  expect(bottom.pitch).toBeCloseTo(-0.45, 5) // bottom edge → pitch decreases, capped
+})
+
+test('clickAimDelta: out-of-bounds coords clamp and zero-size is safe', () => {
+  const far = clickAimDelta(5000, -200, 1000, 600)
+  expect(far.yaw).toBeCloseTo(-0.7, 5)
+  expect(far.pitch).toBeCloseTo(0.45, 5)
+  expect(clickAimDelta(10, 10, 0, 0)).toEqual({ yaw: 0, pitch: 0 })
+})
