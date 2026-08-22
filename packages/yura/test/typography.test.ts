@@ -16,8 +16,11 @@ import {
   timelineDuration,
   wrapTime,
   advanceCursor,
+  normalizeLines,
+  lyrics,
   type LyricLine,
 } from '../src/lyrics'
+import type { YuraApp } from '../src/app'
 
 // Kinetic-typography pure math: grapheme segmentation, per-character
 // coordinate ordering, multi-line layout, the shader sweep mirror, and the
@@ -202,6 +205,59 @@ test('advanceCursor fires only the newest overdue event (tab-switch catch-up)', 
   expect(events[mid.fire].kind).toBe('interstitial')
   // Nothing due yet.
   expect(advanceCursor(events, 3, 5.0).fire).toBe(-1)
+})
+
+// ---- auto-timing & input normalization ----
+
+test('normalizeLines auto-times omitted at as previous at (or 0) + every', () => {
+  const auto = normalizeLines([{ text: 'a' }, { text: 'b' }, { text: 'c' }])
+  expect(auto.map((l) => l.at)).toEqual([3.5, 7, 10.5]) // default every = 3.5
+  const chained = normalizeLines([{ text: 'a', at: 0 }, { text: 'b' }, { text: 'c' }], 2)
+  expect(chained.map((l) => l.at)).toEqual([0, 2, 4])
+  // Fully-timed input passes through byte-identical in time (legacy behavior).
+  expect(normalizeLines(LINES).map((l) => l.at)).toEqual(LINES.map((l) => l.at))
+})
+
+test('normalizeLines accepts bare strings and keeps per-line overrides', () => {
+  const lines = normalizeLines(['YURA', '君の声が'], 3.4)
+  expect(lines.map((l) => l.text)).toEqual(['YURA', '君の声が'])
+  expect(lines[0].at).toBeCloseTo(3.4, 6)
+  expect(lines[1].at).toBeCloseTo(6.8, 6)
+  const mixed = normalizeLines(['intro', { text: 'x', at: 8, sweep: 0.5 }, 'outro'], 3.5)
+  expect(mixed.map((l) => l.at)).toEqual([3.5, 8, 11.5])
+  expect(mixed[1].sweep).toBe(0.5)
+})
+
+test('mixed explicit and auto-timed lines build a strictly monotone timeline', () => {
+  const lines = normalizeLines([
+    { text: 'auto-a' }, // 3.5
+    { text: 'jump', at: 10 }, // explicit
+    { text: 'auto-b' }, // 13.5 — chains from the explicit at
+    { text: 'early', at: 1 }, // explicit, earlier than the autos
+  ])
+  expect(lines.map((l) => l.at)).toEqual([3.5, 10, 13.5, 1])
+  const events = buildTimeline(lines, { out: 'dissolve' })
+  expect(events.map((e) => e.time)).toEqual([1, 3.5, 10, 13.5])
+  for (let i = 1; i < events.length; i++) {
+    expect(events[i].time).toBeGreaterThan(events[i - 1].time)
+  }
+})
+
+test('lyrics() accepts a plain string array end-to-end', () => {
+  const morphs: string[] = []
+  const app = {
+    morphNow: (shape: { kind: string }) => {
+      morphs.push(shape.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, ['YURA', '君の声が'], { every: 3.5 })
+  run.seek(3.5) // first auto-timed line is due
+  expect(morphs).toHaveLength(1)
+  run.seek(7) // second line
+  expect(morphs).toHaveLength(2)
+  expect(morphs.every((k) => k === 'text')).toBe(true)
+  run.stop()
 })
 
 // ---- text-readability damping (renderer brightness/bloom scaling) ----

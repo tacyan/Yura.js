@@ -21,6 +21,51 @@ import {
 } from './shaders'
 
 /**
+ * Tracks created GL objects (buffers, VAOs, transform feedbacks, programs)
+ * so dispose() can delete every one of them in reverse creation order.
+ * Exported for unit testing.
+ */
+export interface ResourceTracker {
+  /** Register a resource with its destroy function; returns the resource. */
+  track<T>(resource: T, destroy: (resource: T) => void): T
+  /** Number of live tracked resources. */
+  readonly size: number
+  /** Destroy every tracked resource (reverse creation order) and clear. */
+  disposeAll(): void
+}
+
+export function createResourceTracker(): ResourceTracker {
+  const entries: Array<() => void> = []
+  return {
+    track<T>(resource: T, destroy: (resource: T) => void): T {
+      entries.push(() => destroy(resource))
+      return resource
+    },
+    get size(): number {
+      return entries.length
+    },
+    disposeAll(): void {
+      for (let i = entries.length - 1; i >= 0; i--) entries[i]()
+      entries.length = 0
+    },
+  }
+}
+
+/**
+ * Shared zero-filled scratch for velocity resets (writePositions). Reused
+ * across calls so a 1M-particle scene doesn't allocate a fresh ~16MB array
+ * every call; regrown only when a larger length is requested. The renderer
+ * only uploads from it (never writes into it), so it stays all-zero — the
+ * test suite verifies that invariant. Exported for unit testing.
+ */
+let zeroScratch: Float32Array<ArrayBuffer> = new Float32Array(0)
+
+export function acquireZeroScratch(length: number): Float32Array<ArrayBuffer> {
+  if (zeroScratch.length < length) zeroScratch = new Float32Array(length)
+  return zeroScratch.length === length ? zeroScratch : zeroScratch.subarray(0, length)
+}
+
+/**
  * WebGL2 particle fallback (F-002): the same visual system as the WebGPU
  * renderer — transform-feedback simulation, additive point sprites, trail
  * accumulation, bloom + streaks + nebula + ACES — for browsers without
@@ -81,6 +126,10 @@ export class WebGL2ParticleRenderer {
   private center: Vec3 = [0, 0, 0]
   private viewProj: Float32Array = new Float32Array(16)
   private uniforms = new Map<string, Record<string, WebGLUniformLocation | null>>()
+  /** Every created buffer/VAO/TF/program, so dispose() can delete them all. */
+  private resources = createResourceTracker()
+  /** Stored so dispose() can removeEventListener the contextlost handler. */
+  private contextLostHandler: ((e: Event) => void) | null = null
 
   private constructor(canvas: HTMLCanvasElement, gl: WebGL2RenderingContext, opts: RendererOptions) {
     this.canvas = canvas
@@ -90,13 +139,15 @@ export class WebGL2ParticleRenderer {
     this.motion = opts.motion
     this.colorA = opts.colorA
     this.colorB = opts.colorB
-    this.posBuf = [gl.createBuffer()!, gl.createBuffer()!]
-    this.velBuf = [gl.createBuffer()!, gl.createBuffer()!]
-    this.targetABuf = gl.createBuffer()!
-    this.targetBBuf = gl.createBuffer()!
-    this.simVAO = [gl.createVertexArray()!, gl.createVertexArray()!]
-    this.renderVAO = [gl.createVertexArray()!, gl.createVertexArray()!]
-    this.tf = gl.createTransformFeedback()!
+    const buf = () => this.resources.track(gl.createBuffer()!, (b) => gl.deleteBuffer(b))
+    const vao = () => this.resources.track(gl.createVertexArray()!, (v) => gl.deleteVertexArray(v))
+    this.posBuf = [buf(), buf()]
+    this.velBuf = [buf(), buf()]
+    this.targetABuf = buf()
+    this.targetBBuf = buf()
+    this.simVAO = [vao(), vao()]
+    this.renderVAO = [vao(), vao()]
+    this.tf = this.resources.track(gl.createTransformFeedback()!, (t) => gl.deleteTransformFeedback(t))
   }
 
   static create(canvas: HTMLCanvasElement, opts: RendererOptions): WebGL2ParticleRenderer | null {
@@ -107,12 +158,18 @@ export class WebGL2ParticleRenderer {
       return null
     }
     const r = new WebGL2ParticleRenderer(canvas, gl, opts)
-    if (!r.initPrograms()) return null
+    if (!r.initPrograms()) {
+      // Shader failure: release the buffers/VAOs/TF made in the constructor
+      // (and any programs that did link) instead of leaking them.
+      r.resources.disposeAll()
+      return null
+    }
     r.initBuffers()
-    canvas.addEventListener('webglcontextlost', (e) => {
+    r.contextLostHandler = (e: Event) => {
       e.preventDefault()
       if (!r.disposed) r.onDeviceLost?.()
-    })
+    }
+    canvas.addEventListener('webglcontextlost', r.contextLostHandler)
     return r
   }
 
@@ -124,13 +181,18 @@ export class WebGL2ParticleRenderer {
       gl.compileShader(sh)
       if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
         warnCode(CODES.ADAPTER_FAILED, `WebGL2 shader compile failed: ${gl.getShaderInfoLog(sh)}`)
+        gl.deleteShader(sh)
         return null
       }
       return sh
     }
     const vs = make(gl.VERTEX_SHADER, vsSrc)
     const fs = make(gl.FRAGMENT_SHADER, fsSrc)
-    if (!vs || !fs) return null
+    if (!vs || !fs) {
+      if (vs) gl.deleteShader(vs)
+      if (fs) gl.deleteShader(fs)
+      return null
+    }
     const prog = gl.createProgram()!
     gl.attachShader(prog, vs)
     gl.attachShader(prog, fs)
@@ -138,9 +200,18 @@ export class WebGL2ParticleRenderer {
     gl.linkProgram(prog)
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
       warnCode(CODES.ADAPTER_FAILED, `WebGL2 program link failed: ${gl.getProgramInfoLog(prog)}`)
+      gl.deleteShader(vs)
+      gl.deleteShader(fs)
+      gl.deleteProgram(prog)
       return null
     }
-    return prog
+    // Shaders are baked into the linked program; drop them so the GL
+    // implementation can free them instead of keeping 12 shaders alive.
+    gl.detachShader(prog, vs)
+    gl.detachShader(prog, fs)
+    gl.deleteShader(vs)
+    gl.deleteShader(fs)
+    return this.resources.track(prog, (p) => gl.deleteProgram(p))
   }
 
   private u(programName: string, program: WebGLProgram, name: string): WebGLUniformLocation | null {
@@ -236,7 +307,7 @@ void main() { o = vec4(0.0); }
    */
   writePositions(data: Float32Array<ArrayBuffer>): void {
     const gl = this.gl
-    const zero = new Float32Array(data.length)
+    const zero = acquireZeroScratch(data.length)
     for (const i of [0, 1] as const) {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf[i])
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
@@ -478,12 +549,21 @@ void main() { o = vec4(0.0); }
     if (this.disposed) return
     this.disposed = true
     const gl = this.gl
-    for (const b of [...this.posBuf, ...this.velBuf, this.targetABuf, this.targetBBuf]) gl.deleteBuffer(b)
+    if (this.contextLostHandler) {
+      this.canvas.removeEventListener('webglcontextlost', this.contextLostHandler)
+      this.contextLostHandler = null
+    }
+    // Programs, transform feedback, VAOs, then buffers (reverse creation order).
+    this.resources.disposeAll()
     if (this.hdrTex) gl.deleteTexture(this.hdrTex)
     if (this.hdrFBO) gl.deleteFramebuffer(this.hdrFBO)
+    this.hdrTex = null
+    this.hdrFBO = null
     for (let i = 0; i < 3; i++) {
       if (this.bloomTex[i]) gl.deleteTexture(this.bloomTex[i])
       if (this.bloomFBO[i]) gl.deleteFramebuffer(this.bloomFBO[i])
+      this.bloomTex[i] = null
+      this.bloomFBO[i] = null
     }
     gl.getExtension('WEBGL_lose_context')?.loseContext()
   }

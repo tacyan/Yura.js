@@ -18,6 +18,45 @@ import type { LookParams } from './renderer'
 const ENV_SIZE = 256
 const ENV_MIPS = 7
 const SHADOW_SIZE = 2048
+
+/** Direction of the key light (matches the analytic light fed to the PBR shader). */
+const MODEL_LIGHT_DIR: Vec3 = [-0.5, 0.5, -0.65]
+
+let lightVPMemo: { area: number; dir: Vec3; matrix: Float32Array<ArrayBuffer> } | null = null
+
+/**
+ * Light view-projection matrix for the key-light shadow camera: an
+ * orthographic box of half-extent `shadowArea` looking down `lightDir`.
+ *
+ * Pure and memoized — identical inputs return the exact same Float32Array
+ * instance, so the steady state (light and area unchanged) allocates
+ * nothing. Callers must treat the returned matrix as immutable.
+ */
+export function computeLightViewProj(shadowArea: number, lightDir: Vec3): Float32Array<ArrayBuffer> {
+  const memo = lightVPMemo
+  if (
+    memo !== null &&
+    memo.area === shadowArea &&
+    memo.dir[0] === lightDir[0] &&
+    memo.dir[1] === lightDir[1] &&
+    memo.dir[2] === lightDir[2]
+  ) {
+    return memo.matrix
+  }
+  const a = shadowArea
+  const ll = Math.hypot(lightDir[0], lightDir[1], lightDir[2])
+  const lightEye: Vec3 = [
+    (lightDir[0] / ll) * a * 2.4,
+    (lightDir[1] / ll) * a * 2.4,
+    (lightDir[2] / ll) * a * 2.4,
+  ]
+  const matrix = multiply(
+    ortho(-a, a, -a, a, 0.1, a * 6),
+    lookAt(lightEye, [0, 0, 0], [0, 1, 0]),
+  )
+  lightVPMemo = { area: a, dir: [lightDir[0], lightDir[1], lightDir[2]], matrix }
+  return matrix
+}
 /** Boot framing for the orbit camera — a stylish three-quarter view. */
 const ModelHome: { yaw: number; pitch: number; distance: number } = {
   yaw: Math.PI + 0.93,
@@ -138,9 +177,13 @@ export class WebGPUModelRenderer {
   private primitives: GpuPrimitive[] = []
   private dynMeshes: DynMesh[] = []
   private textureCache = new Map<string, GPUTexture>()
+  /** Every GPUBuffer this renderer created and has not yet destroyed. */
+  private ownedBuffers = new Set<GPUBuffer>()
 
   private frameData = new Float32Array(72)
   private postData = new Float32Array(16)
+  /** Last light view-proj written to shadowUB — skip the upload while unchanged. */
+  private lastLightVP: Float32Array | null = null
 
   private width = 0
   private height = 0
@@ -317,7 +360,7 @@ export class WebGPUModelRenderer {
     })
 
     const uniform = (label: string, size: number) =>
-      d.createBuffer({ label, size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      this.makeBuffer({ label, size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.frameUB = uniform('yura-frame-ub', 288)
     this.shadowUB = uniform('yura-shadow-ub', 64)
     this.brightUB = uniform('yura-mbright-ub', 64)
@@ -388,7 +431,7 @@ export class WebGPUModelRenderer {
 
     const enc = d.createCommandEncoder({ label: 'yura-env-build' })
     for (let face = 0; face < 6; face++) {
-      const ub = d.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      const ub = this.makeBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
       const data = new Float32Array(16)
       data[0] = face
       d.queue.writeBuffer(ub, 0, data)
@@ -496,14 +539,14 @@ export class WebGPUModelRenderer {
   addMesh(geo: MeshGeometry, mat: SceneMaterial, opts: { shadow?: boolean } = {}): MeshHandle {
     const d = this.device
     const upload = (data: Float32Array<ArrayBuffer> | Uint32Array<ArrayBuffer>, usage: number): GPUBuffer => {
-      const buf = d.createBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
+      const buf = this.makeBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
       d.queue.writeBuffer(buf, 0, data)
       return buf
     }
     const unlit = mat.unlit === true
     const pipeline = unlit ? this.unlitPipeline : this.pbrPipeline
 
-    const matUB = d.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    const matUB = this.makeBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     const matData = new Float32Array(12)
     matData.set(mat.color, 0)
     matData[4] = mat.metallic
@@ -540,7 +583,7 @@ export class WebGPUModelRenderer {
       })
     }
 
-    const objectUB = d.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    const objectUB = this.makeBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     const world = new Float32Array(16)
     world[0] = world[5] = world[10] = world[15] = 1
     d.queue.writeBuffer(objectUB, 0, world)
@@ -576,12 +619,12 @@ export class WebGPUModelRenderer {
       remove: () => {
         if (!mesh.alive) return
         mesh.alive = false
-        mesh.positions.destroy()
-        mesh.normals.destroy()
-        mesh.uvs.destroy()
-        mesh.indices.destroy()
-        mesh.objectUB.destroy()
-        matUB.destroy()
+        this.destroyBuffer(mesh.positions)
+        this.destroyBuffer(mesh.normals)
+        this.destroyBuffer(mesh.uvs)
+        this.destroyBuffer(mesh.indices)
+        this.destroyBuffer(mesh.objectUB)
+        this.destroyBuffer(matUB)
         this.dynMeshes = this.dynMeshes.filter((x) => x !== mesh)
       },
     }
@@ -667,7 +710,7 @@ export class WebGPUModelRenderer {
     fit[14] = -cz * s
 
     const materialBGs: GPUBindGroup[] = model.materials.map((m) => {
-      const ub = d.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      const ub = this.makeBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
       const data = new Float32Array(12)
       data.set(m.baseColorFactor, 0)
       data[4] = m.metallicFactor
@@ -692,14 +735,14 @@ export class WebGPUModelRenderer {
     })
 
     const upload = (data: Float32Array<ArrayBuffer> | Uint32Array<ArrayBuffer>, usage: number): GPUBuffer => {
-      const buf = d.createBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
+      const buf = this.makeBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
       d.queue.writeBuffer(buf, 0, data)
       return buf
     }
 
     this.primitives = model.primitives.map((p) => {
       const world = multiply(fit, p.world)
-      const ub = d.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      const ub = this.makeBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
       d.queue.writeBuffer(ub, 0, world)
       return {
         positions: upload(p.positions, GPUBufferUsage.VERTEX),
@@ -951,9 +994,9 @@ export class WebGPUModelRenderer {
     d.queue.writeBuffer(this.fxUB, 0, this.fxFrameData)
     if (this.fxCount > 0 && this.fxData) {
       if (!this.fxBuffer || this.fxCapacity < this.fxCount) {
-        this.fxBuffer?.destroy()
+        if (this.fxBuffer) this.destroyBuffer(this.fxBuffer)
         this.fxCapacity = Math.max(this.fxCount, this.fxCapacity * 2, 256)
-        this.fxBuffer = d.createBuffer({
+        this.fxBuffer = this.makeBuffer({
           label: 'yura-fx-instances',
           size: this.fxCapacity * 32,
           usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -979,21 +1022,15 @@ export class WebGPUModelRenderer {
     this.frameData[55] = 0.32 // sky dim
 
     // Key-light shadow camera: orthographic box over the play area.
-    const a = this.shadowArea
-    const lightDir: Vec3 = [-0.5, 0.5, -0.65]
-    const ll = Math.hypot(...lightDir)
-    const lightEye: Vec3 = [
-      (lightDir[0] / ll) * a * 2.4,
-      (lightDir[1] / ll) * a * 2.4,
-      (lightDir[2] / ll) * a * 2.4,
-    ]
-    const lightVP = multiply(
-      ortho(-a, a, -a, a, 0.1, a * 6),
-      lookAt(lightEye, [0, 0, 0], [0, 1, 0]),
-    )
+    // Memoized — same instance comes back until the light or area moves,
+    // so the shadow UBO upload can be skipped by identity comparison.
+    const lightVP = computeLightViewProj(this.shadowArea, MODEL_LIGHT_DIR)
     this.frameData.set(lightVP, 56)
     d.queue.writeBuffer(this.frameUB, 0, this.frameData)
-    d.queue.writeBuffer(this.shadowUB, 0, lightVP)
+    if (this.lastLightVP !== lightVP) {
+      this.lastLightVP = lightVP
+      d.queue.writeBuffer(this.shadowUB, 0, lightVP)
+    }
 
     this.postData.fill(0)
     this.postData[0] = this.look.bloomThreshold
@@ -1135,6 +1172,19 @@ export class WebGPUModelRenderer {
     d.queue.submit([enc.finish()])
   }
 
+  /** Create a GPUBuffer registered for destruction on dispose(). */
+  private makeBuffer(desc: GPUBufferDescriptor): GPUBuffer {
+    const buf = this.device.createBuffer(desc)
+    this.ownedBuffers.add(buf)
+    return buf
+  }
+
+  /** Destroy a tracked buffer now and drop it from the registry. */
+  private destroyBuffer(buf: GPUBuffer): void {
+    this.ownedBuffers.delete(buf)
+    buf.destroy()
+  }
+
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
@@ -1145,8 +1195,13 @@ export class WebGPUModelRenderer {
     this.bloomC?.destroy()
     this.envTex?.destroy()
     this.shadowTex?.destroy()
-    this.fxBuffer?.destroy()
+    // Every buffer this renderer ever created (frame/shadow/post UBOs, env
+    // face UBOs, model primitive + dynamic mesh buffers, fx instances).
+    for (const b of this.ownedBuffers) b.destroy()
+    this.ownedBuffers.clear()
+    this.fxBuffer = null
     for (const t of this.textureCache.values()) t.destroy()
+    this.textureCache.clear()
     this.context.unconfigure()
     this.device.destroy()
   }

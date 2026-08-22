@@ -345,6 +345,84 @@ export function watchDprChanges(
 }
 
 /**
+ * One-line HUD text for `YuraStats` — the exact string the demos used to
+ * assemble by hand (pure; exported so `hud.textContent = formatStats(app.stats)`
+ * is the whole integration).
+ */
+export function formatStats(stats: YuraStats): string {
+  const k = (n: number): string => `${(n / 1000).toFixed(0)}k`
+  return (
+    `${stats.backend} · ${stats.fps} fps (${stats.frameMs} ms) · ` +
+    `${k(stats.particles)} / ${k(stats.requestedParticles)} particles · ` +
+    `res ×${stats.resolutionScale} · Q${stats.qualityLevel}`
+  )
+}
+
+/** Ring capacity backing `YuraApp.frames()` — a 4s sparkline window at 60fps. */
+export const FRAME_RING_CAPACITY = 240
+
+/**
+ * Fixed-capacity ring buffer of recent frame times (pure bookkeeping; exported
+ * for tests and for demos that want their own sparkline source).
+ */
+export class FrameRing {
+  private buf: number[]
+  /** Next write slot. */
+  private head = 0
+  private count = 0
+
+  constructor(readonly capacity: number = FRAME_RING_CAPACITY) {
+    if (!Number.isInteger(capacity) || capacity <= 0) {
+      throw new RangeError(`FrameRing capacity must be a positive integer, got ${capacity}`)
+    }
+    this.buf = new Array<number>(capacity)
+  }
+
+  get size(): number {
+    return this.count
+  }
+
+  push(v: number): void {
+    this.buf[this.head] = v
+    this.head = (this.head + 1) % this.capacity
+    if (this.count < this.capacity) this.count++
+  }
+
+  /** The last `n` pushed values, oldest → newest (fewer while still filling). */
+  last(n: number = this.capacity): number[] {
+    const take = Math.min(Math.max(Math.floor(n), 0), this.count)
+    const out = new Array<number>(take)
+    for (let i = 0; i < take; i++) {
+      out[i] = this.buf[(this.head - take + i + this.capacity) % this.capacity]
+    }
+    return out
+  }
+}
+
+/**
+ * Interval bookkeeping behind `YuraApp.onStats()` (exported for tests). Each
+ * `start()` returns an idempotent stop function; `stopAll()` is the dispose
+ * hook — a stop handle used after `stopAll()` is a harmless no-op.
+ */
+export class StatsTicker {
+  private timers = new Set<ReturnType<typeof setInterval>>()
+
+  start(fn: () => void, intervalMs: number): () => void {
+    const id = setInterval(fn, intervalMs)
+    this.timers.add(id)
+    return () => {
+      if (!this.timers.delete(id)) return
+      clearInterval(id)
+    }
+  }
+
+  stopAll(): void {
+    for (const id of this.timers) clearInterval(id)
+    this.timers.clear()
+  }
+}
+
+/**
  * The chainable facade (spec §8.1). Configuration is collected synchronously;
  * everything async (GPU init, shape generation, asset loads) happens in run().
  */
@@ -401,6 +479,10 @@ export class YuraApp {
   /** 1 right after a click, decaying — drives the shockwave burst. */
   private burst = 0
   private cleanups: Array<() => void> = []
+  /** Recent frame times (ms) — fed by tick(), read by frames(). */
+  private frameRing = new FrameRing()
+  /** onStats() interval bookkeeping — stopped wholesale in dispose(). */
+  private statsTicker = new StatsTicker()
 
   constructor(target: string | HTMLElement, options: YuraOptions = {}) {
     const el = typeof target === 'string' ? document.querySelector<HTMLElement>(target) : target
@@ -573,6 +655,26 @@ export class YuraApp {
     }
   }
 
+  /**
+   * HUD sugar (F-HUD): invoke `cb` every `intervalMs` with fresh stats plus
+   * the `formatStats` one-liner, so a demo HUD is
+   * `app.onStats((_, text) => { hud.textContent = text })`. Returns a stop
+   * function; every subscription also stops automatically on dispose().
+   */
+  onStats(cb: (stats: YuraStats, text: string) => void, intervalMs = 500): () => void {
+    if (this.disposed) return () => {}
+    return this.statsTicker.start(() => {
+      if (this.disposed) return
+      const s = this.stats
+      cb(s, formatStats(s))
+    }, intervalMs)
+  }
+
+  /** The last `n` frame times in ms, oldest → newest (sparkline feed). */
+  frames(n = 120): readonly number[] {
+    return this.frameRing.last(n)
+  }
+
   async run(): Promise<this> {
     if (this.disposed) return this
     this.mountCanvas()
@@ -709,6 +811,7 @@ export class YuraApp {
     if (this.disposed) return
     this.disposed = true
     this.pause()
+    this.statsTicker.stopAll()
     this.cleanups = drainCleanups(this.cleanups)
     this.renderer?.dispose()
     this.renderer = null
@@ -1019,6 +1122,7 @@ export class YuraApp {
     const dt = Math.min(dtMs / 1000, MAX_DT)
     this.simTime += dt
     this.fpsEma = this.fpsEma * 0.95 + (1000 / Math.max(dtMs, 0.1)) * 0.05
+    this.frameRing.push(dtMs)
 
     if (this.governor.update(dtMs)) this.applyResolution()
 

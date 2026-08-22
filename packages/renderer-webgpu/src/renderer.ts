@@ -9,6 +9,7 @@ import {
   warnCode,
 } from '@yura/core'
 import { SIM_WGSL, RENDER_WGSL, POST_WGSL } from './shaders'
+import { ViewCache, getZeroScratch } from './view-cache'
 
 export interface LookParams {
   exposure: number
@@ -127,6 +128,8 @@ export class WebGPUParticleRenderer {
   private bloomB: GPUTexture | null = null
   private bloomC: GPUTexture | null = null
   private sampler!: GPUSampler
+  /** Cached views for the offscreen targets above (not the swapchain). */
+  private readonly viewCache = new ViewCache<GPUTextureView>()
 
   private simData = new ArrayBuffer(64)
   private simF32 = new Float32Array(this.simData)
@@ -380,7 +383,9 @@ export class WebGPUParticleRenderer {
    */
   writePositions(data: Float32Array<ArrayBuffer>): void {
     this.device.queue.writeBuffer(this.positions, 0, data)
-    this.device.queue.writeBuffer(this.velocities, 0, new Float32Array(data.length))
+    // Shared zero scratch instead of a fresh zero-filled array per call; it
+    // may be longer than needed, so bound the write to data.length elements.
+    this.device.queue.writeBuffer(this.velocities, 0, getZeroScratch(data.length), 0, data.length)
   }
 
   resize(width: number, height: number): void {
@@ -397,6 +402,7 @@ export class WebGPUParticleRenderer {
     this.bloomA?.destroy()
     this.bloomB?.destroy()
     this.bloomC?.destroy()
+    this.viewCache.invalidate()
 
     const d = this.device
     const tex = (label: string, w: number, h: number) =>
@@ -425,10 +431,10 @@ export class WebGPUParticleRenderer {
     writeDir(this.streak1UB, 3.5 / hw, 0)
     writeDir(this.streak2UB, 10 / hw, 0)
 
-    const hdrView = this.hdrTex.createView()
-    const bloomAView = this.bloomA.createView()
-    const bloomBView = this.bloomB.createView()
-    const bloomCView = this.bloomC.createView()
+    const hdrView = this.viewCache.getView(this.hdrTex)
+    const bloomAView = this.viewCache.getView(this.bloomA)
+    const bloomBView = this.viewCache.getView(this.bloomB)
+    const bloomCView = this.viewCache.getView(this.bloomC)
 
     this.brightBG = d.createBindGroup({
       layout: this.brightPipeline.getBindGroupLayout(0),
@@ -608,7 +614,7 @@ export class WebGPUParticleRenderer {
     compute.dispatchWorkgroups(Math.ceil(n / WORKGROUP))
     compute.end()
 
-    const hdrView = this.hdrTex.createView()
+    const hdrView = this.viewCache.getView(this.hdrTex)
 
     // Trail fade (or a fresh clear right after resize).
     const fade = enc.beginRenderPass({
@@ -655,12 +661,12 @@ export class WebGPUParticleRenderer {
       pass.end()
     }
 
-    fullscreen('yura-bright', this.brightPipeline, this.brightBG, this.bloomA.createView())
-    fullscreen('yura-blur-h', this.blurPipeline, this.blurHBG, this.bloomB.createView())
-    fullscreen('yura-blur-v', this.blurPipeline, this.blurVBG, this.bloomA.createView())
+    fullscreen('yura-bright', this.brightPipeline, this.brightBG, this.viewCache.getView(this.bloomA))
+    fullscreen('yura-blur-h', this.blurPipeline, this.blurHBG, this.viewCache.getView(this.bloomB))
+    fullscreen('yura-blur-v', this.blurPipeline, this.blurVBG, this.viewCache.getView(this.bloomA))
     // Anamorphic streaks: two widening horizontal smears of the bloom chain.
-    fullscreen('yura-streak-1', this.blurPipeline, this.streak1BG, this.bloomB.createView())
-    fullscreen('yura-streak-2', this.blurPipeline, this.streak2BG, this.bloomC.createView())
+    fullscreen('yura-streak-1', this.blurPipeline, this.streak1BG, this.viewCache.getView(this.bloomB))
+    fullscreen('yura-streak-2', this.blurPipeline, this.streak2BG, this.viewCache.getView(this.bloomC))
     fullscreen(
       'yura-composite',
       this.compositePipeline,
@@ -685,6 +691,7 @@ export class WebGPUParticleRenderer {
     this.bloomA?.destroy()
     this.bloomB?.destroy()
     this.bloomC?.destroy()
+    this.viewCache.invalidate()
     this.context.unconfigure()
     this.device.destroy()
   }

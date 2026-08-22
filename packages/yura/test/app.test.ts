@@ -292,3 +292,170 @@ test('clickAimDelta: out-of-bounds coords clamp and zero-size is safe', () => {
   expect(far.pitch).toBeCloseTo(0.45, 5)
   expect(clickAimDelta(10, 10, 0, 0)).toEqual({ yaw: 0, pitch: 0 })
 })
+
+// ---- HUD sugar: formatStats / FrameRing / StatsTicker / onStats ----
+
+import {
+  formatStats,
+  FrameRing,
+  FRAME_RING_CAPACITY,
+  StatsTicker,
+  YuraApp,
+  type YuraStats,
+} from '../src/app'
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** YuraApp never touches the DOM until run()/mountCanvas — a bare object works headless. */
+function headlessApp(): YuraApp {
+  return new YuraApp({} as unknown as HTMLElement)
+}
+
+// -- formatStats --
+
+test('formatStats renders the one-line HUD string the demos assembled by hand', () => {
+  const s: YuraStats = {
+    backend: 'webgpu',
+    fps: 60,
+    frameMs: 16.7,
+    particles: 500_000,
+    requestedParticles: 1_000_000,
+    resolutionScale: 0.75,
+    qualityLevel: 2,
+  }
+  // Byte-for-byte the string examples/hello/main.ts used to build inline.
+  expect(formatStats(s)).toBe('webgpu · 60 fps (16.7 ms) · 500k / 1000k particles · res ×0.75 · Q2')
+})
+
+test('formatStats rounds particle counts to whole k (poster backend, zero particles)', () => {
+  const s: YuraStats = {
+    backend: 'poster',
+    fps: 0,
+    frameMs: 0,
+    particles: 0,
+    requestedParticles: 1_500,
+    resolutionScale: 1,
+    qualityLevel: 0,
+  }
+  expect(formatStats(s)).toBe('poster · 0 fps (0 ms) · 0k / 2k particles · res ×1 · Q0')
+})
+
+// -- FrameRing --
+
+test('FrameRing keeps pushed values in order while below capacity', () => {
+  const ring = new FrameRing(4)
+  expect(ring.size).toBe(0)
+  expect(ring.last()).toEqual([])
+  ring.push(16)
+  ring.push(17)
+  ring.push(18)
+  expect(ring.size).toBe(3)
+  expect(ring.last()).toEqual([16, 17, 18]) // oldest → newest
+})
+
+test('FrameRing evicts the oldest values once capacity is exceeded', () => {
+  const ring = new FrameRing(3)
+  for (const v of [1, 2, 3, 4, 5]) ring.push(v)
+  expect(ring.size).toBe(3) // capped
+  expect(ring.last()).toEqual([3, 4, 5]) // 1 and 2 evicted, order preserved
+  ring.push(6)
+  expect(ring.last()).toEqual([4, 5, 6])
+})
+
+test('FrameRing.last(n) returns only the newest n, and clamps silly n', () => {
+  const ring = new FrameRing(5)
+  for (const v of [10, 20, 30, 40, 50]) ring.push(v)
+  expect(ring.last(2)).toEqual([40, 50])
+  expect(ring.last(99)).toEqual([10, 20, 30, 40, 50]) // n > size → everything
+  expect(ring.last(0)).toEqual([])
+  expect(ring.last(-3)).toEqual([])
+})
+
+test('FrameRing rejects a non-positive or fractional capacity', () => {
+  expect(() => new FrameRing(0)).toThrow(RangeError)
+  expect(() => new FrameRing(-1)).toThrow(RangeError)
+  expect(() => new FrameRing(2.5)).toThrow(RangeError)
+})
+
+// -- StatsTicker --
+
+test('StatsTicker.start fires periodically; its stop handle halts it and is idempotent', async () => {
+  const ticker = new StatsTicker()
+  let n = 0
+  const stop = ticker.start(() => n++, 10)
+  await sleep(80)
+  expect(n).toBeGreaterThanOrEqual(2)
+  stop()
+  const frozen = n
+  await sleep(50)
+  expect(n).toBe(frozen) // no ticks after stop
+  stop() // second stop is a no-op, not a crash
+  ticker.stopAll() // and stopAll after stop is safe too
+})
+
+test('StatsTicker.stopAll halts every started timer (the dispose hook)', async () => {
+  const ticker = new StatsTicker()
+  let a = 0
+  let b = 0
+  ticker.start(() => a++, 10)
+  const stopB = ticker.start(() => b++, 10)
+  await sleep(50)
+  ticker.stopAll()
+  const [fa, fb] = [a, b]
+  await sleep(50)
+  expect(a).toBe(fa)
+  expect(b).toBe(fb)
+  stopB() // handle outlives stopAll harmlessly
+})
+
+// -- YuraApp.onStats / frames --
+
+test('onStats delivers stats plus the formatStats text, and dispose() stops it', async () => {
+  const app = headlessApp()
+  const seen: Array<{ stats: YuraStats; text: string }> = []
+  app.onStats((stats, text) => seen.push({ stats, text }), 10)
+  await sleep(80)
+  expect(seen.length).toBeGreaterThanOrEqual(2)
+  const first = seen[0]
+  expect(first.text).toBe(formatStats(first.stats))
+  expect(first.stats.backend).toBe('poster') // never run(): still the poster backend
+  expect(first.stats.requestedParticles).toBeGreaterThan(0)
+
+  app.dispose()
+  const frozen = seen.length
+  await sleep(50)
+  expect(seen.length).toBe(frozen) // dispose stopped the interval
+})
+
+test('the onStats stop handle halts only that subscription', async () => {
+  const app = headlessApp()
+  let a = 0
+  let b = 0
+  const stopA = app.onStats(() => a++, 10)
+  app.onStats(() => b++, 10)
+  await sleep(50)
+  stopA()
+  const [fa, fb] = [a, b]
+  await sleep(50)
+  expect(a).toBe(fa) // stopped one is frozen...
+  expect(b).toBeGreaterThan(fb) // ...the sibling keeps ticking
+  app.dispose()
+})
+
+test('onStats on a disposed app is a no-op that still hands back a callable stop', async () => {
+  const app = headlessApp()
+  app.dispose()
+  let calls = 0
+  const stop = app.onStats(() => calls++, 5)
+  await sleep(40)
+  expect(calls).toBe(0)
+  stop() // must not throw
+})
+
+test('frames() is empty before any tick and its default window fits the ring', () => {
+  const app = headlessApp()
+  expect(app.frames()).toEqual([])
+  expect(app.frames(88)).toEqual([]) // the showcase sparkline width
+  expect(FRAME_RING_CAPACITY).toBeGreaterThanOrEqual(120) // default n always fits
+  app.dispose()
+})
