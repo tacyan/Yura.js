@@ -27,7 +27,6 @@ Three reasons Yura is worth your `<div>`:
 bun install
 bun dev            # hello example — 1M-particle neon galaxy
 bun run showcase   # flagship demo: type a word, a million particles obey
-bun run dev:game   # ORB RUSH — a complete 3D game, zero assets
 bun run dev:three  # Yura particles inside a plain Three.js scene
 bun run dev:lyrics # kinetic typography — timed lyrics as particle morphs
 bun run dev:model  # glTF PBR demo (DamagedHelmet, drag to orbit)
@@ -41,8 +40,8 @@ bun run typecheck
 
 `yura(sel).scene()` is a zero-asset game kit: procedural PBR primitives,
 physics, input, collisions, a follow camera, HUD text, and GPU particle FX —
-all from one chainable API. This is the essence of the bundled ORB RUSH
-example (`bun run dev:game`):
+all from one chainable API. Try it live: `bun run play`, then hit the
+“mini game” recipe (PRISM RUSH). The essence:
 
 ```ts
 import { yura, materials } from 'yura'

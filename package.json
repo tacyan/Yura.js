@@ -10,7 +10,6 @@
   "scripts": {
     "dev": "bun ./examples/hello/index.html",
     "dev:model": "bun ./examples/model/index.html",
-    "dev:game": "bun ./examples/game/index.html",
     "showcase": "bun ./apps/showcase/index.html",
     "bench": "bun ./apps/benchmarks/index.html",
     "dev:three": "bun ./examples/three/index.html",

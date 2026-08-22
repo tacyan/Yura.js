@@ -27,8 +27,8 @@ import {
 // ---- grapheme segmentation ----
 
 test('CJK text segments per character', () => {
-  const gs = segmentGraphemes('しなつきスバル')
-  expect(gs).toEqual(['し', 'な', 'つ', 'き', 'ス', 'バ', 'ル'])
+  const gs = segmentGraphemes('ゆらめくヒカリ')
+  expect(gs).toEqual(['ゆ', 'ら', 'め', 'く', 'ヒ', 'カ', 'リ'])
 })
 
 test('compound emoji stay whole with Intl.Segmenter', () => {
@@ -130,7 +130,7 @@ test('applySweepDirection remaps the delay coordinate in place', () => {
 const LINES: LyricLine[] = [
   { text: '夜を照らす', at: 4 },
   { text: '君の声が', at: 0 },
-  { text: 'しなつきスバル', at: 6 },
+  { text: '波のように踊る', at: 6 },
 ]
 
 test('orderLines sorts by start time and is stable', () => {

@@ -35,15 +35,15 @@
         "yura": "workspace:*",
       },
     },
-    "examples/game": {
-      "name": "example-game",
+    "examples/hello": {
+      "name": "example-hello",
       "version": "0.1.0",
       "dependencies": {
         "yura": "workspace:*",
       },
     },
-    "examples/hello": {
-      "name": "example-hello",
+    "examples/lyrics": {
+      "name": "example-lyrics",
       "version": "0.1.0",
       "dependencies": {
         "yura": "workspace:*",
@@ -125,9 +125,9 @@
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
 
-    "example-game": ["example-game@workspace:examples/game"],
-
     "example-hello": ["example-hello@workspace:examples/hello"],
+
+    "example-lyrics": ["example-lyrics@workspace:examples/lyrics"],
 
     "example-model": ["example-model@workspace:examples/model"],
 
