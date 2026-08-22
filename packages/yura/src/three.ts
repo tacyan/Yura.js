@@ -37,6 +37,7 @@ import {
   WebGPUParticleRenderer,
   type ExternalCamera,
   type LookParams,
+  type MotionParams,
 } from '@yura/renderer-webgpu'
 import { WebGL2ParticleRenderer } from '@yura/renderer-webgl'
 import { resolvePreset } from './presets'
@@ -170,6 +171,12 @@ export interface YuraLayerOptions extends MotionTimingOptions {
   gradient?: [string, string]
   /** Look name or full LookParams override. */
   look?: LookName | LookParams
+  /**
+   * Particle-physics overrides (attraction, damping, swirl, turbulence, …),
+   * merged over the preset's motion — the physics half of `app.motion()`.
+   * Retune later with `layer.motion()`; timing lives in `hold`/`morph`/`ease`.
+   */
+  motion?: Partial<MotionParams>
   /** Initial shape (ShapeSpec or a string rendered as particle text). */
   shape?: ShapeSpec | string
   /** Approximate world-space radius of the swarm in your scene's units. Default 6. */
@@ -305,6 +312,7 @@ export class YuraThreeLayer {
     this.morphEase = opts.ease !== undefined ? resolveEase(opts.ease) : eases.cubic
     this.activeMorphSeconds = this.morphSeconds
     this.activeMorphEase = this.morphEase
+    if (opts.motion) this.motion(opts.motion)
     if (opts.quality === 'high') this.governor.enabled = false
     else if (this.count >= 300_000) this.governor.setLevel(2)
 
@@ -356,6 +364,19 @@ export class YuraThreeLayer {
   /** Resize the swarm to roughly `radius` world units. */
   setRadius(radius: number): this {
     this.scale = radius / YURA_SHAPE_RADIUS
+    return this
+  }
+
+  /**
+   * Live-retune particle physics — the physics half of `app.motion()`
+   * (attraction, damping, noiseScale, noiseStrength, swirl, maxSpeed,
+   * speedColorMix, turbulence, turbulenceScale). The partial merges over
+   * the current params and the renderer reads them next frame. Timing
+   * (`hold`/`morph`/`ease`) is a `yuraLayer` option instead, matching the
+   * app's physics/timing split.
+   */
+  motion(m: Partial<MotionParams>): this {
+    this.renderer.motion = { ...this.renderer.motion, ...m }
     return this
   }
 

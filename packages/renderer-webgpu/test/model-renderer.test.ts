@@ -3,6 +3,7 @@ import { ortho, lookAt, multiply, transform4, type Vec3 } from '@yura/core'
 import { WebGPUModelRenderer, computeLightViewProj } from '../src/model-renderer'
 import type { SceneMaterial } from '../src/model-renderer'
 import { POST_WGSL } from '../src/shaders'
+import { gpuBlendState } from '../src/blend'
 import type { LookParams } from '../src/renderer'
 import type { MeshGeometry } from '../src/meshes'
 
@@ -54,11 +55,17 @@ function installWebGPUGlobals(): void {
 }
 installWebGPUGlobals()
 
+interface FakePipelineDesc {
+  label?: string
+  fragment?: { targets?: { format?: string; blend?: GPUBlendState }[] }
+}
+
 function makeFakeGPU() {
   const buffers: FakeBuffer[] = []
   const textures: FakeTexture[] = []
   const shaderModules: { label?: string; code: string }[] = []
-  const pipelines: { label?: string }[] = []
+  const pipelines: FakePipelineDesc[] = []
+  const bindGroups: { layout: unknown }[] = []
   const pass = {
     setPipeline() {}, setBindGroup() {}, setVertexBuffer() {}, setIndexBuffer() {},
     draw() {}, drawIndexed() {}, end() {},
@@ -69,7 +76,7 @@ function makeFakeGPU() {
       shaderModules.push(desc)
       return {}
     },
-    createRenderPipeline: (desc: { label?: string }) => {
+    createRenderPipeline: (desc: FakePipelineDesc) => {
       pipelines.push(desc)
       return { getBindGroupLayout: () => ({}) }
     },
@@ -84,7 +91,10 @@ function makeFakeGPU() {
       buffers.push(b)
       return b
     },
-    createBindGroup: () => ({}),
+    createBindGroup: (desc: { layout: unknown }) => {
+      bindGroups.push(desc)
+      return {}
+    },
     createCommandEncoder: () => ({ beginRenderPass: () => pass, finish: () => ({}) }),
     queue: { writeBuffer() {}, writeTexture() {}, submit() {}, copyExternalImageToTexture() {} },
     lost: new Promise(() => {}),
@@ -105,7 +115,7 @@ function makeFakeGPU() {
     height: 0,
     getContext: (kind: string) => (kind === 'webgpu' ? context : null),
   }
-  return { device, context, canvas, buffers, textures, shaderModules, pipelines }
+  return { device, context, canvas, buffers, textures, shaderModules, pipelines, bindGroups }
 }
 
 const LOOK: LookParams = {
@@ -217,6 +227,77 @@ test('toneMapping switch rebuilds the composite pipeline exactly once', async ()
   r.frame(1 / 60, 4 / 60)
   expect(pipelines.length).toBe(pipesBefore + 1)
   expect(shaderModules.length).toBe(modulesBefore + 1)
+})
+
+// ---------------------------------------------------------------------------
+// blendMode: the FX sprite pipeline uses the shared blend.ts table. The
+// default ('additive') descriptor is pinned; switching modes rebuilds the FX
+// pipeline (and its bind group) exactly once, reusing the compiled module.
+// ---------------------------------------------------------------------------
+
+function fxPipelines(pipelines: FakePipelineDesc[]): FakePipelineDesc[] {
+  return pipelines.filter((p) => p.label === 'yura-fx')
+}
+
+function fxBlend(desc: FakePipelineDesc): GPUBlendState | undefined {
+  return desc.fragment?.targets?.[0]?.blend
+}
+
+test('default blendMode builds one FX pipeline with the pinned additive blend', async () => {
+  const { pipelines } = await makeRenderer()
+  const fx = fxPipelines(pipelines)
+  expect(fx.length).toBe(1)
+  // Pinned descriptor: identical color math to the historic hand-rolled
+  // additive state. The alpha component is the shared blend.ts additive
+  // (one/one); with the FX shader emitting alpha 0 it degenerates to the
+  // historic zero/one — destination alpha is preserved either way.
+  expect(fxBlend(fx[0]!)).toEqual({
+    color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+    alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
+  })
+  expect(fxBlend(fx[0]!)).toEqual(gpuBlendState('additive'))
+  expect(fx[0]!.fragment?.targets?.[0]?.format).toBe('rgba16float')
+})
+
+test('blendMode switch rebuilds the FX pipeline exactly once', async () => {
+  const { r, pipelines, shaderModules, bindGroups } = await makeRenderer()
+  r.addMesh(triangleGeo(), PBR_MAT, { shadow: true })
+  r.resize(64, 64)
+  const pipesBefore = pipelines.length
+  const modulesBefore = shaderModules.length
+  const bgBefore = bindGroups.length
+
+  // Default ('additive') frames never rebuild anything.
+  r.frame(1 / 60, 0)
+  r.frame(1 / 60, 1 / 60)
+  expect(pipelines.length).toBe(pipesBefore)
+  expect(bindGroups.length).toBe(bgBefore)
+
+  // Switching the mode rebuilds the FX pipeline + bind group once,
+  // reusing the already-compiled FX shader module.
+  r.look = { ...LOOK, blendMode: 'screen' }
+  r.frame(1 / 60, 2 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 1)
+  expect(bindGroups.length).toBe(bgBefore + 1)
+  expect(shaderModules.length).toBe(modulesBefore)
+  const rebuilt = pipelines[pipelines.length - 1]!
+  expect(rebuilt.label).toBe('yura-fx')
+  expect(fxBlend(rebuilt)).toEqual(gpuBlendState('screen'))
+
+  // Further frames with the same mode do not rebuild again.
+  r.frame(1 / 60, 3 / 60)
+  r.frame(1 / 60, 4 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 1)
+  expect(bindGroups.length).toBe(bgBefore + 1)
+
+  // Switching back to the default rebuilds once more, byte-equal to the
+  // original default descriptor.
+  r.look = { ...LOOK, blendMode: 'additive' }
+  r.frame(1 / 60, 5 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 2)
+  const restored = pipelines[pipelines.length - 1]!
+  expect(restored.label).toBe('yura-fx')
+  expect(fxBlend(restored)).toEqual(fxBlend(fxPipelines(pipelines)[0]!))
 })
 
 // ---------------------------------------------------------------------------

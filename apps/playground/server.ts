@@ -81,13 +81,14 @@ yura('#stage').preset('aurora').motion({ turbulence: 0.8 }).run()
     label: 'custom look',
     code: `import { yura, shapes, looks } from 'yura'
 
-// Looks accept raw overrides — down to the blend mode and tone curve.
+// sakura ships the whole pipeline curated — screen blend + reinhard tone
+// curve — and still accepts raw overrides, down to any knob you like.
 yura('#stage')
   .particles(400_000)
-  .gradient('#f472b6', '#22d3ee')
-  .look(looks.cinematic({ trail: 0.6, streak: 0.9, bloomStrength: 0.9, blendMode: 'screen', toneMapping: 'reinhard' }))
-  .shape(shapes.ring({ radius: 9, thickness: 1.6 }))
-  .motion({ swirl: 0.35, noiseStrength: 1.1 })
+  .gradient('#f9a8d4', '#fde68a')
+  .look(looks.sakura({ trail: 0.45 }))
+  .shape(shapes.flow())
+  .motion({ turbulence: 0.5, swirl: 0.08 })
   .run()
 `,
   },

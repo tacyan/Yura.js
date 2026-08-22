@@ -524,6 +524,13 @@ export class YuraApp {
   private colorB = '#8b5cf6'
   private lookParams: LookParams = lookRegistry.cinematic()
   private motionParams: MotionParams = { ...DEFAULT_MOTION }
+  /**
+   * Physics values the user set explicitly via `.motion()`. `preset()`
+   * re-applies them on top of the preset's motion so an explicit
+   * `.motion({ turbulence: 0.8 })` survives a later `.preset('aurora')`
+   * instead of being silently discarded (mirrors `shapeOverridden`).
+   */
+  private userMotion: Partial<MotionParams> = {}
   private shapeSeq: ShapeSpec[] = [shapeRegistry.galaxy()]
   private shapeOverridden = false
   /** Pointer reactivity ships ON — the zero-config path is the flagship path. */
@@ -678,12 +685,17 @@ export class YuraApp {
    * merge into the simulation params exactly as before; `hold`, `morph`
    * and `ease` retune the shape-cycle timing at runtime. All optional —
    * omitted knobs keep their current values.
+   *
+   * Explicitly-set physics fields are sticky: a later `.preset()` swaps its
+   * own motion defaults in but keeps every key you set here, so
+   * `.motion({ turbulence: 0.8 }).preset('aurora')` works in either order.
    */
   motion(m: Partial<MotionParams> & MotionTimingOptions): this {
     const { hold, morph, ease, ...physics } = m
     if (hold !== undefined) this.holdSeconds = Math.max(hold, 0)
     if (morph !== undefined) this.morphSeconds = Math.max(morph, MIN_MORPH_SECONDS)
     if (ease !== undefined) this.morphEase = resolveEase(ease)
+    this.userMotion = { ...this.userMotion, ...physics }
     this.motionParams = { ...this.motionParams, ...physics }
     return this
   }
@@ -706,7 +718,9 @@ export class YuraApp {
     this.colorA = p.colorA
     this.colorB = p.colorB
     this.lookParams = p.look
-    this.motionParams = p.motion
+    // Preset motion replaces preset-era values, but keys the user set
+    // explicitly through .motion() win — see userMotion.
+    this.motionParams = { ...p.motion, ...this.userMotion }
     if (!this.shapeOverridden) this.shapeSeq = p.shapes
     return this
   }

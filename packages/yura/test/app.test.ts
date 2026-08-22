@@ -589,6 +589,48 @@ test('motion rejects an unknown ease name with a YuraError', () => {
   app.dispose()
 })
 
+import { resolvePreset } from '../src/presets'
+
+test('physics keys set via motion() survive a later preset() — order no longer matters', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  app.motion({ turbulence: 0.8, damping: 9 }).preset('aurora')
+
+  const aurora: Record<string, unknown> = { ...resolvePreset('aurora').motion }
+  expect(i.motionParams.turbulence).toBe(0.8)
+  expect(i.motionParams.damping).toBe(9)
+  // Everything the user did NOT touch still comes from the new preset.
+  for (const [k, v] of Object.entries(aurora)) {
+    if (k === 'turbulence' || k === 'damping') continue
+    expect(i.motionParams[k]).toBe(v)
+  }
+  app.dispose()
+})
+
+test('preset switching without motion() still replaces motion params wholesale', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  app.preset('aurora')
+  expect(i.motionParams).toEqual({ ...resolvePreset('aurora').motion })
+  app.preset('cinematic')
+  expect(i.motionParams).toEqual({ ...resolvePreset('cinematic').motion })
+  app.dispose()
+})
+
+test('user motion keys persist across repeated preset swaps, later motion() still wins', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  app.preset('aurora').motion({ damping: 9 }).preset('cinematic')
+  expect(i.motionParams.damping).toBe(9)
+  expect(i.motionParams.noiseStrength).toBe(resolvePreset('cinematic').motion.noiseStrength)
+
+  app.motion({ damping: 4 })
+  expect(i.motionParams.damping).toBe(4)
+  app.preset('cyberpunk')
+  expect(i.motionParams.damping).toBe(4)
+  app.dispose()
+})
+
 test('the automatic cycle honours motion({ hold, morph, ease })', () => {
   const app = headlessApp()
   const i = internals(app)

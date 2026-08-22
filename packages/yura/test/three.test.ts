@@ -148,6 +148,8 @@ test('composeSwarmCamera passes fovY and sizeScale through for WebGL sizing', ()
 
 import { YuraThreeLayer, morphStep, type YuraLayerOptions } from '../src/three'
 import { eases, type Ease } from '../src/app'
+import { DEFAULT_MOTION } from '../src/presets'
+import type { MotionParams } from '@yura/renderer-webgpu'
 
 const g = globalThis as unknown as { ResizeObserver?: unknown }
 if (!g.ResizeObserver) {
@@ -164,6 +166,9 @@ class FakeRenderer {
   count = 1000
   morphT = 0
   morphBoost = 0
+  // Real renderers hold the preset's MotionParams and read this field every
+  // frame when uploading the sim uniforms (turbulence included).
+  motion: MotionParams = { ...DEFAULT_MOTION }
   externalCamera: unknown = null
   wroteA = 0
   wroteB = 0
@@ -295,4 +300,36 @@ test('unknown ease names are rejected with the available names', async () => {
   await expect(layer.morphTo(flatSpec(), { ease: 'nope' as unknown as Ease })).rejects.toThrow(
     /cubic/,
   )
+})
+
+// ---------------------------------------------------------------------------
+// Particle physics (MotionParams) exposure. The renderers read their public
+// `motion` field every frame when uploading sim uniforms (uTurbulence /
+// simF32[16..17]), so pinning layer -> renderer.motion pins the whole path;
+// renderer -> shader is locked by renderer-webgpu's turbulence.test.ts.
+// ---------------------------------------------------------------------------
+
+test('by default the layer leaves the renderer motion params untouched', () => {
+  const { renderer } = makeLayer()
+  expect(renderer.motion).toEqual({ ...DEFAULT_MOTION })
+})
+
+test('the motion option merges physics over the renderer params at construction', () => {
+  const { renderer } = makeLayer({ motion: { turbulence: 0.9, damping: 9 } })
+  expect(renderer.motion.turbulence).toBe(0.9)
+  expect(renderer.motion.damping).toBe(9)
+  // Untouched fields keep the preset values.
+  expect(renderer.motion.swirl).toBe(DEFAULT_MOTION.swirl)
+  expect(renderer.motion.attraction).toBe(DEFAULT_MOTION.attraction)
+})
+
+test('layer.motion() live-retunes renderer physics, accumulating like app.motion()', () => {
+  const { layer, renderer } = makeLayer()
+  expect(layer.motion({ turbulence: 1.5 })).toBe(layer) // chainable
+  expect(renderer.motion.turbulence).toBe(1.5)
+  layer.motion({ turbulenceScale: 0.5, swirl: 0.3 })
+  expect(renderer.motion.turbulence).toBe(1.5) // earlier tweak survives
+  expect(renderer.motion.turbulenceScale).toBe(0.5)
+  expect(renderer.motion.swirl).toBe(0.3)
+  expect(renderer.motion.damping).toBe(DEFAULT_MOTION.damping)
 })

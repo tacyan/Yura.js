@@ -10,7 +10,7 @@ import {
   type Vec3,
 } from '@yura/core'
 import { buildPostWgsl } from './shaders'
-import { resolveToneMapping, type ToneMapping } from './blend'
+import { gpuBlendState, resolveBlendMode, resolveToneMapping, type BlendMode, type ToneMapping } from './blend'
 import { ViewCache } from './view-cache'
 import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL, FX_WGSL } from './model-shaders'
 import { loadGLB, type GLTFModel } from './gltf'
@@ -144,7 +144,9 @@ export class WebGPUModelRenderer {
   private fxPipeline!: GPURenderPipeline
 
   private postModule!: GPUShaderModule
+  private fxModule!: GPUShaderModule
   private appliedToneMapping: ToneMapping
+  private appliedBlendMode: BlendMode
   /** Caches per-frame texture views; invalidated when render targets are recreated. */
   private readonly viewCache = new ViewCache()
 
@@ -245,6 +247,7 @@ export class WebGPUModelRenderer {
     this.format = format
     this.look = look
     this.appliedToneMapping = resolveToneMapping(look.toneMapping)
+    this.appliedBlendMode = resolveBlendMode(look.blendMode)
   }
 
   static async create(canvas: HTMLCanvasElement, device: GPUDevice, look: LookParams): Promise<WebGPUModelRenderer> {
@@ -374,18 +377,19 @@ export class WebGPUModelRenderer {
     this.compositeUB = uniform('yura-mcomposite-ub', 64)
     this.fxUB = uniform('yura-fx-ub', 96)
 
-    // FX sprites: instanced camera-facing quads, additive HDR blending,
-    // depth-tested against the mesh scene without writing depth.
-    const additive: GPUBlendState = {
-      color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-      alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
-    }
-    const fxModule = d.createShaderModule({ label: 'yura-fx', code: FX_WGSL })
-    this.fxPipeline = d.createRenderPipeline({
+    // FX sprites: instanced camera-facing quads blended into the HDR target
+    // with the look's blend mode (additive by default), depth-tested against
+    // the mesh scene without writing depth.
+    this.fxModule = d.createShaderModule({ label: 'yura-fx', code: FX_WGSL })
+    this.buildFxPipeline()
+  }
+
+  private buildFxPipeline(): void {
+    this.fxPipeline = this.device.createRenderPipeline({
       label: 'yura-fx',
       layout: 'auto',
       vertex: {
-        module: fxModule,
+        module: this.fxModule,
         entryPoint: 'vs',
         buffers: [
           {
@@ -398,7 +402,11 @@ export class WebGPUModelRenderer {
           },
         ],
       },
-      fragment: { module: fxModule, entryPoint: 'fs', targets: [{ format: 'rgba16float', blend: additive }] },
+      fragment: {
+        module: this.fxModule,
+        entryPoint: 'fs',
+        targets: [{ format: 'rgba16float', blend: gpuBlendState(this.appliedBlendMode) }],
+      },
       primitive: { topology: 'triangle-strip', cullMode: 'none' },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
     })
@@ -434,10 +442,16 @@ export class WebGPUModelRenderer {
   }
 
   /**
-   * Rebuild the post pipeline only when look.toneMapping actually changed
-   * (same discipline as the particle renderer's syncLookModes).
+   * Rebuild pipelines only when look.blendMode / look.toneMapping actually
+   * changed (same discipline as the particle renderer's syncLookModes).
    */
   private syncLookModes(): void {
+    const blend = resolveBlendMode(this.look.blendMode)
+    if (blend !== this.appliedBlendMode) {
+      this.appliedBlendMode = blend
+      this.buildFxPipeline()
+      this.rebuildFxBG()
+    }
     const tone = resolveToneMapping(this.look.toneMapping)
     if (tone === this.appliedToneMapping) return
     this.appliedToneMapping = tone
@@ -533,7 +547,11 @@ export class WebGPUModelRenderer {
       layout: this.unlitPipeline.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: { buffer: this.frameUB } }],
     })
-    this.fxBG = d.createBindGroup({
+    this.rebuildFxBG()
+  }
+
+  private rebuildFxBG(): void {
+    this.fxBG = this.device.createBindGroup({
       layout: this.fxPipeline.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: { buffer: this.fxUB } }],
     })

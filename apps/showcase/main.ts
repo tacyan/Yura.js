@@ -5,7 +5,7 @@
  */
 import { yura, shapes, lyrics, eases, type YuraApp, type LyricsRun, type FxPool } from 'yura'
 
-type LookId = 'neon-galaxy' | 'aurora' | 'cinematic' | 'cyberpunk' | 'helix-storm'
+type LookId = 'neon-galaxy' | 'aurora' | 'cinematic' | 'cyberpunk' | 'helix-storm' | 'sakura'
 
 const LOOKS: Array<{ id: LookId; label: string }> = [
   { id: 'neon-galaxy', label: 'Neon Galaxy' },
@@ -13,6 +13,7 @@ const LOOKS: Array<{ id: LookId; label: string }> = [
   { id: 'cinematic', label: 'Cinematic' },
   { id: 'cyberpunk', label: 'Cyberpunk' },
   { id: 'helix-storm', label: 'Helix Storm' },
+  { id: 'sakura', label: 'Sakura' }, // appended last → key 6, existing 1–5 untouched
 ]
 const COUNTS = [
   { n: 250_000, label: '250k' },
@@ -68,10 +69,18 @@ async function boot(): Promise<void> {
   stormFx = null
   app = yura(stage, { quality: 'auto', backend: backendOpt })
   if (storm) helixStorm(app)
+  else if (currentLook === 'sakura')
+    // SAKURA — spring-dusk act. Not a preset: the curated look (screen blend +
+    // reinhard, committed in looks.ts) rides the default swarm with a petal-pink
+    // → pale-gold gradient, the look's own three-color palette.
+    app.look('sakura').gradient('#f9a8d4', '#fde68a').particles(currentCount).interactive()
   else app.preset(currentLook).particles(currentCount).interactive()
   // Aurora only: a whisper of divergence-free curl-noise turbulence so the
   // sheets ripple like real solar wind. Every other look keeps its exact feel.
   if (currentLook === 'aurora') app.motion({ turbulence: 0.6 })
+  // Sakura only: soft petal-flutter turbulence and a slower swirl — glyphs
+  // shimmer like falling blossom without breaking the lyric shapes.
+  if (currentLook === 'sakura') app.motion({ turbulence: 0.3, swirl: 0.06 })
   await app.run()
   ;(window as unknown as { __yura: unknown }).__yura = app
   app.onStats((s) => {
@@ -84,6 +93,10 @@ async function boot(): Promise<void> {
   cover.classList.add('hidden')
   booting = false
   setLyricChipEnabled(!storm) // lyric motion is a swarm act
+  // Sakura opens as a lyric act: the look was tuned for kinetic typography
+  // (soft screen-blend glow, gentle reinhard highlights), so its own petal
+  // verses start sweeping in immediately. The chip still toggles them off.
+  if (currentLook === 'sakura') startLyrics()
   syncChips()
 }
 
@@ -167,8 +180,25 @@ const LYRIC_LINES = [
   { text: 'YURA', direction: 'center' as const },
 ]
 
+/** Sakura's own verses — spring dusk in three lines, swept petal by petal. */
+const SAKURA_LINES = [
+  { text: '桜ひらひら', at: 0 },
+  '花びらの渦',
+  '春の宵に舞う',
+  { text: 'YURA', direction: 'center' as const },
+]
+
 let lyricRun: LyricsRun | null = null
 const lyricChip = chip('lyric motion', 'ghost')
+
+/** Start the loop with the verse set that fits the active look. */
+function startLyrics(): void {
+  if (!app) return
+  const lines = currentLook === 'sakura' ? SAKURA_LINES : LYRIC_LINES
+  // sweep 0.8 → strong per-character stagger: each glyph condenses in turn.
+  lyricRun = lyrics(app, lines, { every: 3.4, sweep: 0.8, loop: true, loopTail: 3 })
+  lyricChip.classList.add('on')
+}
 
 /**
  * The lyric act needs a live app: during boot the click used to be silently
@@ -195,9 +225,7 @@ lyricChip.addEventListener('click', () => {
     return
   }
   promptEl.value = ''
-  // sweep 0.8 → strong per-character stagger: each glyph condenses in turn.
-  lyricRun = lyrics(app, LYRIC_LINES, { every: 3.4, sweep: 0.8, loop: true, loopTail: 3 })
-  lyricChip.classList.add('on')
+  startLyrics()
 })
 lookRow.appendChild(Object.assign(document.createElement('div'), { className: 'sep' }))
 lookRow.appendChild(lyricChip)

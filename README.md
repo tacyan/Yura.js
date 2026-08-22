@@ -221,6 +221,11 @@ The same call tunes the physics: `turbulence` adds divergence-free curl
 noise — fluid-like swirls with zero clumping — and at the default `0` the
 term vanishes from the shader math, so it costs nothing until you turn it on.
 
+Physics keys you set through `.motion()` are sticky: a later `.preset()`
+still swaps in its own motion defaults, but every key you set explicitly
+survives the swap — so `.motion({ turbulence: 0.8 }).preset('aurora')` and
+`.preset('aurora').motion({ turbulence: 0.8 })` end up identical.
+
 (`shapes.box()`, `shapes.cone()`, and `shapes.helix()` are morph targets too,
 next to `galaxy`, `sphere`, `ring`, `vortex`, `flow`, `text`, and `image`.)
 
