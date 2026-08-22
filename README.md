@@ -127,7 +127,8 @@ What you get for free:
   `scene.camera.orbit()` to hand control back.
 - **Shadows** — shadow-mapped meshes plus automatic ground blob shadows.
 - **Particle FX one-liners** — `scene.burst(pos)`, `obj.trail()`,
-  `scene.celebrate()` render through the same GPU pipeline as everything else.
+  `scene.celebrate()` render through the same GPU pipeline as everything else,
+  and `scene.gravityWell([0, 5, 0], 12)` bends them all into a black-hole zone.
   Bursts take direction when you want more than a pop, and trails take a
   color ramp, width, and fade curve:
 
@@ -269,12 +270,12 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 
 | Surface | Highlights |
 | --- | --- |
-| `yura(sel)` | `.preset()` `.look()` `.motion({ hold, morph, ease })` `.model(url)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD', { sweep, direction, duration, ease })`, `app.onStats(cb)`, `app.frames(n)` |
-| `app.scene(opts)` | `add(shape, opts)`, `onUpdate(cb)`, `camera.follow/orbit`, `text()`, `each(tag, cb)`, `count(tag)`, `burst/trail/celebrate`, `input` (keyboard + touch + gamepad) |
-| `SceneObject` | `position` `velocity` `spin`, `body: 'dynamic'`, `solid`, `tag`, `grounded`, `onCollide()`, `trail()`, `remove()` |
-| `yuraLayer(renderer, camera, opts)` | `attach(obj)`, `at(x, y, z)`, `setRadius(r)`, `morphTo(textOrShape)`, `sync()`, `stats`, `dispose()` |
-| `lyrics(app, lines, opts)` | timed lines (or bare strings auto-timed `every` seconds apart) → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop`, per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
-| `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, `volume`, `mute()`; context created lazily on first user gesture |
+| `yura(sel)` | `.preset()` `.look()` `.motion({ hold, morph, ease })` `.morphTo(seq)` `.model(url)` `.game(opts, setup)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD', { sweep, direction, duration, ease })`, `app.onStats(cb)`, `app.frames(n)` |
+| `app.scene(opts)` | `add(shape, opts)`, `onUpdate(cb)`, `camera.follow/orbit`, `text()`, `each(tag, cb)`, `count(tag)`, `burst/trail/celebrate/gravityWell`, `fx` (raw `FxPool`), `input` (keyboard + touch + gamepad) |
+| `SceneObject` | `position` `velocity` `spin`, `body: 'dynamic'`, `solid`, `tag`, `grounded`, `onCollide()`, `onLand()`, `trail()`, `remove()` |
+| `yuraLayer(renderer, camera, opts)` | `attach(obj)`, `at(x, y, z)`, `setRadius(r)`, `motion(m)`, `morphTo(textOrShape)`, `sync()`, `stats`, `dispose()` |
+| `lyrics(app, lines, opts)` | timed lines (or bare strings auto-timed `every` seconds apart) → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop` (with `loopTail` hold), per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
+| `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, chiptune-style BGM `loop(pattern, { bpm, wave, gain })`, `volume`, `mute()`; context created lazily on first user gesture |
 | `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `box` `cone` `helix` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
 | `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` `sakura` — each takes `Partial<LookParams>` overrides, e.g. `neon({ blendMode: 'alpha', toneMapping: 'reinhard' })` |
 | `eases` | named morph curves `cubic` `expo` `back` `smooth` `linear` for `.motion({ ease })` / `morphNow({ ease })`; any `f(0)=0, f(1)=1` function is also accepted |
@@ -309,6 +310,8 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   FX sprites melt into nearby geometry instead of clipping (the `sakura`
   look ships with it on; the default 0 keeps it off at zero cost).
 - **Interaction** — hover repels particles; click detonates a shockwave.
+  `.interactive({ gravity: 40 })` upgrades the cursor to a live gravity well
+  that pulls the whole swarm toward the pointer (negative values repel).
 - **glTF 2.0 / PBR** — `.model('/file.glb')` loads GLB and renders
   Cook-Torrance GGX with IBL from a procedural studio environment (no LUT,
   no HDR files), 2048² PCF shadow maps, orbit/zoom/auto-rotate controls.

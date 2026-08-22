@@ -262,8 +262,9 @@ const scene = app.scene({ gravity: -9.8 }) // once — reuse this reference
 **`GRAVITY_WELL_CLAMPED` — warn (console.info)**
 
 **When:** `scene.gravityWell(position, strength, radius?)` is called while the
-shared attractor budget (`MAX_ATTRACTORS`, currently 4, shared with
-`motion({ attractors })`) is already full.
+FX attractor budget (`MAX_ATTRACTORS`, currently 4) is already full. This
+budget is for scene-mode FX particles only — `motion({ attractors })` feeds
+the GPU swarm simulation and has its own independent budget of 4.
 
 **Why:** Both simulation backends pack attractors into a fixed-size uniform
 block, so wells beyond the budget cannot take effect immediately. The extra

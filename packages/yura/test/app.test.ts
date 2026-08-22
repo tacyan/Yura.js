@@ -756,7 +756,7 @@ test('morphNow before run() still degrades to .shape() with options dropped', as
 // game() sugar + scene() double-call detach
 // ---------------------------------------------------------------------------
 
-import { SCENE_REPLACED_CODE } from '../src/app'
+import { CODES } from '@yura/core'
 import type { GameSetup } from '../src/app'
 
 /** Swap run() for a headless fake that only records the call order. */
@@ -866,7 +866,7 @@ test('a second scene() call detaches the old scene: cleanups drain, handles rese
   expect(obj.shadowHandle).toBeNull()
   expect(removed.n).toBe(0)
   expect(infos.length).toBe(1)
-  expect(infos[0]).toContain(SCENE_REPLACED_CODE)
+  expect(infos[0]).toContain(CODES.SCENE_REPLACED)
   expect(infos[0]).toContain('scene() called again')
   app.dispose()
 })
@@ -1346,6 +1346,18 @@ test('lyrics() sugar hands back a controllable run', () => {
   expect(typeof run.stop).toBe('function')
   expect(typeof run.seek).toBe('function')
   run.stop()
+  app.dispose()
+})
+
+test('lyrics() accepts bare strings (LyricInput sugar) and mixed input', () => {
+  const app = headlessApp()
+  const bare = app.lyrics(['行1', '行2'], { every: 3 })
+  expect(typeof bare.stop).toBe('function')
+  expect(typeof bare.seek).toBe('function')
+  bare.stop()
+  const mixed = app.lyrics(['行1', { text: '行2', at: 5 }] as const)
+  expect(typeof mixed.stop).toBe('function')
+  mixed.stop()
   app.dispose()
 })
 

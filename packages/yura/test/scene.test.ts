@@ -1,9 +1,8 @@
 import { test, expect, spyOn } from 'bun:test'
-import { YuraError } from '@yura/core'
+import { YuraError, CODES } from '@yura/core'
 import {
   YuraScene,
   SHAPE_NAMES,
-  GRAVITY_WELL_CLAMPED_CODE,
   type ShapeName,
   type AddOptions,
   SceneInput,
@@ -1189,7 +1188,7 @@ test('gravityWell accumulates per call, warns past MAX_ATTRACTORS, and releasing
 
     const releaseExtra = scene.gravityWell([9, 9, 9], 2, 0.5)
     expect(info).toHaveBeenCalledTimes(1)
-    expect(String(info.mock.calls[0][0])).toContain(GRAVITY_WELL_CLAMPED_CODE)
+    expect(String(info.mock.calls[0][0])).toContain(CODES.GRAVITY_WELL_CLAMPED)
     // The extra well is queued (the pool clamps to the first MAX_ATTRACTORS)…
     expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS + 1)
     expect(scene.fx.attractors[MAX_ATTRACTORS]).toEqual({

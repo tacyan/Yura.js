@@ -383,13 +383,6 @@ export interface TrailHandle {
 }
 
 /**
- * Warn code emitted when gravityWell() calls exceed the shared attractor
- * budget (MAX_ATTRACTORS from @yura/renderer-webgpu). Registered in CODES
- * (@yura/core) as GRAVITY_WELL_CLAMPED.
- */
-export const GRAVITY_WELL_CLAMPED_CODE = CODES.GRAVITY_WELL_CLAMPED
-
-/**
  * One object living in a {@link YuraScene}: a procedural mesh plus its
  * physics state. Mutate `position` / `velocity` / `spin` directly from
  * `onUpdate` — the simulation and renderer read them every tick.
@@ -1002,7 +995,7 @@ export class YuraScene {
     this.wells.push(well)
     if (this.wells.length > MAX_ATTRACTORS) {
       warnCode(
-        GRAVITY_WELL_CLAMPED_CODE,
+        CODES.GRAVITY_WELL_CLAMPED,
         `gravityWell(): ${this.wells.length} wells requested but only ${MAX_ATTRACTORS} can act at once ` +
           `(MAX_ATTRACTORS). This well stays queued and activates when an earlier one is released.`,
       )

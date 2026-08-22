@@ -147,6 +147,9 @@ yura('#stage')
 yura('#stage').game({ gravity: -22, bounds: 11 }, (scene) => {
   scene.add('plane', { size: 22, material: 'obsidian' })
   scene.add('knot', { radius: 1.3, material: 'iridescent', position: [0, 1.8, 0], spin: [0, 0.5, 0.2], solid: true, shadow: true })
+  // Black-hole zone above the knot: pickup sparks, the trail, and the confetti
+  // all bend toward it — fx-only, so the ball's physics never feel it.
+  scene.gravityWell([0, 5, 0], 12, 1.5)
   const ball = scene.add('sphere', { radius: 0.45, material: 'iridescent', position: [0, 3, 6], body: 'dynamic', shadow: true })
   // Trail sugar: colorEnd fades the ribbon toward its tail, width/fade shape it.
   ball.trail({ color: '#c4b5fd', colorEnd: '#312e81', width: 1.6, fade: 1.8 })

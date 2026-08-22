@@ -24,8 +24,11 @@ const COUNTS = [
 const MORPHS: Array<{ label: string; make: () => ReturnType<typeof shapes.galaxy> }> = [
   { label: 'galaxy', make: () => shapes.galaxy() },
   { label: 'vortex', make: () => shapes.vortex() },
+  { label: 'helix', make: () => shapes.helix() },
   { label: 'ring', make: () => shapes.ring() },
   { label: 'sphere', make: () => shapes.sphere() },
+  { label: 'box', make: () => shapes.box() },
+  { label: 'cone', make: () => shapes.cone() },
   { label: 'flow', make: () => shapes.flow() },
 ]
 
@@ -84,6 +87,12 @@ async function boot(): Promise<void> {
   // Sakura only: soft petal-flutter turbulence and a slower swirl — glyphs
   // shimmer like falling blossom without breaking the lyric shapes.
   if (currentLook === 'sakura') app.motion({ turbulence: 0.3, swirl: 0.06 })
+  // Cyberpunk only: cursor gravity. interactive({ gravity }) injects the
+  // pointer as a live attractor every frame, so the grid leans toward the
+  // cursor at range while the classic short-range hover repulsor still parts
+  // it up close — approach, never collapse. The other looks keep the exact
+  // legacy pointer force field (gravity stays unset there).
+  if (currentLook === 'cyberpunk') app.interactive({ gravity: CURSOR_GRAVITY })
   // Neon galaxy only: a binary pair of gravity wells slowly orbits the disc,
   // dragging the arms into local eddies — see binaryWells() below.
   if (currentLook === 'neon-galaxy') stopWells = binaryWells(app)
@@ -156,6 +165,14 @@ const WELL_PHASES = [0, Math.PI] // counter-phase: one well on each side of the 
 const WELL_ORBIT_RADIUS = YURA_SHAPE_RADIUS * 0.4 // mid-disc, riding between the arms
 const WELL_ORBIT_RATE = 0.12 // rad/s — one full revolution every ~52 s
 const WELL_STRENGTH = 20 // accel = strength / (d² + radius²): a firm but calm tug
+/**
+ * CURSOR GRAVITY — the cyberpunk act's pull, fed to `.interactive({ gravity })`.
+ * Same accel formula as the wells above; sized against WELL_STRENGTH ("firm
+ * but calm") so the pointer reads as the strongest single attractor on stage
+ * without whipping the swarm around. (Referenced from boot(), which is first
+ * invoked further down the module — this const is initialized by then.)
+ */
+const CURSOR_GRAVITY = WELL_STRENGTH * 1.5
 const WELL_SOFT_RADIUS = YURA_SHAPE_RADIUS * 0.2 // wide softening core — no slingshots
 const WELL_BOB = YURA_SHAPE_RADIUS * 0.08 // slight counter-phase weave out of the plane
 

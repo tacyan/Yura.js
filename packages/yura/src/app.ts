@@ -23,7 +23,7 @@ import { resolvePreset, DEFAULT_MOTION } from './presets'
 import { looks as lookRegistry, type LookName } from './looks'
 import { shapes as shapeRegistry, type ShapeSpec } from './shapes'
 import { YuraScene, type SceneOptions } from './scene'
-import { lyrics as runLyrics, type LyricLine, type LyricsOptions, type LyricsRun } from './lyrics'
+import { lyrics as runLyrics, type LyricInput, type LyricsOptions, type LyricsRun } from './lyrics'
 
 /**
  * Construction options for {@link yura} / {@link YuraApp}.
@@ -65,13 +65,6 @@ const MAX_DT = 1 / 30
 
 /** Floor for morph durations — keeps `timer / duration` finite (≈ instant). */
 const MIN_MORPH_SECONDS = 1e-4
-
-/**
- * Warn code emitted when scene() replaces a live scene. Numbered in the CODES
- * sequence (next free slot after UNKNOWN_EASE = YURA-015) but defined here
- * Registered in CODES (@yura/core) as SCENE_REPLACED.
- */
-export const SCENE_REPLACED_CODE = CODES.SCENE_REPLACED
 
 /** Setup callback for {@link YuraApp.game}: receives the fresh scene; may be async. */
 export type GameSetup = (scene: YuraScene) => void | Promise<void>
@@ -689,7 +682,7 @@ export class YuraApp {
   scene(opts: SceneOptions = {}): YuraScene {
     if (this.sceneObj) {
       warnCode(
-        SCENE_REPLACED_CODE,
+        CODES.SCENE_REPLACED,
         `scene() called again: the previous scene was detached (listeners removed, GPU handles reset). ` +
           `It stops receiving updates — call run() to start the new scene.`,
       )
@@ -864,9 +857,11 @@ export class YuraApp {
 
   /**
    * A lyric video in one call: `app.lyrics([{ text: '君の声が', at: 0 }, …])`.
+   * Bare strings are sugar for `{ text }` and auto-time via `every`:
+   * `app.lyrics(['行1', '行2'], { every: 3 })`.
    * Sugar for the standalone `lyrics(app, lines, opts)`.
    */
-  lyrics(lines: LyricLine[], opts: LyricsOptions = {}): LyricsRun {
+  lyrics(lines: readonly LyricInput[], opts: LyricsOptions = {}): LyricsRun {
     return runLyrics(this, lines, opts)
   }
 
@@ -908,7 +903,10 @@ export class YuraApp {
     return this
   }
 
-  /** Alias kept for spec §8.1 parity. */
+  /**
+   * Alias kept for spec §8.1 parity.
+   * @deprecated Use interactive() instead.
+   */
   reactToPointer(): this {
     return this.interactive()
   }

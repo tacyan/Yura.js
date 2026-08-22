@@ -74,13 +74,70 @@ export function pathsFromExports(
 /** Named values each exported subpath must provide to consumers. Subpaths
  *  not listed here are smoke-tested with a namespace import. */
 export const SMOKE_IMPORTS: Record<string, string[]> = {
-  '.': ['yura', 'looks', 'shapes', 'eases', 'gameAudio'],
+  '.': [
+    'yura',
+    'YuraApp',
+    'YuraScene',
+    'looks',
+    'shapes',
+    'eases',
+    'gameAudio',
+    'formatStats',
+    'FrameRing',
+    'noteToFreq',
+    'layoutColumns',
+    'CODES',
+    'MAX_ATTRACTORS',
+    'DEFAULT_ATTRACTOR_RADIUS',
+  ],
   './three': ['yuraLayer'],
 }
 
+/** Extra consumer statements per subpath that USE the shipped types the way
+ *  an app would — game types, the eases table, morphTo/morphNow, gravityWell,
+ *  audio and layout helpers. `%SPEC%` is replaced with the import specifier.
+ *  This only has to type-check (noEmit); it never runs. */
+export const SMOKE_USAGE: Record<string, string[]> = {
+  '.': [
+    `import type { GameSetup, EaseName, EaseFn, MorphNowOptions, YuraStats, ColumnPlacement } from '%SPEC%'`,
+    `const setup: GameSetup = (scene) => {`,
+    `  const release = scene.gravityWell([0, 1.5, 0], 12, DEFAULT_ATTRACTOR_RADIUS)`,
+    `  release()`,
+    `}`,
+    `const easeName: EaseName = 'linear'`,
+    `const easeFn: EaseFn = eases[easeName]`,
+    `const eased: number = easeFn(0.5)`,
+    `const morphOpts: MorphNowOptions = {}`,
+    `export function smokeMorphTo(app: YuraApp): YuraApp {`,
+    `  return app.morphTo([shapes.galaxy(), 'YURA'])`,
+    `}`,
+    `export function smokeMorphNow(app: YuraApp): Promise<YuraApp> {`,
+    `  return app.morphNow(shapes.helix(), morphOpts)`,
+    `}`,
+    `const stats: YuraStats = {`,
+    `  backend: 'webgpu',`,
+    `  fps: 60,`,
+    `  frameMs: 16.7,`,
+    `  particles: 1_000_000,`,
+    `  requestedParticles: 1_000_000,`,
+    `  resolutionScale: 1,`,
+    `  qualityLevel: 3,`,
+    `}`,
+    `const statsLine: string = formatStats(stats)`,
+    `const ring = new FrameRing(8)`,
+    `ring.push(16.7)`,
+    `const freq: number = noteToFreq('A4')`,
+    `const columns: ColumnPlacement[] = layoutColumns([2, 2], 1, 0.5, 'center', 10)`,
+    `const wellCap: number = MAX_ATTRACTORS`,
+    `const noWebGPU: string = CODES.NO_WEBGPU`,
+    `export const smokeUsage = { setup, eased, statsLine, ring, freq, columns, wellCap, noWebGPU }`,
+  ],
+}
+
 /** Source of one synthetic consumer module. Imports the subpath's surface
- *  and re-exports the values so nothing can be elided as unused. */
-export function consumerSource(specifier: string, names?: string[]): string {
+ *  and re-exports the values so nothing can be elided as unused; optional
+ *  usage lines exercise the shipped types as real consumer code. */
+export function consumerSource(specifier: string, names?: string[], usage?: string[]): string {
   const lines = names?.length
     ? [
         `import { ${names.join(', ')} } from '${specifier}'`,
@@ -88,6 +145,9 @@ export function consumerSource(specifier: string, names?: string[]): string {
         `export const smoke = { ${names.join(', ')} }`,
       ]
     : [`import * as ns from '${specifier}'`, '', 'export const smoke = ns']
+  if (usage?.length) {
+    lines.push('', ...usage.map((line) => line.replaceAll('%SPEC%', specifier)))
+  }
   return `${lines.join('\n')}\n`
 }
 
@@ -150,7 +210,10 @@ export function checkDistTypes(distNpmDir: string): number {
       const subpath = specifier === pkg.name ? '.' : `.${specifier.slice(pkg.name.length)}`
       const dir = join(tmp, `consumer-${index}`)
       mkdirSync(dir)
-      writeFileSync(join(dir, 'main.ts'), consumerSource(specifier, SMOKE_IMPORTS[subpath]))
+      writeFileSync(
+        join(dir, 'main.ts'),
+        consumerSource(specifier, SMOKE_IMPORTS[subpath], SMOKE_USAGE[subpath]),
+      )
       const tsconfigPath = join(dir, 'tsconfig.json')
       writeFileSync(tsconfigPath, consumerTsconfig(paths))
 
