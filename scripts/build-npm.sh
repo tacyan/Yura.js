@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the publishable `yurajs` package into dist-npm/.
+# Build the publishable `yurayura` package into dist-npm/.
 #
 #   bun run build:npm      # assemble dist-npm/
 #   cd dist-npm && npm publish --access public
@@ -56,7 +56,7 @@ EOF
 # 3) Manifest, README (import specifier -> yurajs), LICENSE.
 cat > "$OUT/package.json" <<EOF
 {
-  "name": "yurajs",
+  "name": "yurayura",
   "version": "$VERSION",
   "description": "Make the web move. Two lines, one million GPU particles — WebGPU-first visuals, games, lyric motion, and an optional Three.js layer.",
   "license": "MIT",
@@ -77,7 +77,7 @@ cat > "$OUT/package.json" <<EOF
   "bugs": "https://github.com/tacyan/Yura.js/issues"
 }
 EOF
-sed -e "s|from 'yura'|from 'yurajs'|g" -e "s|from 'yura/three'|from 'yurajs/three'|g" \
+sed -e "s|from 'yura'|from 'yurayura'|g" -e "s|from 'yura/three'|from 'yurayura/three'|g" \
   README.md > "$OUT/README.md"
 cp LICENSE "$OUT/LICENSE"
 

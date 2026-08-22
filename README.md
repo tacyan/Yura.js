@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/tacyan/Yura.js/actions/workflows/ci.yml/badge.svg)](https://github.com/tacyan/Yura.js/actions/workflows/ci.yml)
 [![Live demos](https://img.shields.io/badge/live%20demos-tacyan.github.io%2FYura.js-67e8f9)](https://tacyan.github.io/Yura.js/)
+[![npm](https://img.shields.io/npm/v/yurayura?color=c4b5fd&label=npm%20yurayura)](https://www.npmjs.com/package/yurayura)
 
 **Make the web move.** Two lines. One million particles.
 **[▶ Live demos](https://tacyan.github.io/Yura.js/)** — showcase, lyric motion, glTF viewer, all in your browser (WebGPU).
@@ -23,6 +24,15 @@ Three reasons Yura is worth your `<div>`:
    three lines (the adapter is duck-typed — `three` is never a dependency of `yura`).
 
 ![One million particles forming a neon galaxy in the Yura showcase](docs/screenshots/showcase-galaxy-1m.jpg)
+
+## Install
+
+```sh
+npm install yurayura      # the npm package (import { yura } from 'yurayura')
+```
+
+Inside this repo the same package is the `yura` workspace — the examples
+import `'yura'`; npm users import `'yurayura'`. Same API, same code.
 
 ## Quick start
 
