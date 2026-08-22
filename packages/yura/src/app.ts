@@ -23,6 +23,12 @@ import { shapes as shapeRegistry, type ShapeSpec } from './shapes'
 import { YuraScene, type SceneOptions } from './scene'
 import { lyrics as runLyrics, type LyricLine, type LyricsOptions, type LyricsRun } from './lyrics'
 
+/**
+ * Construction options for {@link yura} / {@link YuraApp}.
+ *
+ * @example
+ * yura('#hero', { quality: 'high', backend: 'webgpu' }).run()
+ */
 export interface YuraOptions {
   /** 'auto' adapts to the frame budget, 'high' pins max quality, 'low' starts conservative. */
   quality?: 'auto' | 'high' | 'low'
@@ -30,13 +36,24 @@ export interface YuraOptions {
   backend?: 'auto' | 'webgpu' | 'webgl2'
 }
 
+/**
+ * Live performance snapshot from {@link YuraApp.stats}. Format it as a
+ * one-line HUD string with {@link formatStats}.
+ */
 export interface YuraStats {
+  /** Active rendering backend ('webgpu', 'webgl2', or 'poster'). */
   backend: Backend
+  /** Smoothed frames per second. */
   fps: number
+  /** Frame time in milliseconds (one decimal). */
   frameMs: number
+  /** Particles actually simulated after quality governing (0 in model/scene mode). */
   particles: number
+  /** Particle count requested via `.particles()` or the preset. */
   requestedParticles: number
+  /** Render resolution multiplier the quality governor applied (1 = full). */
   resolutionScale: number
+  /** Current quality-governor step (higher = more aggressive degradation). */
   qualityLevel: number
 }
 
@@ -125,6 +142,7 @@ export interface MotionTimingOptions {
 /** Travel direction of a morph sweep across the target's coordinate ordering. */
 export type SweepDirection = 'ltr' | 'rtl' | 'center' | 'random'
 
+/** Per-call options for {@link YuraApp.morphNow} — sweep staggering plus one-off timing overrides. */
 export interface MorphNowOptions {
   /**
    * 0..1 per-particle stagger: how much of the morph is spent sweeping across
@@ -606,6 +624,7 @@ export class YuraApp {
     this.preset('neon-galaxy')
   }
 
+  /** Requested particle count (floored, min 1). The governor may simulate fewer under load. */
   particles(n: number): this {
     this.particleCount = Math.max(1, Math.floor(n))
     return this
@@ -664,12 +683,27 @@ export class YuraApp {
     return scene
   }
 
+  /**
+   * Two-stop color gradient, swept along each shape's palette coordinate
+   * (core → rim for a galaxy, character order for text).
+   *
+   * @example
+   * yura('#stage').gradient('#22d3ee', '#f472b6').run()
+   */
   gradient(a: string, b: string): this {
     this.colorA = a
     this.colorB = b
     return this
   }
 
+  /**
+   * Apply a curated look by name or as full LookParams. Explicit looks are
+   * sticky: a later `.preset()` keeps them. Unknown names throw a YuraError
+   * (UNKNOWN_LOOK) listing the available looks.
+   *
+   * @example
+   * yura('#hero').look('cyberpunk').run()
+   */
   look(l: LookParams | LookName): this {
     if (typeof l === 'string') {
       const factory = lookRegistry[l]
@@ -709,18 +743,34 @@ export class YuraApp {
     return this
   }
 
+  /** Render a single shape (a ShapeSpec, or a string rendered as particle text). */
   shape(s: ShapeSpec | string): this {
     this.shapeSeq = [this.toShape(s)]
     this.shapeOverridden = true
     return this
   }
 
+  /**
+   * The sequence the automatic cycle morphs through (strings become text).
+   * After `.shape()`, the explicit shape stays first and the sequence follows.
+   *
+   * @example
+   * yura('#hero').morphTo([shapes.galaxy(), 'YURA', shapes.vortex()]).run()
+   */
   morphTo(seq: Array<ShapeSpec | string>): this {
     const rest = seq.map((s) => this.toShape(s))
     this.shapeSeq = this.shapeOverridden ? [this.shapeSeq[0], ...rest] : rest.length ? rest : this.shapeSeq
     return this
   }
 
+  /**
+   * Apply a named preset — particles, gradient, look, motion, and shape
+   * sequence in one call (see `presetNames()`). Values set explicitly via
+   * `.motion()` / `.look()` / `.shape()` survive the swap.
+   *
+   * @example
+   * yura('#hero').preset('cyberpunk').run()
+   */
   preset(name: string): this {
     const p = resolvePreset(name)
     this.particleCount = p.particles
@@ -809,6 +859,7 @@ export class YuraApp {
     return this.interactive()
   }
 
+  /** Live performance snapshot — backend, fps, particle counts, quality level. */
   get stats(): YuraStats {
     const level = this.governor.current()
     return {
@@ -842,6 +893,14 @@ export class YuraApp {
     return this.frameRing.last(n)
   }
 
+  /**
+   * Mount the canvas, acquire the GPU, and start the render loop — the one
+   * async step where everything configured so far comes to life. Falls back
+   * WebGPU → WebGL2 → static poster, so it never leaves a white screen.
+   *
+   * @example
+   * await yura('#hero').preset('aurora').run()
+   */
   async run(): Promise<this> {
     if (this.disposed) return this
     this.mountCanvas()
@@ -961,12 +1020,14 @@ export class YuraApp {
     return this
   }
 
+  /** Stop the render loop; the last frame stays on screen. Reversed by resume(). */
   pause(): void {
     this.running = false
     if (this.rafId) cancelAnimationFrame(this.rafId)
     this.rafId = 0
   }
 
+  /** Restart the loop after pause(). No-op while running or after dispose(). */
   resume(): void {
     if (this.disposed || this.running) return
     this.running = true
@@ -974,6 +1035,7 @@ export class YuraApp {
     this.rafId = requestAnimationFrame(this.tick)
   }
 
+  /** Tear down permanently: stop the loop, release GPU resources, remove the canvas. */
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
@@ -1445,6 +1507,15 @@ export class YuraApp {
   }
 }
 
+/**
+ * Entry point: create a chainable {@link YuraApp} bound to a container
+ * element (CSS selector or node). Nothing renders until `.run()` — zero
+ * config already is the flagship neon-galaxy experience.
+ *
+ * @example
+ * import { yura } from 'yurayura'
+ * yura('#hero').run() // a cursor-reactive million-particle galaxy
+ */
 export function yura(target: string | HTMLElement, options: YuraOptions = {}): YuraApp {
   return new YuraApp(target, options)
 }

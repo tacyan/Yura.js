@@ -4,6 +4,14 @@ import type { LookParams } from '@yura/renderer-webgpu'
  * Looks are curated post/appearance settings (spec §7.2). Users apply them by
  * name and never have to balance bloom vs exposure themselves.
  */
+
+/**
+ * Filmic default: warm highlights, gentle bloom, soft vignette — the look
+ * every particle app starts with.
+ *
+ * @example
+ * yura('#hero').look(cinematic({ vignette: 0.4 })).run()
+ */
 export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.0,
@@ -25,6 +33,7 @@ export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
+/** Night-city glow: hard bloom, magenta-violet haze, visible chromatic aberration. */
 export function cyberpunk(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.15,
@@ -46,6 +55,7 @@ export function cyberpunk(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
+/** Soft polar curtains: large particles, long trails, heavy nebula haze. */
 export function aurora(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 0.95,
@@ -67,6 +77,7 @@ export function aurora(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
+/** Crisp cyan glow with strong twinkle over a dense starfield. */
 export function neon(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.1,
@@ -143,5 +154,14 @@ export function sakura(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
+/**
+ * Registry of every curated look, keyed by the same names `.look()` accepts
+ * as strings. Each factory takes `Partial<LookParams>` overrides.
+ *
+ * @example
+ * app.look(looks.neon({ blendMode: 'alpha', toneMapping: 'reinhard' }))
+ */
 export const looks = { cinematic, cyberpunk, aurora, neon, studio, sakura }
+
+/** A key of the `looks` registry — every name `.look()` accepts. */
 export type LookName = keyof typeof looks

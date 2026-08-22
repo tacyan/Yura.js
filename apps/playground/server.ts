@@ -36,7 +36,7 @@ setTimeout(() => app.morphNow(shapes.vortex()), 7500)
 `
 
 /** Curated example sketches — the playground's docs-by-example. */
-const RECIPES: Array<{ label: string; code: string }> = [
+export const RECIPES: Array<{ label: string; code: string }> = [
   { label: 'galaxy', code: DEFAULT_CODE },
   {
     label: 'word morph',

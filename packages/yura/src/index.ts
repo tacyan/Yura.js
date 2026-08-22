@@ -13,7 +13,7 @@ export { materials, matte, plastic, metal, neon as neonMaterial, resolveMaterial
 export type { MaterialLike } from './materials'
 export { YuraError } from '@yura/core'
 export type { Backend, Vec3 } from '@yura/core'
-export type { LookParams, MotionParams, SceneMaterial } from '@yura/renderer-webgpu'
+export type { LookParams, MotionParams, SceneMaterial, AttractorParams } from '@yura/renderer-webgpu'
 export { FxPool, FxTrailEmitter, FX_FLOATS } from './fx'
 export type { BurstOptions, TrailOptions, CelebrateOptions, FxRandom } from './fx'
 export type { TrailHandle } from './scene'

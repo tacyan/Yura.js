@@ -254,9 +254,20 @@ export function morphStep(timer: number, seconds: number, ease: EaseFn, pos: 0 |
   }
 }
 
+/**
+ * A live Yura particle overlay compositing over a Three.js render — created
+ * by {@link yuraLayer}. Call `sync()` once per frame from your render loop;
+ * everything else (`attach`, `at`, `morphTo`, `motion`) is optional steering.
+ *
+ * @example
+ * const fx = await yuraLayer(renderer, camera, { particles: 500_000, radius: 3.4 })
+ * fx.attach(knot)
+ * renderer.setAnimationLoop(() => { renderer.render(scene, camera); fx.sync() })
+ */
 export class YuraThreeLayer {
   /** The overlay canvas (already inserted above renderer.domElement). */
   readonly canvas: HTMLCanvasElement
+  /** Backend actually driving the overlay ('webgpu', or the 'webgl2' fallback). */
   readonly backend: 'webgpu' | 'webgl2'
 
   private renderer: WebGPUParticleRenderer | WebGL2ParticleRenderer
@@ -450,6 +461,7 @@ export class YuraThreeLayer {
     return this
   }
 
+  /** Live readout: active backend, smoothed fps, and governed particle count. */
   get stats(): { backend: string; fps: number; particles: number } {
     return {
       backend: this.backend,

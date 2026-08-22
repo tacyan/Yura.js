@@ -24,13 +24,7 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - name: Build static demo pages
-        run: |
-          bun build apps/showcase/index.html   --outdir=_site/showcase --minify
-          bun build examples/lyrics/index.html --outdir=_site/lyrics   --minify
-          bun build examples/hello/index.html  --outdir=_site/hello    --minify
-          bun build examples/model/index.html  --outdir=_site/model    --minify
-          bun build examples/game/index.html   --outdir=_site/game     --minify
-          cp apps/site/index.html _site/index.html
+        run: bash scripts/build-site.sh _site
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

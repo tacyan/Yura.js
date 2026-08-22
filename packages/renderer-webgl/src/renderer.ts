@@ -30,6 +30,8 @@ import {
   buildCompositeFs,
   DEFAULT_TURBULENCE,
   DEFAULT_TURBULENCE_SCALE,
+  ATTRACTOR_ARRAY_VEC4S,
+  packAttractors,
 } from './shaders'
 
 /**
@@ -152,6 +154,8 @@ export class WebGL2ParticleRenderer {
    * ALIASED_POINT_SIZE_RANGE[1], queried once at init; 64 (the historic
    * hardcoded cap) if the query yields nothing usable. */
   private maxPointSize: number
+  /** Scratch for the packed attractor uniform array (see packAttractors). */
+  private attractorData = new Float32Array(ATTRACTOR_ARRAY_VEC4S * 4)
 
   private constructor(canvas: HTMLCanvasElement, gl: WebGL2RenderingContext, opts: RendererOptions) {
     this.canvas = canvas
@@ -473,6 +477,10 @@ void main() { o = vec4(0.0); }
     gl.uniform1f(su('uMorphSpread'), this.morphSpread)
     gl.uniform1f(su('uTurbulence'), this.motion.turbulence ?? DEFAULT_TURBULENCE)
     gl.uniform1f(su('uTurbulenceScale'), this.motion.turbulenceScale ?? DEFAULT_TURBULENCE_SCALE)
+    // Attractors: packed by the same packAttractors the WGSL backend uses
+    // (simF32); count 0 — the default — skips the term in the shader.
+    gl.uniform1i(su('uAttractorCount'), packAttractors(this.motion.attractors, this.attractorData))
+    gl.uniform4fv(su('uAttractors'), this.attractorData)
     gl.uniform4f(su('uPointer'), this.pointerWorld[0], this.pointerWorld[1], this.pointerWorld[2], this.pointerStrength)
     gl.bindVertexArray(this.simVAO[this.cur])
     gl.enable(gl.RASTERIZER_DISCARD)

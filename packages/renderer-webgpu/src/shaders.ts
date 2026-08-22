@@ -32,6 +32,75 @@ export const DEFAULT_TURBULENCE = 0
 /** Default noise-space frequency of the curl turbulence field. */
 export const DEFAULT_TURBULENCE_SCALE = 0.35
 
+// ---------------------------------------------------------------------------
+// Attractors: softened inverse-square gravity wells / repulsors. Same design
+// as the turbulence above: ONE builder emits both WGSL and GLSL
+// (attractorTermSource), and every constant below is the single source for
+// the shader text, the CPU uniform packing (packAttractors) and both
+// renderers. Locked by attractors.test.ts. The default — no attractors —
+// keeps legacy trajectories bit-identical: the guarded term is skipped.
+// ---------------------------------------------------------------------------
+
+/** Maximum simultaneous attractors both sims support (uniform array size). */
+export const MAX_ATTRACTORS = 4
+/** vec4 slots per attractor in the packed uniform array: [pos.xyz, strength] + [radius^2, 0, 0, 0]. */
+export const ATTRACTOR_VEC4S = 2
+/** Index of the radius^2 vec4 within an attractor's vec4-slot pair. */
+export const ATTRACTOR_RADIUS2_SLOT = 1
+/** Total vec4 count of the packed attractor uniform array. */
+export const ATTRACTOR_ARRAY_VEC4S = MAX_ATTRACTORS * ATTRACTOR_VEC4S
+/** Default softening radius r in force = strength * dir / (d^2 + r^2). */
+export const DEFAULT_ATTRACTOR_RADIUS = 0.35
+/** Keeps the direction normalization finite when a particle sits exactly on an attractor. */
+export const ATTRACTOR_DIST_EPSILON = 1e-6
+
+/** One gravity well (strength > 0) or repulsor (strength < 0). */
+export interface AttractorParams {
+  /** World-space center of the well. */
+  position: [number, number, number]
+  /** Force scale: positive pulls particles in, negative pushes them away. */
+  strength: number
+  /** Softening radius r (force = strength * dir / (d^2 + r^2)); defaults to DEFAULT_ATTRACTOR_RADIUS. */
+  radius?: number
+}
+
+/**
+ * Packs attractors into the flat vec4-pair layout both sim shaders read
+ * (see attractorTermSource): slot 0 = [pos.xyz, strength], slot
+ * ATTRACTOR_RADIUS2_SLOT = [radius^2, 0, 0, 0]. Zero-fills `out`, writes at
+ * most MAX_ATTRACTORS entries, and returns the active count (0 when the
+ * list is omitted or empty — the shaders then skip the term entirely).
+ */
+export function packAttractors(
+  attractors: readonly AttractorParams[] | undefined,
+  out: Float32Array,
+): number {
+  out.fill(0)
+  const list = attractors ?? []
+  const count = Math.min(list.length, MAX_ATTRACTORS)
+  for (let j = 0; j < count; j++) {
+    const a = list[j]
+    const base = j * ATTRACTOR_VEC4S * 4
+    out[base] = a.position[0]
+    out[base + 1] = a.position[1]
+    out[base + 2] = a.position[2]
+    out[base + 3] = a.strength
+    const radius = a.radius ?? DEFAULT_ATTRACTOR_RADIUS
+    out[base + ATTRACTOR_RADIUS2_SLOT * 4] = radius * radius
+  }
+  return count
+}
+
+// SimParams uniform layout (in 4-byte slots) — the single source for both
+// the WGSL struct text below and the WebGPU renderer's simF32/simU32 writes.
+// The field ORDER of the struct is locked by attractors.test.ts.
+/** Slot of attractorCount: u32 (immediately after turbulenceScale at slot 17). */
+export const SIM_ATTRACTOR_COUNT_INDEX = 18
+/** First slot of the attractors array: vec4 alignment rounds up to a multiple of 4 slots. */
+export const SIM_ATTRACTORS_INDEX = Math.ceil((SIM_ATTRACTOR_COUNT_INDEX + 1) / 4) * 4
+/** Total SimParams byte size (scalar header + attractor array; a multiple of the 16-byte struct alignment). */
+export const SIM_PARAMS_BYTES = (SIM_ATTRACTORS_INDEX + ATTRACTOR_ARRAY_VEC4S * 4) * 4
+
 export type ShaderLang = 'wgsl' | 'glsl'
 
 /** Formats a number as a float literal valid in both WGSL and GLSL ES 3.0. */
@@ -122,6 +191,48 @@ export function turbulenceTermSource(lang: ShaderLang): string {
   ].join('\n')
 }
 
+/**
+ * The guarded attractor velocity increment shared by both sims. Per active
+ * attractor j (vec4 pair, see packAttractors) the force is the softened
+ * inverse square
+ *
+ *   force = strength * dir / (d^2 + radius^2)
+ *
+ * with dir the unit vector from the particle toward the attractor (negative
+ * strength repels) and ATTRACTOR_DIST_EPSILON added inside BOTH denominator
+ * factors so a particle sitting exactly on a radius-0 attractor yields a
+ * zero force instead of 0 * inf = NaN. Like the turbulence term, the outer
+ * `!= 0` guard is
+ * uniform across the dispatch and guarantees the default — no attractors,
+ * count 0 — adds nothing at all: legacy trajectories stay bit-identical and
+ * the loop is skipped entirely.
+ */
+export function attractorTermSource(lang: ShaderLang): string {
+  const wgsl = lang === 'wgsl'
+  const u = wgsl
+    ? { count: 'P.attractorCount', data: 'P.attractors' }
+    : { count: 'uAttractorCount', data: 'uAttractors' }
+  // Integer literals differ per language: WGSL indexes/compares with u32.
+  const int = (n: number): string => (wgsl ? `${n}u` : `${n}`)
+  const decl = (type: 'float' | 'vec3' | 'vec4', name: string, expr: string): string =>
+    wgsl ? `      let ${name} = ${expr};` : `      ${type} ${name} = ${expr};`
+  const slot = (offset: number): string =>
+    `${u.data}[j * ${int(ATTRACTOR_VEC4S)}${offset === 0 ? '' : ` + ${int(offset)}`}]`
+  return [
+    `  if (${u.count} != ${int(0)}) {`,
+    wgsl
+      ? `    for (var j = ${int(0)}; j < ${u.count}; j = j + ${int(1)}) {`
+      : `    for (int j = 0; j < ${u.count}; j++) {`,
+    decl('vec4', 'att', slot(0)),
+    decl('float', 'soft2', `${slot(ATTRACTOR_RADIUS2_SLOT)}.x`),
+    decl('vec3', 'toAtt', `att.xyz - pos`),
+    decl('float', 'attD2', `dot(toAtt, toAtt)`),
+    `      vel += toAtt * (att.w / ((attD2 + soft2 + ${lit(ATTRACTOR_DIST_EPSILON)}) * sqrt(attD2 + ${lit(ATTRACTOR_DIST_EPSILON)})) * dt);`,
+    `    }`,
+    `  }`,
+  ].join('\n')
+}
+
 export const SIM_WGSL = /* wgsl */ `
 struct SimParams {
   dt: f32,
@@ -143,6 +254,9 @@ struct SimParams {
   morphSpread: f32,
   turbulence: f32,          // curl-noise strength (0 = off, bit-exact legacy)
   turbulenceScale: f32,     // noise-space frequency of the curl field
+  attractorCount: u32,      // active gravity wells (0 = term skipped, bit-exact legacy)
+  // (implicit 4-byte pad here: the vec4 array below aligns to 16 bytes)
+  attractors: array<vec4<f32>, ${ATTRACTOR_ARRAY_VEC4S}>, // vec4 pairs: [pos.xyz, strength], [radius^2, 0, 0, 0]
 }
 
 @group(0) @binding(0) var<uniform> P: SimParams;
@@ -196,6 +310,7 @@ fn sim(@builtin(global_invocation_id) gid: vec3<u32>) {
   vel += flowField(pos * P.noiseScale, P.time * 0.4) * noise * dt;
   vel += vec3<f32>(-pos.z, 0.0, pos.x) * P.swirl * dt;
 ${turbulenceTermSource('wgsl')}
+${attractorTermSource('wgsl')}
 
   if (P.pointer.w != 0.0) {
     let d = pos - P.pointer.xyz;

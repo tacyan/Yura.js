@@ -18,6 +18,14 @@ function gauss(): number {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
 }
 
+/**
+ * Spiral galaxy: a dense hot bulge plus twisted arms, tilted toward the
+ * viewer. The default shape and the flagship first frame.
+ * `twist` is arm winding in rad per world unit; `tilt` leans the disc (rad).
+ *
+ * @example
+ * yura('#hero').shape(shapes.galaxy({ arms: 5 })).run()
+ */
 export function galaxy(options: { radius?: number; arms?: number; twist?: number; tilt?: number } = {}): ShapeSpec {
   // The camera sits near the horizon, so an untilted XZ disc reads as a thin
   // bar. The default tilt leans the disc toward the viewer.
@@ -58,6 +66,7 @@ export function galaxy(options: { radius?: number; arms?: number; twist?: number
   }
 }
 
+/** Hollow spherical shell with a pole-to-pole color gradient. */
 export function sphere(options: { radius?: number } = {}): ShapeSpec {
   const { radius = 8 } = options
   return {
@@ -79,6 +88,7 @@ export function sphere(options: { radius?: number } = {}): ShapeSpec {
   }
 }
 
+/** Torus (donut) ring; the gradient sweeps once around it. */
 export function ring(options: { radius?: number; thickness?: number } = {}): ShapeSpec {
   const { radius = 8, thickness = 1.2 } = options
   return {
@@ -141,6 +151,7 @@ export function flow(options: { width?: number } = {}): ShapeSpec {
   }
 }
 
+/** Solid box volume with a bottom-to-top gradient. `size` is [width, height, depth]. */
 export function box(options: { size?: [number, number, number] } = {}): ShapeSpec {
   const { size = [12, 12, 12] } = options
   const [w, h, d] = size
@@ -160,6 +171,7 @@ export function box(options: { size?: [number, number, number] } = {}): ShapeSpe
   }
 }
 
+/** Solid cone, apex up; the gradient runs apex-to-base. */
 export function cone(options: { radius?: number; height?: number } = {}): ShapeSpec {
   const { radius = 8, height = 13 } = options
   return {
@@ -180,6 +192,12 @@ export function cone(options: { radius?: number; height?: number } = {}): ShapeS
   }
 }
 
+/**
+ * Corkscrew strand winding bottom to top (the gradient follows the winding).
+ *
+ * @example
+ * app.morphNow(shapes.helix({ turns: 5 }), { duration: 0.8, ease: 'back' })
+ */
 export function helix(options: { turns?: number; radius?: number; height?: number } = {}): ShapeSpec {
   const { turns = 4, radius = 6, height = 13 } = options
   return {
@@ -202,8 +220,10 @@ export function helix(options: { turns?: number; radius?: number; height?: numbe
 
 // ---- kinetic typography (text v2) ----
 
+/** Horizontal alignment of lines inside a text block (transposed for tategaki). */
 export type TextAlign = 'left' | 'center' | 'right'
 
+/** Layout options for {@link text} — font, sizing, tracking, alignment, tategaki. */
 export interface TextOptions {
   /** CSS font shorthand; weight rides inside it ('900 250px …'). px sizes auto-shrink to fit. */
   font?: string
@@ -254,6 +274,7 @@ export function charCoord(charIndex: number, intraX: number, charCount: number):
   return Math.min((charIndex + intra) / charCount, 1)
 }
 
+/** Where one laid-out text line sits inside its block (see {@link layoutLines}). */
 export interface LinePlacement {
   /** Left edge of the line inside a box of the given width. */
   x: number
@@ -280,6 +301,7 @@ export function layoutLines(
   }))
 }
 
+/** Where one tategaki column sits inside its block (see {@link layoutColumns}). */
 export interface ColumnPlacement {
   /** Column center offset from the block's horizontal center (right = positive). */
   x: number
@@ -593,4 +615,11 @@ function sampleCandidates(candidates: number[], w: number, h: number, n: number,
   return out
 }
 
+/**
+ * Registry of every built-in shape generator — morph targets for `.shape()`,
+ * `.morphTo()`, `morphNow()`, and preset sequences.
+ *
+ * @example
+ * yura('#hero').morphTo([shapes.galaxy(), shapes.text('YURA'), shapes.vortex()]).run()
+ */
 export const shapes = { galaxy, sphere, ring, vortex, flow, box, cone, helix, text, image }

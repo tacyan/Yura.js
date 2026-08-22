@@ -12,7 +12,9 @@ import type { YuraApp, SweepDirection } from './app'
  * lyrics() itself touches the app and the wall clock.
  */
 
+/** One timed lyric line for {@link lyrics}. */
 export interface LyricLine {
+  /** The line's text ('\n' adds lines — or columns in tategaki mode). */
   text: string
   /** Seconds from timeline start. Omit to auto-time: previous line's `at` (or 0) plus `every`. */
   at?: number
@@ -23,6 +25,7 @@ export interface LyricLine {
   shape?: ShapeSpec
 }
 
+/** Run-level options for {@link lyrics} — styling, timing, looping, text layout. */
 export interface LyricsOptions {
   /** CSS font shorthand forwarded to shapes.text (weight rides inside). */
   font?: string
@@ -48,11 +51,15 @@ export interface LyricsOptions {
   vertical?: boolean
 }
 
+/** Handle to a running lyric timeline returned by {@link lyrics}. */
 export interface LyricsRun {
+  /** Stop scheduling permanently; the current shape holds. */
   stop(): void
+  /** Jump the timeline clock to `t` seconds (wraps when looping). */
   seek(t: number): void
 }
 
+/** One scheduled moment in a lyric timeline (see {@link buildTimeline}). */
 export interface LyricEvent {
   /** Seconds from timeline start. */
   time: number

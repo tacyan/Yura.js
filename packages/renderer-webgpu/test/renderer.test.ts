@@ -2,7 +2,7 @@ import { test, expect, spyOn } from 'bun:test'
 import { CODES, type Vec3 } from '@yura/core'
 import { WebGPUParticleRenderer } from '../src/renderer'
 import type { LookParams, MotionParams, BlendMode, ToneMapping } from '../src/renderer'
-import { SIM_WGSL, RENDER_WGSL, POST_WGSL, buildPostWgsl } from '../src/shaders'
+import { SIM_WGSL, RENDER_WGSL, POST_WGSL, buildPostWgsl, SIM_PARAMS_BYTES } from '../src/shaders'
 import { gpuBlendState, resolveBlendMode, resolveToneMapping } from '../src/blend'
 import { getZeroScratch } from '../src/view-cache'
 
@@ -226,8 +226,18 @@ function wgslStructSize(wgsl: string, structName: string): number {
   let structAlign = 1
   for (const raw of body.split('\n')) {
     const line = raw.replace(/\/\/.*$/, '').trim()
-    const m = line.match(/^\w+\s*:\s*([\w<>]+)\s*,?$/)
+    const m = line.match(/^\w+\s*:\s*(array<[\w<>]+,\s*\d+>|[\w<>]+)\s*,?$/)
     if (!m) continue
+    // Fixed-size arrays: element stride = element size rounded to its align.
+    const arr = m[1]!.match(/^array<([\w<>]+),\s*(\d+)>$/)
+    if (arr) {
+      const el = WGSL_LAYOUT[arr[1]!]
+      if (!el) throw new Error(`unhandled WGSL array element type: ${arr[1]}`)
+      const stride = Math.ceil(el.size / el.align) * el.align
+      offset = Math.ceil(offset / el.align) * el.align + stride * Number(arr[2])
+      structAlign = Math.max(structAlign, el.align)
+      continue
+    }
     const layout = WGSL_LAYOUT[m[1]!]
     if (!layout) throw new Error(`unhandled WGSL member type: ${m[1]}`)
     offset = Math.ceil(offset / layout.align) * layout.align + layout.size
@@ -339,11 +349,13 @@ test('create() builds each pipeline and buffer exactly once, sizes derived from 
     expect(bufByLabel(buffers, label).desc.size).toBe(postSize)
   }
 
-  // The sim UB is the turbulence-extended 80-byte layout (18 scalars, 16-byte
-  // aligned) — the turbulence members are what grew it past the legacy 64.
+  // The sim UB layout: the turbulence scalars grew it past the legacy 64,
+  // and the attractor count + vec4 array grew it past 80 — to exactly the
+  // named SIM_PARAMS_BYTES both the WGSL text and the renderer derive from.
   expect(SIM_WGSL).toContain('turbulence: f32')
   expect(SIM_WGSL).toContain('turbulenceScale: f32')
-  expect(simSize).toBe(80)
+  expect(SIM_WGSL).toContain('attractorCount: u32')
+  expect(simSize).toBe(SIM_PARAMS_BYTES)
 })
 
 // ---------------------------------------------------------------------------

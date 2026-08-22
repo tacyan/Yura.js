@@ -14,6 +14,12 @@ import {
   buildPostWgsl,
   DEFAULT_TURBULENCE,
   DEFAULT_TURBULENCE_SCALE,
+  ATTRACTOR_ARRAY_VEC4S,
+  SIM_ATTRACTOR_COUNT_INDEX,
+  SIM_ATTRACTORS_INDEX,
+  SIM_PARAMS_BYTES,
+  packAttractors,
+  type AttractorParams,
 } from './shaders'
 import {
   gpuBlendState,
@@ -86,6 +92,13 @@ export interface MotionParams {
    * by this before sampling). Optional; defaults to DEFAULT_TURBULENCE_SCALE.
    */
   turbulenceScale?: number
+  /**
+   * Gravity wells / repulsors: softened inverse-square forces toward (or,
+   * with negative strength, away from) fixed world-space points. At most
+   * MAX_ATTRACTORS entries are used. Optional; defaults to none — the sims
+   * skip the term entirely, so legacy trajectories stay bit-identical.
+   */
+  attractors?: AttractorParams[]
 }
 
 export interface RendererOptions {
@@ -178,11 +191,16 @@ export class WebGPUParticleRenderer {
   /** Cached views for the offscreen targets above (not the swapchain). */
   private readonly viewCache = new ViewCache<GPUTextureView>()
 
-  // SimParams WGSL struct: 72 bytes of fields, rounded up to the struct's
-  // 16-byte alignment (the vec4 pointer member) = 80.
-  private simData = new ArrayBuffer(80)
+  // SimParams WGSL struct: scalar header + attractor vec4 array, sized from
+  // the same named layout constants the WGSL text embeds (see shaders.ts).
+  private simData = new ArrayBuffer(SIM_PARAMS_BYTES)
   private simF32 = new Float32Array(this.simData)
   private simU32 = new Uint32Array(this.simData)
+  /** View of the attractor vec4 pairs inside simData (filled by packAttractors). */
+  private simAttractors = this.simF32.subarray(
+    SIM_ATTRACTORS_INDEX,
+    SIM_ATTRACTORS_INDEX + ATTRACTOR_ARRAY_VEC4S * 4,
+  )
   private renderData = new Float32Array(40)
   private postData = new Float32Array(16)
 
@@ -368,7 +386,7 @@ export class WebGPUParticleRenderer {
 
     const uniform = (label: string, size: number) =>
       d.createBuffer({ label, size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-    this.simUB = uniform('yura-sim-ub', 80)
+    this.simUB = uniform('yura-sim-ub', SIM_PARAMS_BYTES)
     this.renderUB = uniform('yura-render-ub', 160)
     this.fadeUB = uniform('yura-fade-ub', 64)
     this.brightUB = uniform('yura-bright-ub', 64)
@@ -655,6 +673,7 @@ export class WebGPUParticleRenderer {
     this.simF32[15] = this.morphSpread
     this.simF32[16] = this.motion.turbulence ?? DEFAULT_TURBULENCE
     this.simF32[17] = this.motion.turbulenceScale ?? DEFAULT_TURBULENCE_SCALE
+    this.simU32[SIM_ATTRACTOR_COUNT_INDEX] = packAttractors(this.motion.attractors, this.simAttractors)
     d.queue.writeBuffer(this.simUB, 0, this.simData)
 
     // Exposure/trail compensation — shared with the WebGL backend via
