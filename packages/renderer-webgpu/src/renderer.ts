@@ -373,6 +373,16 @@ export class WebGPUParticleRenderer {
     this.device.queue.writeBuffer(this.targetB, 0, data)
   }
 
+  /**
+   * Overwrite live particle positions (pos3 + palette). Used to seed the
+   * swarm on or near the first shape so frame one already reads as the
+   * finished picture instead of a 10-second fly-in.
+   */
+  writePositions(data: Float32Array<ArrayBuffer>): void {
+    this.device.queue.writeBuffer(this.positions, 0, data)
+    this.device.queue.writeBuffer(this.velocities, 0, new Float32Array(data.length))
+  }
+
   resize(width: number, height: number): void {
     width = Math.max(1, Math.floor(width))
     height = Math.max(1, Math.floor(height))

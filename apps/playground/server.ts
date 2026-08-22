@@ -19,11 +19,8 @@ const MAX_CODE_BYTES = 32 * 1024
 
 const DEFAULT_CODE = `import { yura, shapes } from 'yura'
 
+// Two lines: a cursor-reactive galaxy of half a million particles.
 const app = yura('#stage')
-  .preset('neon-galaxy')
-  .particles(500_000)
-  .interactive()
-
 await app.run()
 
 // The swarm obeys at runtime — change the word, press Run:

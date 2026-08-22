@@ -230,6 +230,22 @@ void main() { o = vec4(0.0); }
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
   }
 
+  /**
+   * Overwrite live particle positions (both ping-pong copies) so frame one
+   * already sits on the first shape instead of a long fly-in.
+   */
+  writePositions(data: Float32Array<ArrayBuffer>): void {
+    const gl = this.gl
+    const zero = new Float32Array(data.length)
+    for (const i of [0, 1] as const) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf[i])
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.velBuf[i])
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, zero)
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, null)
+  }
+
   resize(width: number, height: number): void {
     width = Math.max(1, Math.floor(width))
     height = Math.max(1, Math.floor(height))

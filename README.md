@@ -1,22 +1,23 @@
 # Yura.js
 
-**Make the web move.** Five lines. One million particles.
-
-Yura.js is a visual-first WebGPU framework: cinematic GPU visuals for every
-web developer, with safe defaults, automatic quality governance, and graceful
-fallbacks. It is not a general 3D engine — it is the shortest path from an
-empty `<div>` to a finished, beautiful, interactive picture. And when you
-already have an engine, Yura works *with* it: the particle layer drops into
-an existing Three.js scene in three lines.
+**Make the web move.** Two lines. One million particles.
 
 ```ts
 import { yura } from 'yura'
-
-yura('#hero')
-  .preset('neon-galaxy')
-  .interactive()
-  .run()
+yura('#hero').run() // a cursor-reactive million-particle galaxy. That's it.
 ```
+
+Three reasons Yura is worth your `<div>`:
+
+1. **Two lines → a million particles.** Zero config is the flagship config:
+   cinematic look, adaptive quality, pointer reactivity — all on by default.
+2. **A few lines → a real game or a lyric video.** Physics, coyote-time
+   input (keyboard + touch + gamepad), particle FX, sound one-liners: ORB
+   RUSH is ~60 lines. Kinetic Japanese-first typography via `app.lyrics()`.
+3. **Zero dependencies. Three.js optional.** Yura runs entirely on its own —
+   and when you *do* have a Three.js scene, `yuraLayer` composits into it in
+   three lines (the adapter is duck-typed; `three` is only a dependency of
+   the demo, never of `yura`).
 
 ![One million particles forming a neon galaxy in the Yura showcase](docs/screenshots/showcase-galaxy-1m.jpg)
 

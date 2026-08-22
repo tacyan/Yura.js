@@ -20,6 +20,7 @@ import { resolvePreset, DEFAULT_MOTION } from './presets'
 import { looks as lookRegistry, type LookName } from './looks'
 import { shapes as shapeRegistry, type ShapeSpec } from './shapes'
 import { YuraScene, type SceneOptions } from './scene'
+import { lyrics as runLyrics, type LyricLine, type LyricsOptions, type LyricsRun } from './lyrics'
 
 export interface YuraOptions {
   /** 'auto' adapts to the frame budget, 'high' pins max quality, 'low' starts conservative. */
@@ -347,7 +348,8 @@ export class YuraApp {
   private motionParams: MotionParams = { ...DEFAULT_MOTION }
   private shapeSeq: ShapeSpec[] = [shapeRegistry.galaxy()]
   private shapeOverridden = false
-  private pointerEnabled = false
+  /** Pointer reactivity ships ON — the zero-config path is the flagship path. */
+  private pointerEnabled = true
   private qualityMode: 'auto' | 'high' | 'low'
   private backendOpt: 'auto' | 'webgpu' | 'webgl2'
 
@@ -394,6 +396,10 @@ export class YuraApp {
     this.container = el
     this.qualityMode = options.quality ?? 'auto'
     this.backendOpt = options.backend ?? 'auto'
+    // Zero config IS the flagship config: `yura('#hero').run()` starts as the
+    // full neon-galaxy experience. Any later .preset/.look/.shape/.particles
+    // call overrides these exactly as before.
+    this.preset('neon-galaxy')
   }
 
   particles(n: number): this {
@@ -468,8 +474,12 @@ export class YuraApp {
     return this
   }
 
-  interactive(): this {
-    this.pointerEnabled = true
+  /**
+   * Pointer reactivity. ON by default — call `.interactive(false)` for a
+   * purely ambient background that ignores the cursor.
+   */
+  interactive(on = true): this {
+    this.pointerEnabled = on
     return this
   }
 
@@ -483,6 +493,18 @@ export class YuraApp {
    * Defaults reproduce the previous uniform morph exactly.
    */
   async morphNow(s: ShapeSpec | string, opts: MorphNowOptions = {}): Promise<this> {
+    return this.morphNowImpl(s, opts)
+  }
+
+  /**
+   * A lyric video in one call: `app.lyrics([{ text: '君の声が', at: 0 }, …])`.
+   * Sugar for the standalone `lyrics(app, lines, opts)`.
+   */
+  lyrics(lines: LyricLine[], opts: LyricsOptions = {}): LyricsRun {
+    return runLyrics(this, lines, opts)
+  }
+
+  private async morphNowImpl(s: ShapeSpec | string, opts: MorphNowOptions = {}): Promise<this> {
     const spec = this.toShape(s)
     if (!this.renderer) {
       this.shape(spec)
@@ -605,6 +627,17 @@ export class YuraApp {
     this.shapeData = [first]
     this.renderer.writeTargetA(first)
     this.renderer.writeTargetB(first)
+    // Time-to-wow: spawn the swarm ON the first shape (with a breath of
+    // jitter for a settle-in shimmer) instead of a distant shell that takes
+    // ~10 seconds to fly in. Frame one is already the finished picture.
+    const seeded = new Float32Array(first.length)
+    for (let i = 0; i < first.length; i += 4) {
+      seeded[i] = first[i] + (Math.random() * 2 - 1) * 1.4
+      seeded[i + 1] = first[i + 1] + (Math.random() * 2 - 1) * 1.4
+      seeded[i + 2] = first[i + 2] + (Math.random() * 2 - 1) * 1.4
+      seeded[i + 3] = first[i + 3]
+    }
+    this.renderer.writePositions(seeded)
     this.morph = { pos: 0, phase: 'hold', timer: 0, nextShape: 2 }
     this.targetKinds = [this.shapeSeq[0].kind, this.shapeSeq[0].kind]
     // First frame may already rest on a text shape (e.g. the cyberpunk
