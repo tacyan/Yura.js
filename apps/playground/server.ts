@@ -110,34 +110,35 @@ yura('#stage')
     label: 'mini game',
     code: `import { yura } from 'yura'
 
-// ORB RUSH — WASD/arrows roll, Space jumps, R restarts. (Scene needs WebGPU.)
+// PRISM RUSH — gather 8 pearls around the iridescent knot. WASD/drag rolls,
+// Space/tap jumps, R restarts. hitRadius makes pickups feel fair. (Needs WebGPU.)
 const app = yura('#stage')
 const scene = app.scene({ gravity: -22, bounds: 11 })
 
-scene.add('plane', { size: 22, material: 'checker' })
-scene.add('cylinder', { size: [1.2, 2.6, 1.2], material: 'obsidian', position: [0, 1.3, 0], solid: true, shadow: true })
-const ball = scene.add('sphere', { radius: 0.45, material: 'chrome', position: [0, 3, 6], body: 'dynamic', shadow: true })
-ball.trail({ color: '#7dd3fc' })
+scene.add('plane', { size: 22, material: 'obsidian' })
+scene.add('knot', { radius: 1.3, material: 'iridescent', position: [0, 1.8, 0], spin: [0, 0.5, 0.2], solid: true, shadow: true })
+const ball = scene.add('sphere', { radius: 0.45, material: 'iridescent', position: [0, 3, 6], body: 'dynamic', shadow: true })
+ball.trail({ color: '#c4b5fd' })
 for (let i = 0; i < 8; i++) {
   const a = (i / 8) * Math.PI * 2
-  scene.add('sphere', { radius: 0.28, material: 'gold', tag: 'orb', shadow: true, position: [Math.cos(a) * 7, 1, Math.sin(a) * 7] })
+  scene.add('sphere', { radius: 0.26, hitRadius: 0.7, material: 'pearl', tag: 'pearl', shadow: true, position: [Math.cos(a) * 7, 1, Math.sin(a) * 7] })
 }
 
 let score = 0
-const hud = scene.text('ORBS 0 / 8', { anchor: 'top' })
+const hud = scene.text('PEARLS 0 / 8', { anchor: 'top' })
 scene.camera.follow(ball, { distance: 8, height: 3.6 })
 
 scene.onUpdate((dt, input) => {
   ball.velocity[0] += input.x * 26 * dt
   ball.velocity[2] -= input.y * 26 * dt
   if (input.jump && ball.grounded) ball.velocity[1] = 8.5
-  if (input.pressed('KeyR')) { scene.reset(); score = 0; hud.set('ORBS 0 / 8') }
+  if (input.pressed('KeyR')) { scene.reset(); score = 0; hud.set('PEARLS 0 / 8') }
 })
-ball.onCollide((orb) => {
-  if (orb.tag !== 'orb' || !orb.alive) return
-  orb.remove()
-  scene.burst(orb.position, { color: '#fbbf24' })
-  hud.set(++score < 8 ? 'ORBS ' + score + ' / 8' : 'YOU WIN — press R')
+ball.onCollide((p) => {
+  if (p.tag !== 'pearl' || !p.alive) return
+  p.remove()
+  scene.burst(p.position, { color: '#f0abfc' })
+  hud.set(++score < 8 ? 'PEARLS ' + score + ' / 8' : 'ALL PEARLS — press R')
   if (score === 8) scene.celebrate()
 })
 app.run()

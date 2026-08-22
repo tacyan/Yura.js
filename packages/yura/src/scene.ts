@@ -232,6 +232,11 @@ export interface AddOptions {
   /** Continuous rotation in rad/s. */
   spin?: [number, number, number]
   restitution?: number
+  /**
+   * Collision radius override (visuals unchanged). Give pickups a generous
+   * hit area — e.g. a 0.26-radius orb with hitRadius 0.6 feels fair to grab.
+   */
+  hitRadius?: number
 }
 
 /**
@@ -370,6 +375,8 @@ export class SceneObject {
   restitution: number
   /** Collision sphere radius (approximate for non-spheres). */
   radius: number
+  /** Pair-collision radius — defaults to `radius`; override for generous pickups. */
+  hitRadius: number
   alive = true
 
   /** @internal collider kind — cylinders collide radially in XZ, not as spheres. */
@@ -422,6 +429,7 @@ export class SceneObject {
     this.solid = opts.solid ?? false
     this.restitution = opts.restitution ?? 0.35
     this.radius = radius
+    this.hitRadius = opts.hitRadius ?? radius
     this.wantShadow = opts.shadow ?? false
     this.spawn = { position: [...this.position], rotation: [...this.rotation] }
   }
@@ -1011,8 +1019,8 @@ export class YuraScene {
         let d2: number
         if (cyl) {
           const s = cyl === a ? b : a
-          rr = cyl.radius + s.radius
-          if (Math.abs(s.position[1] - cyl.position[1]) > cyl.halfHeight + s.radius) {
+          rr = cyl.hitRadius + s.hitRadius
+          if (Math.abs(s.position[1] - cyl.position[1]) > cyl.halfHeight + s.hitRadius) {
             d2 = Infinity // outside the height band: no radial contact right now
           } else {
             const dx = s.position[0] - cyl.position[0]
@@ -1023,7 +1031,7 @@ export class YuraScene {
           const dx = a.position[0] - b.position[0]
           const dy = a.position[1] - b.position[1]
           const dz = a.position[2] - b.position[2]
-          rr = a.radius + b.radius
+          rr = a.hitRadius + b.hitRadius
           d2 = dx * dx + dy * dy + dz * dz
         }
         if (d2 > rr * rr) {
@@ -1036,12 +1044,12 @@ export class YuraScene {
           const mx = dyn0.position[0] - prev[0]
           const my = dyn0.position[1] - prev[1]
           const mz = dyn0.position[2] - prev[2]
-          const minR = Math.min(a.radius, b.radius)
+          const minR = Math.min(a.hitRadius, b.hitRadius)
           // Fast path: small per-tick travel cannot tunnel — keep the discrete result.
           if (mx * mx + my * my + mz * mz < 0.25 * minR * minR) continue
           const target = dyn0 === a ? b : a
           const toi = cyl
-            ? sweptCylinderTOI(prev, dyn0.position, target.position, rr, cyl.halfHeight + (cyl === a ? b : a).radius)
+            ? sweptCylinderTOI(prev, dyn0.position, target.position, rr, cyl.halfHeight + (cyl === a ? b : a).hitRadius)
             : sweptSphereTOI(prev, dyn0.position, target.position, rr)
           if (toi < 0) continue
           if (target.solid) {

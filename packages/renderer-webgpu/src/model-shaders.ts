@@ -269,6 +269,16 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
   let r = reflect(-v, n);
   let f0 = mix(vec3<f32>(0.04), albedo, metallic);
 
+  // Iridescent mode (M.emissive.w > 0.5): lightless normal-space pastel
+  // rainbow with a soft fresnel sheen — the flagship "soft anodized" look.
+  if (M.emissive.w > 0.5) {
+    let pastel = n * 0.5 + vec3<f32>(0.5);
+    let sheen = pow(1.0 - nov, 3.0);
+    let shI = shadowFactor(in.worldPos);
+    let ic = pastel * (0.74 + 0.26 * shI) + vec3<f32>(sheen * 0.35);
+    return vec4<f32>(ic, 1.0);
+  }
+
   // IBL: irradiance from the deepest mip, specular from roughness-scaled lod.
   let envI = F.params.x;
   let maxLod = F.params.y;

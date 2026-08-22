@@ -726,3 +726,28 @@ test('slow motion keeps the exact discrete collision outcome (fast path)', () =>
   expect(hitTicks[0]).toBe(20)
   expect(player.position[0]).toBeCloseTo(1.25, 5) // non-solid contact never displaces
 })
+
+test('hitRadius widens pair collisions without touching visuals or ground rest', () => {
+  const scene = new YuraScene({ gravity: 0 })
+  const player = scene.add('sphere', { radius: 0.45, position: [0, 0, 0], body: 'dynamic' })
+  // Visual orb radius 0.26 but a generous 0.6 hit area: contact at 0.45+0.6=1.05.
+  const orb = scene.add('sphere', { radius: 0.26, hitRadius: 0.6, position: [2, 0, 0], tag: 'orb' })
+  const hits: number[] = []
+  player.onCollide(() => hits.push(player.position[0]))
+  player.velocity[0] = 3
+  for (let t = 1; t <= 30; t++) scene.step(1 / 60, t / 60)
+  expect(hits.length).toBeGreaterThan(0)
+  // First contact must land once the gap is <= 1.05 (generous), well before
+  // the visual-radius distance of 0.71.
+  expect(hits[0]).toBeGreaterThanOrEqual(2 - 1.05 - 0.06)
+  expect(hits[0]).toBeLessThan(2 - 0.71)
+  expect(orb.radius).toBeCloseTo(0.26, 5) // visual radius untouched
+})
+
+test('hitRadius defaults to radius — behavior identical when unset', () => {
+  const scene = new YuraScene({ gravity: 0 })
+  const a = scene.add('sphere', { radius: 0.5, position: [0, 0, 0], body: 'dynamic' })
+  const b = scene.add('sphere', { radius: 0.3, position: [5, 0, 0] })
+  expect(a.hitRadius).toBe(0.5)
+  expect(b.hitRadius).toBe(0.3)
+})

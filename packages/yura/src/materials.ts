@@ -26,6 +26,8 @@ export const materialPresets: Record<string, SceneMaterial> = {
   rubber: solid([0.03, 0.03, 0.035, 1], 0, 0.9),
   checker: { color: [1, 1, 1, 1], metallic: 0, roughness: 0.75, emissive: BLACK, pattern: 'checker' },
   grid: { color: [1, 1, 1, 1], metallic: 0.1, roughness: 0.4, emissive: BLACK, pattern: 'grid' },
+  // Lightless pastel rainbow shaded from surface normals — the flagship look.
+  iridescent: { color: [1, 1, 1, 1], metallic: 0, roughness: 0.5, emissive: BLACK, iridescent: true },
 }
 
 /** Matte diffuse surface in any color. */

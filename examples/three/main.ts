@@ -20,60 +20,18 @@ renderer.toneMapping = THREE.ACESFilmicToneMapping
 stage.appendChild(renderer.domElement)
 
 const scene = new THREE.Scene()
-scene.background = new THREE.Color(0x04050c)
-scene.fog = new THREE.FogExp2(0x04050c, 0.028)
+scene.background = new THREE.Color(0x04050c) // deep-space navy — the live-stage ambiance
 
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200)
 
-// Lights: a dim key plus two colored points that echo the particle gradient.
-scene.add(new THREE.AmbientLight(0x223344, 0.6))
-const keyLight = new THREE.DirectionalLight(0xdde6ff, 1.2)
-keyLight.position.set(6, 10, 4)
-scene.add(keyLight)
-const cyan = new THREE.PointLight(0x22d3ee, 60, 40)
-cyan.position.set(5, 3, -4)
-scene.add(cyan)
-const violet = new THREE.PointLight(0x8b5cf6, 60, 40)
-violet.position.set(-5, 2, 4)
-scene.add(violet)
-
-// Centerpiece the swarm will orbit.
+// Centerpiece the swarm will orbit — an iridescent knot. MeshNormalMaterial
+// needs no lights and gives the soft pastel-rainbow shading on its own.
 const knot = new THREE.Mesh(
-  new THREE.TorusKnotGeometry(1, 0.32, 220, 36),
-  new THREE.MeshStandardMaterial({
-    color: 0x8896b8,
-    metalness: 0.95,
-    roughness: 0.22,
-    emissive: 0x0b1436,
-    emissiveIntensity: 0.6,
-  }),
+  new THREE.TorusKnotGeometry(1, 0.42, 256, 48),
+  new THREE.MeshNormalMaterial(),
 )
 knot.position.set(0, 1.6, 0)
 scene.add(knot)
-
-// Dark reflective floor.
-const floor = new THREE.Mesh(
-  new THREE.CircleGeometry(26, 64),
-  new THREE.MeshStandardMaterial({ color: 0x0a0e1e, metalness: 0.6, roughness: 0.4 }),
-)
-floor.rotation.x = -Math.PI / 2
-floor.position.y = -1.4
-scene.add(floor)
-
-// A few drifting shards.
-const shards: THREE.Mesh[] = []
-const shardMat = new THREE.MeshStandardMaterial({
-  color: 0x64748b,
-  metalness: 0.9,
-  roughness: 0.3,
-  emissive: 0x164e63,
-  emissiveIntensity: 0.9,
-})
-for (let i = 0; i < 6; i++) {
-  const shard = new THREE.Mesh(new THREE.OctahedronGeometry(0.22 + (i % 3) * 0.09), shardMat)
-  shards.push(shard)
-  scene.add(shard)
-}
 
 // Minimal orbit control (drag + wheel + inertia) — no addons needed.
 let yaw = 0.6
@@ -140,12 +98,6 @@ renderer.setAnimationLoop((t: number) => {
 
   knot.rotation.y = time * 0.25
   knot.rotation.x = Math.sin(time * 0.17) * 0.3
-  for (let i = 0; i < shards.length; i++) {
-    const a = time * (0.12 + i * 0.03) + (i * Math.PI * 2) / shards.length
-    const r = 4.6 + (i % 3)
-    shards[i].position.set(Math.cos(a) * r, 1.6 + Math.sin(time * 0.6 + i * 2) * 0.9, Math.sin(a) * r)
-    shards[i].rotation.set(time * 0.4 + i, time * 0.3, 0)
-  }
 
   renderer.render(scene, camera)
   fx.sync() // ★ 3 — after render, so the swarm tracks this frame's camera

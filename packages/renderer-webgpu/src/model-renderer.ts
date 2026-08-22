@@ -44,6 +44,8 @@ export interface SceneMaterial {
   unlit?: boolean
   /** With unlit: radial alpha falloff from the UV center. */
   fade?: boolean
+  /** Lightless normal-space pastel rainbow with a fresnel sheen. */
+  iridescent?: boolean
 }
 
 export interface MeshHandle {
@@ -491,6 +493,7 @@ export class WebGPUModelRenderer {
     matData[8] = mat.emissive[0]
     matData[9] = mat.emissive[1]
     matData[10] = mat.emissive[2]
+    matData[11] = mat.iridescent ? 1 : 0 // emissive.w — iridescent flag in the PBR shader
     d.queue.writeBuffer(matUB, 0, matData)
 
     let materialBG: GPUBindGroup
