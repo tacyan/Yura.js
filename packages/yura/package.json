@@ -1,6 +1,6 @@
 {
   "name": "yura",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Make the web move. One million GPU-simulated particles in five lines — a visual-first WebGPU framework with WebGL2 fallback, curated looks, shape morphing, and an adaptive quality governor.",
   "license": "MIT",
   "type": "module",

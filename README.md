@@ -339,6 +339,13 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   `softParticles` is a look param too: a world-unit depth-fade so scene-mode
   FX sprites melt into nearby geometry instead of clipping (the `sakura`
   look ships with it on; the default 0 keeps it off at zero cost).
+  So is bokeh depth of field: the focal plane stays sharp while out-of-focus
+  sprites bloom into discs — free at the default 0:
+
+  ```ts
+  app.look(looks.cinematic({ dofStrength: 1.2 }))
+  // dofFocus picks the sharp plane; the default 26 is the camera's orbit radius
+  ```
 - **Interaction** — hover repels particles; click detonates a shockwave.
   `.interactive({ gravity: 40 })` upgrades the cursor to a live gravity well
   that pulls the whole swarm toward the pointer (negative values repel).
@@ -405,7 +412,7 @@ Hit a `YURA-xxx` code in the console? Every code is documented in the [error cod
 
 ## Roadmap
 
-Capture to MP4/WebM, framework adapters (React/Vue/Svelte/Astro),
+Capture to MP4/WebM, more framework adapters (Vue/Svelte/Astro),
 golden-image CI, playground fork/remix. See the product specification for
 the full 90-day plan.
 

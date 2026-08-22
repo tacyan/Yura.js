@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.2.0] - 2026-08-22
+
 ### Added
 
 - Burst options: `direction`, `spread`, source `shape` (`sphere` / `disc` / `box`), `colorEnd` lifetime color fade, and per-second `drag`. Defaults remain bit-identical to the previous behavior.
@@ -32,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Playground recipe regression tests: every recipe code string is transpiled at test time and its `yura` imports are cross-checked against the package's actual export surface (derived from the entry point, never hardcoded), so a renamed or removed API immediately flags the stale recipe.
 - JSDoc with `@example` blocks for roughly 60 public symbols across the packages — comment-only, with zero runtime changes.
 - New live demos and recipes: the ORB RUSH mini-game from the README (now with a chiptune background loop that starts on the first input), the Helix Storm showcase scene, a sakura showcase scene with a vertical lyric loop, a playground `tategaki` recipe, a binary pair of gravity wells slowly orbiting the Neon Galaxy showcase disc, and a playground `gravity wells` recipe.
+- React adapter: the `yura/react` subpath (published as `yurayura/react`) ships a `useYura(setup?, opts?)` hook returning `{ ref, app }` — mount creates the app on the ref'd element, runs the setup callback, and starts `run()`; unmount runs the setup's returned cleanup and then `dispose()`, safe under StrictMode's mount/unmount/mount. React stays an optional peer dependency (`react >= 17`, never bundled), and the hook is compiled against a local type shim so the published `react.d.ts` carries no React type references.
+- Bokeh depth of field: `LookParams.dofFocus` / `dofStrength` widen out-of-focus sprites into energy-conserving bokeh discs on both backends, with the circle of confusion computed from clip-space depth and the WGSL and GLSL emitted from a single token source. The default strength `0` keeps existing output bit-identical, and every look factory accepts the two params as overrides.
 - Internal: deterministic seeded fuzz suites (~2,380 reproducible cases over GLB parsing, color/math edge values, note parsing, lyric timelines, and FX pool stepping) and regression nets that check every root export and the README API table against the actual implementation.
 
 ### Changed
@@ -40,7 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `watchVisibility` emits the initial visibility state synchronously and guards non-DOM environments.
 - The npm build no longer depends on BSD `sed`, so it also runs on Linux, and CI now runs tests, type checks, and the npm build on both Ubuntu and macOS.
 - More of the public surface is exported from the package root: the `InteractiveOptions`, `LyricInput`, `BlendMode`, and `ToneMapping` types, the `CODES` error-code registry, and the `MAX_ATTRACTORS` / `DEFAULT_ATTRACTOR_RADIUS` attractor constants. The WebGL and WebGPU renderer packages also export their shared shader builders and constants symmetrically.
-- Internal: error codes are centralized in a `CODES` registry, demos and playground recipes were rewritten on the new helpers, deep relative imports were removed for single-package publish safety, and the test suite grew from 160 to 620 passing tests, bringing the core, WebGL renderer, glTF loader, model renderer, and app modules to 100% line coverage. The WebGPU-detection test now injects a stub `navigator` instead of assuming the ambient runtime lacks `navigator.gpu`, so CI passes on runtimes that ship it (such as Bun 1.4).
+- The looks and presets now show the newer pipeline features by default: the `cinematic` look moves to Reinhard tone mapping with exposure raised to 1.6 to keep mid-tone weight, the `aurora` look blends with `screen` so dense curtain cores saturate at the palette color instead of burning to white, the `studio` look enables `softParticles: 0.2` for scene mode, and the `neon-galaxy`, `aurora`, `cinematic`, and `cyberpunk` presets gain curl-noise turbulence defaults (0.45, 0.6, 0.2, and 0.25 with a 0.8 `turbulenceScale`, respectively). The `cyberpunk` look deliberately keeps its additive + ACES pipeline — the hard additive glow is the neon signature — and the remaining looks are unchanged.
+- The npm build now minifies its bundles, shrinking the published main bundle from 257KB to 169KB.
+- Internal: error codes are centralized in a `CODES` registry, demos and playground recipes were rewritten on the new helpers, deep relative imports were removed for single-package publish safety, and the test suite grew from 160 to 661 passing tests, bringing the core, WebGL renderer, glTF loader, model renderer, and app modules to 100% line coverage. The WebGPU-detection test now injects a stub `navigator` instead of assuming the ambient runtime lacks `navigator.gpu`, so CI passes on runtimes that ship it (such as Bun 1.4).
 
 ### Fixed
 
@@ -60,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The glTF parser no longer leaks raw exceptions on malformed files: a `SyntaxError` on a corrupt JSON chunk and `TypeError`s on dangling accessor, bufferView, and buffer references are all reported as descriptive `YURA-020` errors, and accessor spans are validated against their buffers before any data is read.
 - `trsToMat4` no longer overflows to `Infinity` on far-from-unit quaternions; near-unit inputs are left untouched, so existing output stays bit-identical.
 - `app.lyrics()` accepts the same bare-string input (a single string or an array of strings) as the standalone `lyrics()` helper, instead of only timed line objects.
+- The particle, scene, and model startup paths re-check `disposed` after every `await`, so a mount followed by an immediate unmount (React StrictMode's double mount) no longer leaks the renderer and its animation-frame loop.
+- `app.lyrics()` registers its timer chain in the app's cleanups, so `dispose()` stops it (a `loop: true` run would previously keep firing forever); calling it on an already-disposed app stops the run before its first tick.
 
 ### Performance
 

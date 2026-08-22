@@ -126,6 +126,21 @@ yura('#stage')
 `,
   },
   {
+    label: 'bokeh',
+    code: `import { yura, shapes, looks } from 'yura'
+
+// Bokeh DoF: dofFocus pins the focal plane just in front of the galaxy core
+// (the camera orbits at depth 26), and dofStrength 4 swells everything off
+// that plane into dim lens discs; a slow swirl drifts arms through focus.
+yura('#stage')
+  .look(looks.cinematic({ dofStrength: 4, dofFocus: 22, particleSize: 0.05, twinkle: 0.5 }))
+  .particles(500_000)
+  .shape(shapes.galaxy())
+  .motion({ swirl: 0.05, turbulence: 0.15 })
+  .run()
+`,
+  },
+  {
     label: 'shape tour',
     code: `import { yura, shapes } from 'yura'
 
