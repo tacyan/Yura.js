@@ -212,6 +212,119 @@ export function resetSceneHandles(scene: YuraScene | null): void {
   })
 }
 
+/** Fixed physics timestep for the scene path (seconds per sim tick). */
+export const SCENE_FIXED_DT = 1 / 60
+/** Max sim ticks per rendered frame (spiral-of-death guard). */
+export const SCENE_MAX_STEPS = 5
+/** Real-dt spike clamp (seconds) — tab switches, debugger pauses, GC stalls. */
+export const SCENE_MAX_FRAME_DT = 0.25
+
+/**
+ * Fixed-timestep accumulator for the scene simulation. The variable-dt Euler
+ * integrator made jump apex height framerate-dependent and turned sub-30fps
+ * machines into slow motion (dt clamped to 1/30). Instead: accumulate real
+ * frame time (spikes clamped), run zero or more fixed 1/60s ticks per rendered
+ * frame, carry the fractional remainder. Past the step cap the excess time is
+ * dropped so a stall never snowballs. (Exported for tests.)
+ */
+export class FixedStepAccumulator {
+  private acc = 0
+
+  constructor(
+    readonly stepDt: number = SCENE_FIXED_DT,
+    readonly maxSteps: number = SCENE_MAX_STEPS,
+    readonly maxFrameDt: number = SCENE_MAX_FRAME_DT,
+  ) {}
+
+  /** Fractional sim time (seconds) carried into the next frame. */
+  get remainder(): number {
+    return this.acc
+  }
+
+  /**
+   * Feed one rendered frame's real dt (seconds); returns how many fixed
+   * ticks of `stepDt` the simulation should run this frame.
+   */
+  advance(realDt: number): number {
+    this.acc += Math.min(Math.max(realDt, 0), this.maxFrameDt)
+    // Epsilon absorbs float drift so a steady 60fps feed yields 1 tick/frame.
+    let ticks = Math.floor(this.acc / this.stepDt + 1e-6)
+    if (ticks > this.maxSteps) {
+      ticks = this.maxSteps
+      this.acc = 0 // drop time beyond the cap — never try to catch it up
+    } else {
+      this.acc = Math.max(this.acc - ticks * this.stepDt, 0)
+    }
+    return ticks
+  }
+
+  reset(): void {
+    this.acc = 0
+  }
+}
+
+/** Fallback texture-dimension limit when no GPU device is available to ask. */
+export const FALLBACK_MAX_TEXTURE_DIM = 8192
+
+/**
+ * Clamps a requested canvas backing size to the device's 2D texture limit,
+ * preserving aspect ratio. Oversized canvases (huge monitors x dpr x scale)
+ * otherwise fail texture allocation outright. (Pure, exported for tests.)
+ */
+export function clampCanvasSize(
+  width: number,
+  height: number,
+  maxDim: number = FALLBACK_MAX_TEXTURE_DIM,
+): { width: number; height: number } {
+  const w = Math.max(width, 0)
+  const h = Math.max(height, 0)
+  const longest = Math.max(w, h)
+  if (longest <= maxDim) return { width: w, height: h }
+  const k = maxDim / longest
+  return {
+    width: Math.min(w * k, maxDim),
+    height: Math.min(h * k, maxDim),
+  }
+}
+
+/** The subset of MediaQueryList the DPR watcher needs (injectable in tests). */
+export interface DprMediaQuery {
+  addEventListener(type: 'change', listener: () => void): void
+  removeEventListener(type: 'change', listener: () => void): void
+}
+
+/**
+ * Watches devicePixelRatio changes (window dragged to a different-DPI
+ * monitor, browser zoom). A `(resolution: Ndppx)` media query only fires when
+ * the ratio moves AWAY from N, so after every change the listener must be
+ * re-registered against the NEW ratio. Returns a disposer that removes the
+ * currently registered listener. (Exported for tests via injected fakes.)
+ */
+export function watchDprChanges(
+  matchMediaFn: (query: string) => DprMediaQuery,
+  getDpr: () => number,
+  onChange: () => void,
+): () => void {
+  let disposed = false
+  let removeCurrent: () => void = () => {}
+  const register = (): void => {
+    const mql = matchMediaFn(`(resolution: ${getDpr()}dppx)`)
+    const handler = (): void => {
+      removeCurrent()
+      if (disposed) return
+      onChange()
+      register()
+    }
+    mql.addEventListener('change', handler)
+    removeCurrent = () => mql.removeEventListener('change', handler)
+  }
+  register()
+  return () => {
+    disposed = true
+    removeCurrent()
+  }
+}
+
 /**
  * The chainable facade (spec §8.1). Configuration is collected synchronously;
  * everything async (GPU init, shape generation, asset loads) happens in run().
@@ -257,6 +370,12 @@ export class YuraApp {
   private lastTime = 0
   private simTime = 0
   private fpsEma = 60
+  /** Fixed-timestep accumulator — scene path only. */
+  private sceneAccum = new FixedStepAccumulator()
+  /** Scene sim clock: advances by SCENE_FIXED_DT per tick, never by frame dt. */
+  private sceneSimTime = 0
+  /** Device's real 2D texture limit, captured when the GPU is acquired. */
+  private maxTextureDim = FALLBACK_MAX_TEXTURE_DIM
 
   private pointerNdc: [number, number] | null = null
   /** 1 right after a click, decaying — drives the shockwave burst. */
@@ -434,6 +553,9 @@ export class YuraApp {
 
     const gpu = this.backendOpt === 'webgl2' ? null : await acquireWebGPU()
     if (!this.canvas) return this
+    if (gpu) {
+      this.maxTextureDim = gpu.device.limits?.maxTextureDimension2D ?? FALLBACK_MAX_TEXTURE_DIM
+    }
 
     if (gpu && this.sceneObj) {
       return this.runScene(gpu.device)
@@ -706,16 +828,30 @@ export class YuraApp {
     if (!target || !this.canvas) return
     const dpr = Math.min(devicePixelRatio || 1, 2)
     const scale = this.governor.current().res
-    target.resize(
+    const size = clampCanvasSize(
       this.canvas.clientWidth * dpr * scale,
       this.canvas.clientHeight * dpr * scale,
+      this.maxTextureDim,
     )
+    target.resize(size.width, size.height)
   }
 
   private observeResize(): void {
     const ro = new ResizeObserver(() => this.applyResolution())
     ro.observe(this.container)
     this.cleanups.push(() => ro.disconnect())
+    // ResizeObserver misses monitor-DPI changes (CSS size is unchanged), so
+    // the canvas stayed blurry after a drag to another screen. Watch the
+    // current dpr via matchMedia and re-render at the new density.
+    if (typeof matchMedia === 'function') {
+      this.cleanups.push(
+        watchDprChanges(
+          (q) => matchMedia(q),
+          () => devicePixelRatio || 1,
+          () => this.applyResolution(),
+        ),
+      )
+    }
     this.applyResolution()
   }
 
@@ -808,7 +944,19 @@ export class YuraApp {
     if (this.governor.update(dtMs)) this.applyResolution()
 
     if (this.modelRenderer) {
-      this.sceneObj?.step(dt, this.simTime)
+      if (this.sceneObj) {
+        // Fixed-timestep physics: identical jump arcs at any framerate. Feed
+        // REAL frame dt (the accumulator clamps spikes itself — the MAX_DT
+        // render clamp would reintroduce slow motion below 30fps). Multiple
+        // ticks per frame are safe for input: step() ends with
+        // input.endFrame(), so pressed() edges are consumed by the first tick
+        // and the time-stamped jump buffer self-consumes on first read.
+        const ticks = this.sceneAccum.advance(dtMs / 1000)
+        for (let i = 0; i < ticks; i++) {
+          this.sceneSimTime += SCENE_FIXED_DT
+          this.sceneObj.step(SCENE_FIXED_DT, this.sceneSimTime)
+        }
+      }
       this.modelRenderer.frame(dt, this.simTime)
       this.rafId = requestAnimationFrame(this.tick)
       return

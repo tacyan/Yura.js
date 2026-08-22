@@ -101,6 +101,8 @@ What you get for free:
 
 ## Works WITH Three.js — 1M particles in your scene
 
+![A Yura particle vortex swirling through a Three.js scene](docs/screenshots/three-interop.jpg)
+
 Already have a Three.js scene? Keep it. `yuraLayer` puts a GPU-simulated
 particle swarm on top of your render, matched to your camera every frame
 (`bun run dev:three` runs the full example):
@@ -133,6 +135,8 @@ already uses — no peer-dependency conflicts, nothing added to your bundle
 beyond Yura itself.
 
 ## Kinetic typography / lyric motion
+
+![Japanese lyric line assembling character by character from particles](docs/screenshots/lyric-motion.jpg)
 
 `lyrics()` turns a list of timed lines into a particle lyric video: at each
 timestamp the swarm morphs into the next line, assembling **character by
