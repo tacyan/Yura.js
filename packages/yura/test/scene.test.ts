@@ -504,11 +504,17 @@ function installFakeDocument(): { made: FakeEl[]; uninstall: () => void } {
     },
     body: { appendChild: () => {} },
   }
-  ;(globalThis as { document?: unknown }).document = doc
+  // Save/restore the previous global instead of assuming no ambient document
+  // exists (runtime versions differ in which globals they ship).
+  const g = globalThis as { document?: unknown }
+  const hadDoc = 'document' in g
+  const prevDoc = g.document
+  g.document = doc
   return {
     made,
     uninstall: () => {
-      delete (globalThis as { document?: unknown }).document
+      if (hadDoc) g.document = prevDoc
+      else delete g.document
     },
   }
 }

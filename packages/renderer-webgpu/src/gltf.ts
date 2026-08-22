@@ -124,7 +124,15 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
       )
     }
     if (type === 0x4e4f534a) {
-      json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, start, len))) as GltfJson
+      try {
+        json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, start, len))) as GltfJson
+      } catch (err) {
+        throw new YuraError(
+          CODES.ASSET_LOAD_FAILED,
+          `GLB JSON chunk is not valid JSON (${err instanceof Error ? err.message : String(err)}).`,
+          'The file is corrupt. Re-export the .glb.',
+        )
+      }
     } else if (type === 0x004e4942) {
       bin = new Uint8Array(buf.slice(start, start + len))
     }
@@ -144,17 +152,83 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     }
   }
 
+  // Corrupt files reference accessors/bufferViews/buffers that do not exist, or
+  // declare counts/offsets that read past the end of their buffer. Every lookup
+  // below is validated so corruption surfaces as YURA-020 instead of a raw
+  // TypeError/RangeError.
+  const malformed = (detail: string): YuraError =>
+    new YuraError(
+      CODES.ASSET_LOAD_FAILED,
+      `Malformed glTF: ${detail}.`,
+      'The file is corrupt or truncated. Re-export the .glb.',
+    )
+
+  const isIndexLike = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+
+  const getAccessor = (idx: number): NonNullable<GltfJson['accessors']>[number] => {
+    const acc = json!.accessors?.[idx]
+    if (acc === null || typeof acc !== 'object') {
+      throw malformed(`accessor ${idx} is referenced but not defined`)
+    }
+    if (!isIndexLike(acc.count)) {
+      throw malformed(`accessor ${idx} declares an invalid count (${acc.count})`)
+    }
+    if (COMP_SIZE[acc.componentType] === undefined) {
+      throw malformed(`accessor ${idx} has an unknown componentType (${acc.componentType})`)
+    }
+    return acc
+  }
+
+  const getBufferView = (idx: unknown, referrer: string): { bv: NonNullable<GltfJson['bufferViews']>[number]; src: Uint8Array } => {
+    const bv = isIndexLike(idx) ? json!.bufferViews?.[idx] : undefined
+    if (bv === null || typeof bv !== 'object') {
+      throw malformed(`${referrer} references bufferView ${idx}, which is not defined`)
+    }
+    const src = isIndexLike(bv.buffer) ? buffers[bv.buffer] : undefined
+    if (src === undefined) {
+      throw malformed(`bufferView ${idx} references buffer ${bv.buffer}, which is not defined`)
+    }
+    return { bv, src }
+  }
+
+  // Resolves where an accessor's bytes live and proves every element read stays
+  // inside the backing buffer before any DataView access happens.
+  const accessorSource = (
+    idx: number,
+    acc: NonNullable<GltfJson['accessors']>[number],
+    elemSize: number,
+    useViewStride: boolean,
+  ): { dv: DataView; base: number; stride: number } => {
+    const { bv, src } = getBufferView(acc.bufferView, `accessor ${idx}`)
+    const bvOffset = bv.byteOffset ?? 0
+    const accOffset = acc.byteOffset ?? 0
+    const stride = useViewStride ? bv.byteStride ?? elemSize : elemSize
+    if (!isIndexLike(bvOffset) || !isIndexLike(accOffset) || !isIndexLike(stride)) {
+      throw malformed(`accessor ${idx} declares an invalid byteOffset or byteStride`)
+    }
+    const relBase = bvOffset + accOffset
+    const span = acc.count === 0 ? 0 : (acc.count - 1) * stride + elemSize
+    if (relBase + span > src.byteLength) {
+      throw malformed(
+        `accessor ${idx} needs ${relBase + span} bytes but buffer ${bv.buffer} holds ${src.byteLength}`,
+      )
+    }
+    return { dv: new DataView(src.buffer), base: src.byteOffset + relBase, stride }
+  }
+
   const readAccessor = (idx: number): { data: Float32Array<ArrayBuffer>; comps: number; count: number } => {
-    const acc = json!.accessors![idx]
+    const acc = getAccessor(idx)
     const comps = TYPE_COMPS[acc.type]
+    if (comps === undefined) {
+      throw malformed(`accessor ${idx} has an unknown type (${JSON.stringify(acc.type)})`)
+    }
     const compSize = COMP_SIZE[acc.componentType]
+    if (acc.bufferView === undefined) {
+      return { data: new Float32Array(acc.count * comps), comps, count: acc.count }
+    }
+    const { dv, base, stride } = accessorSource(idx, acc, comps * compSize, true)
     const out = new Float32Array(acc.count * comps)
-    if (acc.bufferView === undefined) return { data: out, comps, count: acc.count }
-    const bv = json!.bufferViews![acc.bufferView]
-    const src = buffers[bv.buffer]
-    const base = src.byteOffset + (bv.byteOffset ?? 0) + (acc.byteOffset ?? 0)
-    const stride = bv.byteStride ?? comps * compSize
-    const dv = new DataView(src.buffer)
     for (let i = 0; i < acc.count; i++) {
       for (let c = 0; c < comps; c++) {
         const o = base + i * stride + c * compSize
@@ -175,14 +249,11 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
   // Index accessors (SCALAR uint32/uint16/uint8) stay on an integer path so
   // uint32 indices above 2^24 are never rounded through a Float32.
   const readIndices = (idx: number): Uint32Array<ArrayBuffer> => {
-    const acc = json!.accessors![idx]
-    const out = new Uint32Array(acc.count)
-    if (acc.bufferView === undefined) return out
-    const bv = json!.bufferViews![acc.bufferView]
-    const src = buffers[bv.buffer]
-    const base = src.byteOffset + (bv.byteOffset ?? 0) + (acc.byteOffset ?? 0)
+    const acc = getAccessor(idx)
+    if (acc.bufferView === undefined) return new Uint32Array(acc.count)
     const compSize = COMP_SIZE[acc.componentType]
-    const dv = new DataView(src.buffer)
+    const { dv, base } = accessorSource(idx, acc, compSize, false)
+    const out = new Uint32Array(acc.count)
     for (let i = 0; i < acc.count; i++) {
       const o = base + i * compSize
       switch (acc.componentType) {
@@ -199,8 +270,7 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
   for (const img of json.images ?? []) {
     let blob: Blob
     if (img.bufferView !== undefined) {
-      const bv = json.bufferViews![img.bufferView]
-      const src = buffers[bv.buffer]
+      const { bv, src } = getBufferView(img.bufferView, 'image')
       const bytes = src.subarray(bv.byteOffset ?? 0, (bv.byteOffset ?? 0) + bv.byteLength)
       blob = new Blob([bytes.slice()], { type: img.mimeType ?? 'image/png' })
     } else if (img.uri) {
@@ -252,7 +322,10 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
   const max: Vec3 = [-Infinity, -Infinity, -Infinity]
 
   const visit = (nodeIdx: number, parent: Float32Array): void => {
-    const node = json!.nodes![nodeIdx]
+    const node = json!.nodes?.[nodeIdx]
+    if (node === null || typeof node !== 'object') {
+      throw malformed(`node ${nodeIdx} is referenced but not defined`)
+    }
     let local: Float32Array
     if (node.matrix) {
       local = new Float32Array(node.matrix)
@@ -265,9 +338,14 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     }
     const world = multiply(parent, local)
     if (node.mesh !== undefined) {
-      for (const prim of json!.meshes![node.mesh].primitives) {
+      const mesh = json!.meshes?.[node.mesh]
+      if (mesh === null || typeof mesh !== 'object' || !Array.isArray(mesh.primitives)) {
+        throw malformed(`node ${nodeIdx} references mesh ${node.mesh}, which is not defined`)
+      }
+      for (const prim of mesh.primitives) {
+        if (prim === null || typeof prim !== 'object') continue
         if (prim.mode !== undefined && prim.mode !== 4) continue // triangles only
-        const posAcc = prim.attributes['POSITION']
+        const posAcc = prim.attributes?.['POSITION']
         if (posAcc === undefined) continue
         const pos = readAccessor(posAcc)
         const norm = prim.attributes['NORMAL'] !== undefined

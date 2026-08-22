@@ -66,6 +66,9 @@ function installDomFakes(doc: ReturnType<typeof makeFakeDocument> | undefined, w
   const prevIO = g.IntersectionObserver
   FakeIntersectionObserver.instances = []
   if (doc) g.document = doc
+  // Arrange a DOM-less shape explicitly: the runtime's own globals may grow
+  // a document in a future version, so never rely on its ambient absence.
+  else delete g.document
   if (withIO) g.IntersectionObserver = FakeIntersectionObserver
   else delete g.IntersectionObserver
   return () => {
@@ -81,8 +84,17 @@ function installDomFakes(doc: ReturnType<typeof makeFakeDocument> | undefined, w
 // ---------------------------------------------------------------------------
 
 test('prefersReducedMotion is false when matchMedia is undefined', () => {
-  expect(typeof matchMedia).toBe('undefined')
-  expect(prefersReducedMotion()).toBe(false)
+  // Remove any runtime-provided matchMedia rather than assuming the ambient
+  // global is absent (runtime versions differ in which globals they ship).
+  const hadMM = 'matchMedia' in g
+  const prevMM = g.matchMedia
+  delete g.matchMedia
+  try {
+    expect(typeof matchMedia).toBe('undefined')
+    expect(prefersReducedMotion()).toBe(false)
+  } finally {
+    if (hadMM) g.matchMedia = prevMM
+  }
 })
 
 test('prefersReducedMotion reflects matchMedia matches', () => {
