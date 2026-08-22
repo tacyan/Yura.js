@@ -11,10 +11,22 @@ import { toneMapFunctionName, toneMapSource } from '@yura/renderer-webgpu'
 import { curlNoiseSource, turbulenceTermSource } from '@yura/renderer-webgpu'
 // Shared attractor builder from the WebGPU package root (single source of truth).
 import { attractorTermSource, ATTRACTOR_ARRAY_VEC4S } from '@yura/renderer-webgpu'
+// Per-sprite bokeh DoF: the same single-source builders the WGSL render
+// shader embeds, shared via the WebGPU package root.
+import {
+  dofVertexTermSource,
+  dofSpriteProfileSource,
+} from '@yura/renderer-webgpu'
 
 // Re-exported so renderer.ts (and tests) take the defaults from the same
 // single source the WGSL backend uses.
 export { DEFAULT_TURBULENCE, DEFAULT_TURBULENCE_SCALE } from '@yura/renderer-webgpu'
+export {
+  DEFAULT_DOF_FOCUS,
+  DEFAULT_DOF_STRENGTH,
+  DOF_DEPTH_EPSILON,
+  SPRITE_CORE_FALLOFF,
+} from '@yura/renderer-webgpu'
 export {
   MAX_ATTRACTORS,
   ATTRACTOR_VEC4S,
@@ -92,9 +104,10 @@ precision highp float;
 layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aVel;
 uniform mat4 uViewProj;
-uniform float uSizePx, uIntensity, uSpeedColorMix, uTime, uTwinkle, uMaxPointSize;
+uniform float uSizePx, uIntensity, uSpeedColorMix, uTime, uTwinkle, uMaxPointSize, uDofFocus, uDofStrength;
 uniform vec3 uColorA, uColorB, uColorHot;
 out vec3 vCol;
+out float vCoc;
 
 void main() {
   gl_Position = uViewProj * vec4(aPos.xyz, 1.0);
@@ -107,24 +120,29 @@ void main() {
   col = mix(col, uColorHot, speedMix * 0.85);
   col *= 1.0 + uTwinkle * 0.45 * sin(uTime * (2.0 + 4.0 * h2) + h2 * 40.0);
   if (h2 > 0.995) { size *= 3.0; col *= 2.6; }
+${dofVertexTermSource('glsl')}
   // Upper clamp is the device's ALIASED_POINT_SIZE_RANGE[1] (wired by the
   // renderer as uMaxPointSize) so close-up particles keep growing like the
   // WebGPU billboards. Lower bound stays 1px to avoid sub-pixel vanishing.
+  // Known constraint: a DoF-inflated size clamps here too, so very large
+  // bokeh discs saturate at the device's point-size limit.
   gl_PointSize = clamp(size / max(gl_Position.w, 0.1), 1.0, uMaxPointSize);
   vCol = col * uIntensity;
+  vCoc = coc;
 }
 `
 
 export const RENDER_FS = /* glsl */ `#version 300 es
 precision highp float;
 in vec3 vCol;
+in float vCoc;
 out vec4 o;
 void main() {
   vec2 c = gl_PointCoord * 2.0 - 1.0;
   float d2 = dot(c, c);
   if (d2 > 1.0) discard;
-  float a = exp(-d2 * 3.0) * (1.0 - d2);
-  o = vec4(vCol * a, a);
+${dofSpriteProfileSource('glsl')}
+  o = vec4(col * a, a);
 }
 `
 

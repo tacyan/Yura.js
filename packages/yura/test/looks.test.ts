@@ -4,9 +4,10 @@ import type { LookParams, LookName } from '../src/index'
 
 const LOOK_NAMES = ['aurora', 'cinematic', 'cyberpunk', 'neon', 'sakura', 'studio'] as const
 
-// Optional LookParams keys. Looks may declare them (sakura does); every
-// other key is a required numeric field. blendMode/toneMapping hold enum
-// strings; softParticles is the numeric scene-mode FX depth-fade distance.
+// Optional LookParams keys. Looks may declare them (sakura, aurora,
+// cinematic and studio do); every other key is a required numeric field.
+// blendMode/toneMapping hold enum strings; softParticles is the numeric
+// scene-mode FX depth-fade distance.
 const OPTIONAL_LOOK_KEYS: readonly string[] = ['blendMode', 'toneMapping', 'softParticles']
 const BLEND_MODES: readonly string[] = ['additive', 'alpha', 'screen']
 const TONE_MAPPINGS: readonly string[] = ['aces', 'reinhard', 'linear']
@@ -97,6 +98,41 @@ test('look values stay within sane ranges', () => {
       expect(p.softParticles).toBeGreaterThanOrEqual(0)
       expect(p.softParticles).toBeLessThanOrEqual(2)
     }
+  }
+})
+
+test('each look declares only the pipeline modes that fit its world', () => {
+  // cinematic: Reinhard film curve — highlights keep their warm hue instead
+  // of clipping — with exposure lifted above 1 to compensate Reinhard's
+  // softer response. Blend stays the default additive.
+  const cin = cinematic()
+  expect(cin.toneMapping).toBe('reinhard')
+  expect(cin.blendMode).toBeUndefined()
+  expect(cin.exposure).toBeGreaterThan(1)
+
+  // aurora: screen blend (commutative, so still order-free) saturates dense
+  // curtain cores at the palette color instead of burning white; tone curve
+  // stays the default ACES for sky contrast.
+  const au = aurora()
+  expect(au.blendMode).toBe('screen')
+  expect(au.toneMapping).toBeUndefined()
+
+  // studio: post stack stays clean (additive + ACES is the neutral PBR
+  // pipeline), but its glTF/PBR purpose gets the sub-world-unit scene-mode
+  // depth fade so FX sprites melt into geometry instead of hard-clipping.
+  const st = studio()
+  expect(st.blendMode).toBeUndefined()
+  expect(st.toneMapping).toBeUndefined()
+  expect(st.softParticles).toBeGreaterThan(0)
+  expect(st.softParticles).toBeLessThan(1)
+
+  // neon & cyberpunk: deliberately the classic additive + ACES pipeline —
+  // the hard additive burn-to-white is the neon signature, and 'alpha' would
+  // be order-dependent without a depth sort.
+  for (const p of [neon(), cyberpunk()]) {
+    expect(p.blendMode).toBeUndefined()
+    expect(p.toneMapping).toBeUndefined()
+    expect(p.softParticles).toBeUndefined()
   }
 })
 

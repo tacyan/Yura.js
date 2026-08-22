@@ -7,14 +7,18 @@ import type { LookParams } from '@yura/renderer-webgpu'
 
 /**
  * Filmic default: warm highlights, gentle bloom, soft vignette — the look
- * every particle app starts with.
+ * every particle app starts with. Runs on the Reinhard film curve: highlights
+ * roll off asymptotically and keep their warm hue instead of clipping white.
  *
  * @example
  * yura('#hero').look(cinematic({ vignette: 0.4 })).run()
  */
 export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
   return {
-    exposure: 1.0,
+    // Reinhard responds well below ACES at equal input (reinhard(0.5)=0.33 vs
+    // aces(0.5)=0.62); 1.6x exposure restores mid-tone weight. Exposure is
+    // applied post-bloom / pre-tonemap, so the bloom threshold is untouched.
+    exposure: 1.6,
     bloomStrength: 0.6,
     bloomThreshold: 0.55,
     vignette: 0.6,
@@ -29,11 +33,21 @@ export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
     streak: 0.5,
     nebula: 0.6,
     stars: 0.7,
+    // x/(1+x) preserves channel ratios far up the range: the warm hot tint
+    // [1.0, 0.93, 0.82] survives into bright cores where ACES's shoulder
+    // desaturates them toward clipped white — the "warm highlights" promise.
+    toneMapping: 'reinhard',
     ...overrides,
   }
 }
 
-/** Night-city glow: hard bloom, magenta-violet haze, visible chromatic aberration. */
+/**
+ * Night-city glow: hard bloom, magenta-violet haze, visible chromatic
+ * aberration. Deliberately stays on the classic additive + ACES pipeline:
+ * the hard additive burn-to-white IS the neon signature, and 'alpha' blending
+ * was considered and rejected — the particle pass has no depth sort, so
+ * 'over' compositing would depend on buffer order and shimmer during morphs.
+ */
 export function cyberpunk(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.15,
@@ -73,6 +87,11 @@ export function aurora(overrides: Partial<LookParams> = {}): LookParams {
     streak: 0.15,
     nebula: 1.1,
     stars: 0.7,
+    // Screen (s+d-sd) is commutative, so it stays order-free like additive
+    // (no depth sort needed) but saturates at 1.0: where the big 0.04 sprites
+    // stack up, curtain cores plateau at the teal-green palette color instead
+    // of additively burning to white — real aurora saturates, never clips.
+    blendMode: 'screen',
     ...overrides,
   }
 }
@@ -99,7 +118,11 @@ export function neon(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
-/** Tuned for glTF/PBR model rendering: subtle bloom, no trails. */
+/**
+ * Tuned for glTF/PBR model rendering: subtle bloom, no trails. The post
+ * stack deliberately stays clean — additive blend and the ACES curve are the
+ * PBR-standard neutral pipeline, so no blendMode/toneMapping override here.
+ */
 export function studio(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.0,
@@ -117,6 +140,11 @@ export function studio(overrides: Partial<LookParams> = {}): LookParams {
     streak: 0.45,
     nebula: 0.12,
     stars: 0.35,
+    // Studio exists for scene mode, where FX sprites intersect real geometry;
+    // depth-fade them instead of hard-clipping. Same sprite-radii reach as
+    // sakura (0.3 at size 0.03) scaled to studio's 0.022 sprites. Ignored on
+    // the plain particle path, which stays bit-exact legacy.
+    softParticles: 0.2,
     ...overrides,
   }
 }

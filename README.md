@@ -31,6 +31,15 @@ Three reasons Yura is worth your `<div>`:
 npm install yurayura      # the npm package (import { yura } from 'yurayura')
 ```
 
+Or straight from a CDN — no install, no build step:
+
+```html
+<script type="module">
+  import { yura } from 'https://esm.sh/yurayura'
+  yura('#hero').run()
+</script>
+```
+
 Inside this repo the same package is the `yura` workspace — the examples
 import `'yura'`; npm users import `'yurayura'`. Same API, same code.
 
@@ -179,6 +188,27 @@ active backend, fps, and live particle count.
 matrix properties), so it works with whatever Three.js version your project
 already uses — no peer-dependency conflicts, nothing added to your bundle
 beyond Yura itself.
+
+## Framework adapters
+
+React (17+): the `yura/react` subpath ships a `useYura` hook that ties the
+app to the component lifecycle — mount runs `yura(el)` → your setup →
+`run()`, unmount runs your cleanup → `dispose()`:
+
+```ts
+import { createElement } from 'react'
+import { useYura } from 'yura/react'
+
+function Hero() {
+  const { ref, app } = useYura((app) => { app.look('cyberpunk').morphTo(['YURA']) })
+  return createElement('div', { ref, style: { height: '60vh' } }) // = <div ref={ref} …/> in JSX
+}
+```
+
+Like Three above, **React stays YOUR dependency** — an optional peer
+(`react >= 17`), never bundled. `app` is `null` on the first render and the
+live `YuraApp` once mounted; the setup callback may return a cleanup that
+runs before `dispose()`.
 
 ## Kinetic typography / lyric motion
 
