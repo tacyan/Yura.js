@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { sep } from 'node:path'
 import {
+  REACT_STUB_DTS,
   SMOKE_IMPORTS,
   SMOKE_USAGE,
   consumerSource,
@@ -144,5 +145,47 @@ describe('synthetic consumer', () => {
     expect(cfg.compilerOptions.types).toEqual([])
     expect(cfg.compilerOptions.paths).toEqual({ yurayura: ['/x/index.d.ts'] })
     expect(cfg.files).toEqual(['main.ts'])
+  })
+
+  test("'./react' surface: useYura import, hook-typed usage, and a react stub", () => {
+    expect(SMOKE_IMPORTS['./react']).toEqual(['useYura'])
+    const usage = SMOKE_USAGE['./react']!.join('\n')
+    expect(usage).toContain('UseYuraResult')
+    expect(usage).toContain('YuraSetup')
+    expect(usage).toContain('useYura(')
+    // The stub stands in for the consumer's installed react.
+    for (const hook of ['useRef', 'useState', 'useEffect']) {
+      expect(REACT_STUB_DTS).toContain(hook)
+    }
+  })
+
+  test('every ./react smoke import and usage type is a real export of the react entry', async () => {
+    const reactPath = new URL('../packages/yura/src/react.ts', import.meta.url).pathname
+    const source = await Bun.file(reactPath).text()
+    const scanned = new Set(new Bun.Transpiler({ loader: 'ts' }).scan(source).exports)
+    expect(SMOKE_IMPORTS['./react']!.filter((n) => !scanned.has(n))).toEqual([])
+
+    const typeDecls = new Set<string>()
+    for (const decl of source.matchAll(/export\s+(?:type|interface)\s+([A-Za-z_$][\w$]*)/g)) {
+      typeDecls.add(decl[1]!)
+    }
+    const usageTypeImport = SMOKE_USAGE['./react']!.find((l) => l.startsWith('import type'))!
+    const usedTypes = usageTypeImport
+      .slice(usageTypeImport.indexOf('{') + 1, usageTypeImport.indexOf('}'))
+      .split(',')
+      .map((n) => n.trim())
+    expect(usedTypes.length).toBeGreaterThan(0)
+    expect(usedTypes.filter((n) => !typeDecls.has(n))).toEqual([])
+  })
+
+  test('the shipped react surface never references React types (structural contract)', async () => {
+    // The adapter's PUBLIC types must stay structural: no `import type` from
+    // 'react' and no `import('react')` in the source, so the emitted
+    // react.d.ts cannot collide with a consumer's @types/react.
+    const reactPath = new URL('../packages/yura/src/react.ts', import.meta.url).pathname
+    const source = await Bun.file(reactPath).text()
+    expect(source).not.toMatch(/import\s+type\s*\{[^}]*\}\s*from\s*['"]react['"]/)
+    expect(source).not.toContain(`import('react')`)
+    expect(source).not.toContain(`import("react")`)
   })
 })

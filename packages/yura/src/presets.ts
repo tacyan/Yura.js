@@ -40,7 +40,17 @@ const REGISTRY: Record<string, () => PresetConfig> = {
     colorA: '#06b6d4',
     colorB: '#8b5cf6',
     look: looks.neon(),
-    motion: { ...DEFAULT_MOTION, swirl: 0.12, damping: 2.8, noiseStrength: 0.55 },
+    motion: {
+      ...DEFAULT_MOTION,
+      swirl: 0.12,
+      damping: 2.8,
+      noiseStrength: 0.55,
+      // The default first screen shows the divergence-free curl field, not
+      // the bare trig flow: 0.45 keeps galaxy arms alive as fluid wisps while
+      // attraction 4 still pins the 'YURA' text morph (peak curl displacement
+      // ~ turbulence/attraction ≈ 0.1 world units — shimmer, not smear).
+      turbulence: 0.45,
+    },
     shapes: [shapes.galaxy(), shapes.text('YURA'), shapes.vortex()],
   }),
   aurora: () => ({
@@ -55,6 +65,11 @@ const REGISTRY: Record<string, () => PresetConfig> = {
       noiseScale: 0.1,
       damping: 1.0,
       swirl: 0.05,
+      // The showcase "whisper" value: with damping 1.0 the curl swirls fold
+      // slowly through the trig flow like curtains, the strongest turbulence
+      // of the set because aurora IS the fluid look. Default field scale
+      // (0.35) keeps the billows curtain-broad.
+      turbulence: 0.6,
     },
     shapes: [shapes.flow()],
   }),
@@ -63,7 +78,15 @@ const REGISTRY: Record<string, () => PresetConfig> = {
     colorA: '#f5d0a9',
     colorB: '#7dd3fc',
     look: looks.cinematic(),
-    motion: { ...DEFAULT_MOTION, noiseStrength: 0.5, swirl: 0.08 },
+    motion: {
+      ...DEFAULT_MOTION,
+      noiseStrength: 0.5,
+      swirl: 0.08,
+      // Barely-there dust-mote drift (equilibrium offset ≈ 0.2/4 = 0.05
+      // world units): organic film breathing without disturbing the stately
+      // sphere/galaxy compositions.
+      turbulence: 0.2,
+    },
     shapes: [shapes.sphere(), shapes.galaxy()],
   }),
   cyberpunk: () => ({
@@ -71,7 +94,18 @@ const REGISTRY: Record<string, () => PresetConfig> = {
     colorA: '#f472b6',
     colorB: '#22d3ee',
     look: looks.cyberpunk(),
-    motion: { ...DEFAULT_MOTION, noiseStrength: 0.8, swirl: 0.15 },
+    motion: {
+      ...DEFAULT_MOTION,
+      noiseStrength: 0.8,
+      swirl: 0.15,
+      // A trace of interference, not fluid: 0.25 keeps the 'YURA' glyphs
+      // legible (offset ≈ 0.25/4 ≈ 0.06 world units)…
+      turbulence: 0.25,
+      // …and sampling the curl field at 0.8 (vs default 0.35) more than
+      // halves the vortex wavelength — broad billows become the fine electric
+      // crackle a night city hums with.
+      turbulenceScale: 0.8,
+    },
     shapes: [shapes.text('YURA'), shapes.vortex(), shapes.galaxy()],
   }),
 }

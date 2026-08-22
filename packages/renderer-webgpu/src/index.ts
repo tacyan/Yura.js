@@ -21,3 +21,4 @@ export type { ShaderLang } from './shaders'
 // variant, and the model renderer's public defaults/helpers.
 export { SHADOW_WGSL, buildFxWgsl, FX_SOFT_WGSL } from './model-shaders'
 export { DEFAULT_SOFT_PARTICLES, computeLightViewProj } from './model-renderer'
+export { dofVertexTermSource, dofSpriteProfileSource, buildRenderWgsl, DEFAULT_DOF_FOCUS, DEFAULT_DOF_STRENGTH, DOF_DEPTH_EPSILON, SPRITE_CORE_FALLOFF } from './shaders'

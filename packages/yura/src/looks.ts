@@ -7,14 +7,18 @@ import type { LookParams } from '@yura/renderer-webgpu'
 
 /**
  * Filmic default: warm highlights, gentle bloom, soft vignette — the look
- * every particle app starts with.
+ * every particle app starts with. Runs on the Reinhard film curve: highlights
+ * roll off asymptotically and keep their warm hue instead of clipping white.
  *
  * @example
  * yura('#hero').look(cinematic({ vignette: 0.4 })).run()
  */
 export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
   return {
-    exposure: 1.0,
+    // Reinhard responds well below ACES at equal input (reinhard(0.5)=0.33 vs
+    // aces(0.5)=0.62); 1.6x exposure restores mid-tone weight. Exposure is
+    // applied post-bloom / pre-tonemap, so the bloom threshold is untouched.
+    exposure: 1.6,
     bloomStrength: 0.6,
     bloomThreshold: 0.55,
     vignette: 0.6,
@@ -29,11 +33,34 @@ export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
     streak: 0.5,
     nebula: 0.6,
     stars: 0.7,
+    // x/(1+x) preserves channel ratios far up the range: the warm hot tint
+    // [1.0, 0.93, 0.82] survives into bright cores where ACES's shoulder
+    // desaturates them toward clipped white — the "warm highlights" promise.
+    toneMapping: 'reinhard',
+    // Shallow film focus. The internal camera orbits at DEFAULT_DOF_FOCUS
+    // (26), which is also the renderer's default focus plane, so the swarm
+    // center is sharp; the stock shapes span radii ~8-11 world units, so
+    // sprite view depth runs ~15-37 and coc = 0.5*|d-26|/d peaks at
+    // ~0.2-0.37 at the swarm edges — edge sprites swell into gentle,
+    // energy-conserved bokeh discs (<~1.4x quad) while the center stays
+    // crisp: visible shallow depth of field without mush. dofFocus is
+    // deliberately unset so the renderer default keeps tracking the internal
+    // camera's orbit radius.
+    dofStrength: 0.5,
     ...overrides,
   }
 }
 
-/** Night-city glow: hard bloom, magenta-violet haze, visible chromatic aberration. */
+/**
+ * Night-city glow: hard bloom, magenta-violet haze, visible chromatic
+ * aberration. Deliberately stays on the classic additive + ACES pipeline:
+ * the hard additive burn-to-white IS the neon signature, and 'alpha' blending
+ * was considered and rejected — the particle pass has no depth sort, so
+ * 'over' compositing would depend on buffer order and shimmer during morphs.
+ * Bokeh DoF was likewise considered and rejected: bloom 1.2 + aberration
+ * already carry the haze, and defocus would soften the hard neon edge that
+ * defines the look.
+ */
 export function cyberpunk(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.15,
@@ -55,7 +82,11 @@ export function cyberpunk(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
-/** Soft polar curtains: large particles, long trails, heavy nebula haze. */
+/**
+ * Soft polar curtains: large particles, long trails, heavy nebula haze.
+ * No bokeh DoF: the big 0.04 sprites + nebula are already all softness —
+ * defocus would add blur onto blur with nothing sharp left to contrast it.
+ */
 export function aurora(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 0.95,
@@ -73,11 +104,19 @@ export function aurora(overrides: Partial<LookParams> = {}): LookParams {
     streak: 0.15,
     nebula: 1.1,
     stars: 0.7,
+    // Screen (s+d-sd) is commutative, so it stays order-free like additive
+    // (no depth sort needed) but saturates at 1.0: where the big 0.04 sprites
+    // stack up, curtain cores plateau at the teal-green palette color instead
+    // of additively burning to white — real aurora saturates, never clips.
+    blendMode: 'screen',
     ...overrides,
   }
 }
 
-/** Crisp cyan glow with strong twinkle over a dense starfield. */
+/**
+ * Crisp cyan glow with strong twinkle over a dense starfield.
+ * No bokeh DoF: crispness is the identity — every sprite a hard pinpoint.
+ */
 export function neon(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.1,
@@ -99,7 +138,14 @@ export function neon(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
-/** Tuned for glTF/PBR model rendering: subtle bloom, no trails. */
+/**
+ * Tuned for glTF/PBR model rendering: subtle bloom, no trails. The post
+ * stack deliberately stays clean — additive blend and the ACES curve are the
+ * PBR-standard neutral pipeline, so no blendMode/toneMapping override here.
+ * No bokeh DoF either: studio scenes run external cameras (model viewer)
+ * whose depth range breaks the internal-orbit focus assumption, and a
+ * neutral inspection look must not defocus what it presents.
+ */
 export function studio(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.0,
@@ -117,6 +163,11 @@ export function studio(overrides: Partial<LookParams> = {}): LookParams {
     streak: 0.45,
     nebula: 0.12,
     stars: 0.35,
+    // Studio exists for scene mode, where FX sprites intersect real geometry;
+    // depth-fade them instead of hard-clipping. Same sprite-radii reach as
+    // sakura (0.3 at size 0.03) scaled to studio's 0.022 sprites. Ignored on
+    // the plain particle path, which stays bit-exact legacy.
+    softParticles: 0.2,
     ...overrides,
   }
 }
@@ -150,6 +201,14 @@ export function sakura(overrides: Partial<LookParams> = {}): LookParams {
     softParticles: 0.3,
     blendMode: 'screen',
     toneMapping: 'reinhard',
+    // 夢見 (dreamy) whisper of bokeh — the hanami-photo aesthetic of petals
+    // drifting just out of focus. With shapes ~8 units around the default
+    // focus plane (camera orbit 26), coc = 0.3*|d-26|/d stays under ~0.13:
+    // depth-extreme petals soften a touch, never into obvious discs.
+    // Deliberately subtler than cinematic's 0.5, and screen blend saturates
+    // instead of burning, so the slightly enlarged dim sprites read as soft
+    // petals. dofFocus stays on the renderer default (tracks the camera).
+    dofStrength: 0.3,
     ...overrides,
   }
 }

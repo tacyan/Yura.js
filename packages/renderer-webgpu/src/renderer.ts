@@ -14,6 +14,8 @@ import {
   buildPostWgsl,
   DEFAULT_TURBULENCE,
   DEFAULT_TURBULENCE_SCALE,
+  DEFAULT_DOF_FOCUS,
+  DEFAULT_DOF_STRENGTH,
   ATTRACTOR_ARRAY_VEC4S,
   SIM_ATTRACTOR_COUNT_INDEX,
   SIM_ATTRACTORS_INDEX,
@@ -58,6 +60,20 @@ export interface LookParams {
   /** Procedural starfield amount. */
   stars: number
   softParticles?: number // scene-mode FX depth-fade distance in world units; 0/undefined = off (bit-exact legacy path)
+  /**
+   * Focus distance of the per-sprite bokeh DoF, in view-depth units
+   * (clip-space w; the internal camera orbits at radius DEFAULT_DOF_FOCUS,
+   * the default). Sprites on this plane stay sharp; sprites away from it
+   * grow into dim bokeh discs. Only meaningful while dofStrength != 0.
+   */
+  dofFocus?: number
+  /**
+   * Strength of the per-sprite bokeh DoF: scales the circle of confusion
+   * coc = dofStrength * |depth - dofFocus| / depth. Optional; defaults to
+   * DEFAULT_DOF_STRENGTH (0) = off — the shader skips the term entirely and
+   * sprites stay bit-identical to the legacy look.
+   */
+  dofStrength?: number
   /**
    * Particle blend mode. 'additive' (default) is the classic order-free HDR
    * accumulation; 'alpha' is premultiplied over; 'screen' never clips.
@@ -710,6 +726,9 @@ export class WebGPUParticleRenderer {
     this.renderData[35] = this.look.twinkle
     this.renderData[36] = time
     this.renderData[37] = this.motion.speedColorMix
+    // Per-sprite bokeh DoF rides in the spare misc.z/w slots (UB size unchanged).
+    this.renderData[38] = this.look.dofFocus ?? DEFAULT_DOF_FOCUS
+    this.renderData[39] = this.look.dofStrength ?? DEFAULT_DOF_STRENGTH
     d.queue.writeBuffer(this.renderUB, 0, this.renderData)
 
     // Post uniforms.

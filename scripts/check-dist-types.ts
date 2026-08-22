@@ -91,7 +91,27 @@ export const SMOKE_IMPORTS: Record<string, string[]> = {
     'DEFAULT_ATTRACTOR_RADIUS',
   ],
   './three': ['yuraLayer'],
+  './react': ['useYura'],
 }
+
+/**
+ * Minimal `react` module stub, mapped to the bare specifier via tsconfig
+ * `paths` so no real react install is needed. The shipped `react.d.ts` is
+ * purely structural (it must not reference React types), but a real consumer
+ * HAS a `react` module in scope — the stub mirrors that topology and proves
+ * the shipped declarations coexist with one.
+ */
+export const REACT_STUB_DTS = [
+  `export function useRef<T>(initialValue: T): { current: T }`,
+  `export function useState<S>(`,
+  `  initialState: S | (() => S),`,
+  `): [S, (next: S | ((prev: S) => S)) => void]`,
+  `export function useEffect(`,
+  `  effect: () => void | (() => void),`,
+  `  deps?: readonly unknown[],`,
+  `): void`,
+  ``,
+].join('\n')
 
 /** Extra consumer statements per subpath that USE the shipped types the way
  *  an app would — game types, the eases table, morphTo/morphNow, gravityWell,
@@ -131,6 +151,18 @@ export const SMOKE_USAGE: Record<string, string[]> = {
     `const wellCap: number = MAX_ATTRACTORS`,
     `const noWebGPU: string = CODES.NO_WEBGPU`,
     `export const smokeUsage = { setup, eased, statsLine, ring, freq, columns, wellCap, noWebGPU }`,
+  ],
+  './react': [
+    `import type { UseYuraResult, YuraSetup, YuraRefObject } from '%SPEC%'`,
+    `const reactSetup: YuraSetup = (app) => {`,
+    `  app.look('cyberpunk')`,
+    `  return () => {}`,
+    `}`,
+    `const hero: UseYuraResult = useYura(reactSetup, { quality: 'high' })`,
+    `const canvasHost: UseYuraResult<HTMLCanvasElement> = useYura()`,
+    `const containerRef: YuraRefObject<HTMLDivElement> = hero.ref`,
+    `const mountedApp: UseYuraResult['app'] = hero.app`,
+    `export const reactSmoke = { hero, canvasHost, containerRef, mountedApp }`,
   ],
 }
 
@@ -205,6 +237,13 @@ export function checkDistTypes(distNpmDir: string): number {
 
   const tmp = mkdtempSync(join(tmpdir(), 'yura-check-dist-types-'))
   try {
+    // Synthetic consumers resolve the bare 'react' specifier to a local stub
+    // (see REACT_STUB_DTS) — the topology of a real app that has React
+    // installed, without adding react to this repo.
+    const reactStubPath = join(tmp, 'react-stub.d.ts')
+    writeFileSync(reactStubPath, REACT_STUB_DTS)
+    const consumerPaths = { ...paths, react: [reactStubPath] }
+
     let failed = 0
     for (const [index, specifier] of Object.keys(paths).entries()) {
       const subpath = specifier === pkg.name ? '.' : `.${specifier.slice(pkg.name.length)}`
@@ -215,7 +254,7 @@ export function checkDistTypes(distNpmDir: string): number {
         consumerSource(specifier, SMOKE_IMPORTS[subpath], SMOKE_USAGE[subpath]),
       )
       const tsconfigPath = join(dir, 'tsconfig.json')
-      writeFileSync(tsconfigPath, consumerTsconfig(paths))
+      writeFileSync(tsconfigPath, consumerTsconfig(consumerPaths))
 
       const proc = Bun.spawnSync(tscCommand(tsconfigPath), {
         cwd: repoRoot,

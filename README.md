@@ -31,6 +31,15 @@ Three reasons Yura is worth your `<div>`:
 npm install yurayura      # the npm package (import { yura } from 'yurayura')
 ```
 
+Or straight from a CDN — no install, no build step:
+
+```html
+<script type="module">
+  import { yura } from 'https://esm.sh/yurayura'
+  yura('#hero').run()
+</script>
+```
+
 Inside this repo the same package is the `yura` workspace — the examples
 import `'yura'`; npm users import `'yurayura'`. Same API, same code.
 
@@ -180,6 +189,27 @@ matrix properties), so it works with whatever Three.js version your project
 already uses — no peer-dependency conflicts, nothing added to your bundle
 beyond Yura itself.
 
+## Framework adapters
+
+React (17+): the `yura/react` subpath ships a `useYura` hook that ties the
+app to the component lifecycle — mount runs `yura(el)` → your setup →
+`run()`, unmount runs your cleanup → `dispose()`:
+
+```ts
+import { createElement } from 'react'
+import { useYura } from 'yura/react'
+
+function Hero() {
+  const { ref, app } = useYura((app) => { app.look('cyberpunk').morphTo(['YURA']) })
+  return createElement('div', { ref, style: { height: '60vh' } }) // = <div ref={ref} …/> in JSX
+}
+```
+
+Like Three above, **React stays YOUR dependency** — an optional peer
+(`react >= 17`), never bundled. `app` is `null` on the first render and the
+live `YuraApp` once mounted; the setup callback may return a cleanup that
+runs before `dispose()`.
+
 ## Kinetic typography / lyric motion
 
 ![Japanese lyric line assembling character by character from particles](docs/screenshots/lyric-motion.jpg)
@@ -309,6 +339,13 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   `softParticles` is a look param too: a world-unit depth-fade so scene-mode
   FX sprites melt into nearby geometry instead of clipping (the `sakura`
   look ships with it on; the default 0 keeps it off at zero cost).
+  So is bokeh depth of field: the focal plane stays sharp while out-of-focus
+  sprites bloom into discs — free at the default 0:
+
+  ```ts
+  app.look(looks.cinematic({ dofStrength: 1.2 }))
+  // dofFocus picks the sharp plane; the default 26 is the camera's orbit radius
+  ```
 - **Interaction** — hover repels particles; click detonates a shockwave.
   `.interactive({ gravity: 40 })` upgrades the cursor to a live gravity well
   that pulls the whole swarm toward the pointer (negative values repel).
@@ -375,7 +412,7 @@ Hit a `YURA-xxx` code in the console? Every code is documented in the [error cod
 
 ## Roadmap
 
-Capture to MP4/WebM, framework adapters (React/Vue/Svelte/Astro),
+Capture to MP4/WebM, more framework adapters (Vue/Svelte/Astro),
 golden-image CI, playground fork/remix. See the product specification for
 the full 90-day plan.
 

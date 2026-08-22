@@ -862,7 +862,18 @@ export class YuraApp {
    * Sugar for the standalone `lyrics(app, lines, opts)`.
    */
   lyrics(lines: readonly LyricInput[], opts: LyricsOptions = {}): LyricsRun {
-    return runLyrics(this, lines, opts)
+    const run = runLyrics(this, lines, opts)
+    if (this.disposed) {
+      // lyrics() on an already-disposed app must not leave a timer chain
+      // behind — stop the run before its first tick ever fires.
+      run.stop()
+      return run
+    }
+    // dispose() must silence the lyrics timer chain (with loop:true it would
+    // otherwise run forever). stop() is idempotent, so a user calling
+    // run.stop() before dispose() is safe.
+    this.cleanups.push(() => run.stop())
+    return run
   }
 
   private async morphNowImpl(s: ShapeSpec | string, opts: MorphNowOptions = {}): Promise<this> {
@@ -972,7 +983,11 @@ export class YuraApp {
     }
 
     const gpu = this.backendOpt === 'webgl2' ? null : await acquireWebGPU()
-    if (!this.canvas) return this
+    // React StrictMode / Fast Refresh mounts-then-unmounts synchronously, so
+    // dispose() can land while any await above is in flight. Re-check after
+    // every await and bail silently — a disposed app must never create
+    // renderers, bind listeners, or start the loop.
+    if (this.disposed || !this.canvas) return this
     if (gpu) {
       this.maxTextureDim = gpu.device.limits?.maxTextureDimension2D ?? FALLBACK_MAX_TEXTURE_DIM
     }
@@ -1006,7 +1021,13 @@ export class YuraApp {
     }
     if (gpu) {
       this.backend = 'webgpu'
-      this.renderer = await WebGPUParticleRenderer.create(this.canvas, gpu.device, rendererOpts)
+      const created = await WebGPUParticleRenderer.create(this.canvas, gpu.device, rendererOpts)
+      if (this.disposed) {
+        // dispose() already ran and cannot see this renderer — free it here.
+        created.dispose()
+        return this
+      }
+      this.renderer = created
     } else {
       const glRenderer = WebGL2ParticleRenderer.create(this.canvas, rendererOpts)
       if (!glRenderer) {
@@ -1022,6 +1043,8 @@ export class YuraApp {
     // Only the first shape blocks first paint; the rest generate in the
     // background so a 1M x N-shape preset doesn't stall the page for seconds.
     const first = await Promise.resolve(this.shapeSeq[0].generate(this.particleCount))
+    // dispose() during generate() already tore the renderer down — stop here.
+    if (this.disposed) return this
     this.shapeData = [first]
     this.renderer.writeTargetA(first)
     this.renderer.writeTargetB(first)
@@ -1107,7 +1130,14 @@ export class YuraApp {
   private async runScene(device: GPUDevice): Promise<this> {
     this.backend = 'webgpu'
     if (!this.lookExplicit) this.lookParams = lookRegistry.studio()
-    this.modelRenderer = await WebGPUModelRenderer.create(this.canvas!, device, this.lookParams)
+    const sceneRenderer = await WebGPUModelRenderer.create(this.canvas!, device, this.lookParams)
+    if (this.disposed) {
+      // dispose() landed while create() was in flight (StrictMode double
+      // mount) — free the renderer it never saw and bail silently.
+      sceneRenderer.dispose()
+      return this
+    }
+    this.modelRenderer = sceneRenderer
     this.modelRenderer.colorA = hexToLinear(this.colorA)
     this.modelRenderer.colorB = hexToLinear(this.colorB)
     this.modelRenderer.onDeviceLost = () => this.recoverFromDeviceLost()
@@ -1142,11 +1172,21 @@ export class YuraApp {
   private async runModel(device: GPUDevice): Promise<this> {
     this.backend = 'webgpu'
     if (!this.lookExplicit) this.lookParams = lookRegistry.studio()
-    this.modelRenderer = await WebGPUModelRenderer.create(this.canvas!, device, this.lookParams)
+    const modelRenderer = await WebGPUModelRenderer.create(this.canvas!, device, this.lookParams)
+    if (this.disposed) {
+      // dispose() landed while create() was in flight (StrictMode double
+      // mount) — free the renderer it never saw and bail silently.
+      modelRenderer.dispose()
+      return this
+    }
+    this.modelRenderer = modelRenderer
     this.modelRenderer.colorA = hexToLinear(this.colorA)
     this.modelRenderer.colorB = hexToLinear(this.colorB)
     this.modelRenderer.onDeviceLost = () => this.recoverFromDeviceLost()
-    await this.modelRenderer.loadModel(new URL(this.modelUrl!, location.href).href)
+    await modelRenderer.loadModel(new URL(this.modelUrl!, location.href).href)
+    // dispose() during loadModel() already tore the renderer down — stop here
+    // before binding listeners or starting the loop.
+    if (this.disposed) return this
 
     this.observeResize()
     this.bindModelPointer()

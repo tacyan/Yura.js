@@ -2317,6 +2317,190 @@ test('run() with a model under reduced motion presents a single settled frame', 
   }
 })
 
+// ---- StrictMode-style dispose() racing run()'s awaits ----
+
+test('run() disposed while the particle renderer create() is in flight frees it and binds nothing', async () => {
+  const el = makeEl()
+  const app = appOn(el).particles(8)
+  app.shape(probeShape())
+  const i = full(app)
+  const kit = domKit()
+  const pr = fakeParticleRenderer()
+  let reachedCreate!: () => void
+  const reached = new Promise<void>((r) => {
+    reachedCreate = r
+  })
+  let release!: () => void
+  const gate = new Promise<typeof pr>((resolve) => {
+    release = () => resolve(pr)
+  })
+  const patch = patchStatic(WebGPUParticleRenderer, 'create', () => {
+    reachedCreate()
+    return gate
+  })
+  try {
+    await withGlobals({ ...kit.globals, navigator: fakeGpuNavigator() }, () =>
+      quietInfo(async () => {
+        const running = app.run()
+        await reached // run() is now suspended on create()
+        app.dispose() // StrictMode/Fast Refresh unmount before it resolves
+        release()
+        expect(await running).toBe(app)
+      }),
+    )
+    expect(pr.disposed).toBe(1) // freed in place — dispose() could not see it
+    expect(i.renderer).toBeNull()
+    expect(i.running).toBe(false)
+    expect(kit.raf.scheduled).toHaveLength(0) // loop never started
+    expect(appCleanups(app)).toHaveLength(0) // no listeners bound after dispose
+    expect(pr.writesA).toHaveLength(0) // no shape uploads on a dead app
+  } finally {
+    patch.restore()
+  }
+})
+
+test('run() disposed while the first shape generates leaves no writes, listeners, or loop', async () => {
+  const el = makeEl()
+  const app = appOn(el).particles(8)
+  let reachedGenerate!: () => void
+  const reached = new Promise<void>((r) => {
+    reachedGenerate = r
+  })
+  let releaseShape!: () => void
+  const spec: ShapeSpec = {
+    kind: 'gated',
+    generate: (n: number) => {
+      reachedGenerate()
+      return new Promise<Float32Array<ArrayBuffer>>((resolve) => {
+        releaseShape = () => resolve(new Float32Array(n * 4))
+      })
+    },
+  }
+  app.shape(spec)
+  const i = full(app)
+  const kit = domKit()
+  const pr = fakeParticleRenderer()
+  const patch = patchStatic(WebGPUParticleRenderer, 'create', async () => pr)
+  try {
+    await withGlobals({ ...kit.globals, navigator: fakeGpuNavigator() }, () =>
+      quietInfo(async () => {
+        const running = app.run()
+        await reached // run() is now suspended on generate()
+        app.dispose()
+        expect(pr.disposed).toBe(1) // dispose() already saw the assigned renderer
+        releaseShape()
+        expect(await running).toBe(app)
+      }),
+    )
+    expect(pr.writesA).toHaveLength(0) // no uploads after dispose
+    expect(pr.writesB).toHaveLength(0)
+    expect(pr.positions).toHaveLength(0)
+    expect(i.running).toBe(false)
+    expect(kit.raf.scheduled).toHaveLength(0)
+    expect(appCleanups(app)).toHaveLength(0)
+  } finally {
+    patch.restore()
+  }
+})
+
+test('run() with a model disposed while the renderer create() is in flight frees it silently', async () => {
+  const el = makeEl()
+  const app = appOn(el).model('robot.glb')
+  const i = full(app)
+  const kit = domKit()
+  const mr = fakeModelRenderer()
+  let reachedCreate!: () => void
+  const reached = new Promise<void>((r) => {
+    reachedCreate = r
+  })
+  let release!: () => void
+  const gate = new Promise<typeof mr>((resolve) => {
+    release = () => resolve(mr)
+  })
+  const patch = patchStatic(WebGPUModelRenderer, 'create', () => {
+    reachedCreate()
+    return gate
+  })
+  try {
+    await withGlobals(
+      { ...kit.globals, navigator: fakeGpuNavigator(), location: { href: 'http://localhost/' } },
+      () =>
+        quietInfo(async () => {
+          const running = app.run()
+          await reached
+          app.dispose()
+          release()
+          expect(await running).toBe(app)
+        }),
+    )
+    expect(mr.disposed).toBe(1) // freed in place
+    expect(mr.loaded).toHaveLength(0) // never fetched the model on a dead app
+    expect(i.modelRenderer).toBeNull()
+    expect(i.running).toBe(false)
+    expect(kit.raf.scheduled).toHaveLength(0)
+    expect(appCleanups(app)).toHaveLength(0)
+  } finally {
+    patch.restore()
+  }
+})
+
+// ---- lyrics() lifetime is bound to the app ----
+
+/** Capture setTimeout/clearTimeout so the test owns the lyrics timer chain. */
+function timerKit() {
+  const pending = new Map<number, () => void>()
+  let next = 1
+  return {
+    pending,
+    globals: {
+      setTimeout: (fn: () => void, _ms?: number) => {
+        const id = next++
+        pending.set(id, fn)
+        return id
+      },
+      clearTimeout: (id: number) => {
+        pending.delete(id)
+      },
+    } as Record<string, unknown>,
+    fireAll() {
+      const fns = [...pending.values()]
+      pending.clear()
+      for (const fn of fns) fn()
+    },
+  }
+}
+
+test('dispose() stops the lyrics timer chain even with loop:true', async () => {
+  const timers = timerKit()
+  await withGlobals(timers.globals, () => {
+    const app = headlessApp()
+    const run = app.lyrics(['first', 'second'], { loop: true })
+    expect(timers.pending.size).toBe(1) // scheduler armed as before
+    app.dispose()
+    expect(timers.pending.size).toBe(0) // dispose() cleared the timer
+    timers.fireAll() // a stray tick would reschedule itself here
+    expect(timers.pending.size).toBe(0)
+    run.stop() // stop after dispose stays a safe no-op
+  })
+})
+
+test('lyrics stop() before dispose() and lyrics on a disposed app leave no timers', async () => {
+  const timers = timerKit()
+  await withGlobals(timers.globals, () => {
+    const app = headlessApp()
+    const run = app.lyrics(['x'])
+    run.stop() // user stops first…
+    expect(timers.pending.size).toBe(0)
+    app.dispose() // …then the registered cleanup calls stop() again: no throw
+
+    const dead = headlessApp()
+    dead.dispose()
+    const late = dead.lyrics(['y'], { loop: true })
+    expect(timers.pending.size).toBe(0) // never arms a timer on a disposed app
+    late.stop()
+  })
+})
+
 import { yura } from '../src/app'
 
 test('the yura() factory constructs a YuraApp bound to the target element', () => {

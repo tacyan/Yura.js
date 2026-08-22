@@ -328,7 +328,100 @@ ${attractorTermSource('wgsl')}
 }
 `
 
-export const RENDER_WGSL = /* wgsl */ `
+// ---------------------------------------------------------------------------
+// Per-sprite bokeh depth of field. Same design as the turbulence/attractor
+// terms above: ONE builder per shader stage emits both WGSL and GLSL, every
+// numeric constant is a named export, and the default — dofStrength 0 — is
+// guarded in the shader so legacy sprites stay bit-identical (the term is
+// skipped entirely). Locked by dof.test.ts.
+//
+// Vertex stage: the circle of confusion grows with view-depth distance from
+// the focus plane,
+//
+//   coc = dofStrength * |depth - dofFocus| / max(depth, DOF_DEPTH_EPSILON)
+//
+// (relative thin-lens-style defocus: 0 on the focus plane, approaching
+// dofStrength for far sprites, blowing up toward the camera) and the sprite
+// quad is inflated by (1 + coc). Fragment stage: the Gaussian core is
+// blended toward a flat disc by coc / (1 + coc) and the color is divided by
+// (1 + coc^2) — the energy-conservation factor keeping a defocused sprite
+// from multiplying its light by the (1 + coc)^2 area growth (bokeh, not
+// glow).
+// ---------------------------------------------------------------------------
+
+/**
+ * Default focus distance in view-depth units (clip-space w). Matches the
+ * internal sway camera's orbit radius so the swarm center is sharp when a
+ * look enables DoF without picking a focus.
+ */
+export const DEFAULT_DOF_FOCUS = 26
+/** Default bokeh strength. 0 = off: the guarded term adds nothing, legacy sprites stay bit-identical. */
+export const DEFAULT_DOF_STRENGTH = 0
+/** Keeps the CoC finite for sprites that reach the camera plane (depth -> 0). */
+export const DOF_DEPTH_EPSILON = 1e-3
+/** Gaussian falloff of the sprite core profile: alpha = exp(-d2 * this) * (1 - d2). */
+export const SPRITE_CORE_FALLOFF = 3
+
+/**
+ * The guarded per-sprite CoC + quad growth shared by both particle vertex
+ * stages. Reads focus/strength from the render uniforms (WGSL: the spare
+ * misc.z/w slots; GLSL: dedicated uniforms), computes
+ * coc = strength * |depth - focus| / max(depth, DOF_DEPTH_EPSILON) from the
+ * sprite center's view depth (clip-space w) and inflates `size` (in scope)
+ * by (1 + coc). Like the sim terms, the `!= 0` guard is uniform across the
+ * whole draw, so the default strength 0 changes nothing at all: coc stays 0
+ * and size is untouched — bit-identical legacy sprites at ~zero cost.
+ */
+export function dofVertexTermSource(lang: ShaderLang): string {
+  const wgsl = lang === 'wgsl'
+  const u = wgsl
+    ? { strength: 'R.misc.w', focus: 'R.misc.z', depth: '(R.viewProj * vec4<f32>(p, 1.0)).w' }
+    : { strength: 'uDofStrength', focus: 'uDofFocus', depth: 'gl_Position.w' }
+  return [
+    wgsl ? `  var coc = 0.0;` : `  float coc = 0.0;`,
+    `  if (${u.strength} != 0.0) {`,
+    wgsl ? `    let dofDepth = ${u.depth};` : `    float dofDepth = ${u.depth};`,
+    `    coc = ${u.strength} * abs(dofDepth - ${u.focus}) / max(dofDepth, ${lit(DOF_DEPTH_EPSILON)});`,
+    `    size *= 1.0 + coc;`,
+    `  }`,
+  ].join('\n')
+}
+
+/**
+ * The shared fragment profile of a particle sprite: defines `col` and `a`
+ * from the squared radial distance `d2` already in scope. In focus (coc 0 —
+ * the guarded default) it is exactly the legacy Gaussian-core splat
+ * exp(-d2 * SPRITE_CORE_FALLOFF) * (1 - d2). A defocused sprite blends the
+ * core toward a flat disc by coc / (1 + coc) (bokeh ball) and divides the
+ * color by (1 + coc^2), the energy-conservation factor cancelling the
+ * quad's (1 + coc)^2 area growth (verified numerically by dof.test.ts).
+ */
+export function dofSpriteProfileSource(lang: ShaderLang): string {
+  const wgsl = lang === 'wgsl'
+  const v = wgsl ? { coc: 'in.coc', col: 'in.col' } : { coc: 'vCoc', col: 'vCol' }
+  const decl = (type: 'float' | 'vec3', name: string, expr: string): string =>
+    wgsl ? `  var ${name} = ${expr};` : `  ${type} ${name} = ${expr};`
+  return [
+    decl('float', 'core', `exp(-d2 * ${lit(SPRITE_CORE_FALLOFF)})`),
+    decl('vec3', 'col', v.col),
+    `  if (${v.coc} > 0.0) {`,
+    wgsl
+      ? `    let cocMix = ${v.coc} / (1.0 + ${v.coc});`
+      : `    float cocMix = ${v.coc} / (1.0 + ${v.coc});`,
+    `    core = mix(core, 1.0, cocMix);`,
+    `    col /= 1.0 + ${v.coc} * ${v.coc};`,
+    `  }`,
+    wgsl ? `  let a = core * (1.0 - d2);` : `  float a = core * (1.0 - d2);`,
+  ].join('\n')
+}
+
+/**
+ * Particle render WGSL: billboarded quads with palette gradient, twinkle,
+ * hero sparkles, and the per-sprite bokeh DoF terms (single-source builders
+ * shared with the GLSL backend above). RENDER_WGSL is this builder's default
+ * output; dof.test.ts locks the two byte-identical.
+ */
+export const buildRenderWgsl = (): string => /* wgsl */ `
 struct RenderParams {
   viewProj: mat4x4<f32>,
   right: vec4<f32>,     // xyz camera right, w particle size
@@ -336,7 +429,7 @@ struct RenderParams {
   colorA: vec4<f32>,
   colorB: vec4<f32>,
   colorHot: vec4<f32>,  // rgb hot/highlight color, w twinkle amount
-  misc: vec4<f32>,      // x time, y speed->hot factor, z/w unused
+  misc: vec4<f32>,      // x time, y speed->hot factor, z dof focus depth, w dof strength (0 = off)
 }
 
 @group(0) @binding(0) var<uniform> R: RenderParams;
@@ -347,6 +440,7 @@ struct VOut {
   @builtin(position) clip: vec4<f32>,
   @location(0) uv: vec2<f32>,
   @location(1) col: vec3<f32>,
+  @location(2) coc: f32,        // circle of confusion (0 = in focus / DoF off)
 }
 
 @vertex
@@ -381,12 +475,15 @@ fn vs(@builtin(vertex_index) vid: u32) -> VOut {
     col *= 2.6;
   }
 
+${dofVertexTermSource('wgsl')}
+
   let world = p + (R.right.xyz * o.x + R.up.xyz * o.y) * size;
 
   var out: VOut;
   out.clip = R.viewProj * vec4<f32>(world, 1.0);
   out.uv = o;
   out.col = col * R.up.w;
+  out.coc = coc;
   return out;
 }
 
@@ -394,10 +491,13 @@ fn vs(@builtin(vertex_index) vid: u32) -> VOut {
 fn fs(in: VOut) -> @location(0) vec4<f32> {
   let d2 = dot(in.uv, in.uv);
   if (d2 > 1.0) { discard; }
-  let a = exp(-d2 * 3.0) * (1.0 - d2);
-  return vec4<f32>(in.col * a, a);
+${dofSpriteProfileSource('wgsl')}
+  return vec4<f32>(col * a, a);
 }
 `
+
+/** Default particle render shader; byte-identical to buildRenderWgsl(). */
+export const RENDER_WGSL = buildRenderWgsl()
 
 /**
  * Post-chain WGSL with a selectable tone-mapping curve. The default ('aces')

@@ -30,6 +30,8 @@ import {
   buildCompositeFs,
   DEFAULT_TURBULENCE,
   DEFAULT_TURBULENCE_SCALE,
+  DEFAULT_DOF_FOCUS,
+  DEFAULT_DOF_STRENGTH,
   ATTRACTOR_ARRAY_VEC4S,
   packAttractors,
 } from './shaders'
@@ -542,6 +544,10 @@ void main() { o = vec4(0.0); }
     gl.uniform1f(ru('uSpeedColorMix'), this.motion.speedColorMix)
     gl.uniform1f(ru('uTime'), time)
     gl.uniform1f(ru('uTwinkle'), this.look.twinkle)
+    // Per-sprite bokeh DoF: the same defaults the WebGPU backend packs into
+    // the render UB's misc.z/w slots (strength 0 = the term is skipped).
+    gl.uniform1f(ru('uDofFocus'), this.look.dofFocus ?? DEFAULT_DOF_FOCUS)
+    gl.uniform1f(ru('uDofStrength'), this.look.dofStrength ?? DEFAULT_DOF_STRENGTH)
     gl.uniform3f(ru('uColorA'), this.colorA[0], this.colorA[1], this.colorA[2])
     gl.uniform3f(ru('uColorB'), this.colorB[0], this.colorB[1], this.colorB[2])
     gl.uniform3f(ru('uColorHot'), this.look.hot[0], this.look.hot[1], this.look.hot[2])
