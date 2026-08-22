@@ -16,8 +16,7 @@ Three reasons Yura is worth your `<div>`:
    RUSH is ~60 lines. Kinetic Japanese-first typography via `app.lyrics()`.
 3. **Zero dependencies. Three.js optional.** Yura runs entirely on its own —
    and when you *do* have a Three.js scene, `yuraLayer` composits into it in
-   three lines (the adapter is duck-typed; `three` is only a dependency of
-   the demo, never of `yura`).
+   three lines (the adapter is duck-typed — `three` is never a dependency of `yura`).
 
 ![One million particles forming a neon galaxy in the Yura showcase](docs/screenshots/showcase-galaxy-1m.jpg)
 
@@ -27,7 +26,6 @@ Three reasons Yura is worth your `<div>`:
 bun install
 bun dev            # hello example — 1M-particle neon galaxy
 bun run showcase   # flagship demo: type a word, a million particles obey
-bun run dev:three  # Yura particles inside a plain Three.js scene
 bun run dev:lyrics # kinetic typography — timed lyrics as particle morphs
 bun run dev:model  # glTF PBR demo (DamagedHelmet, drag to orbit)
 bun run bench      # honest benchmarks vs Three.js, measured on YOUR machine
@@ -105,7 +103,7 @@ What you get for free:
 
 Already have a Three.js scene? Keep it. `yuraLayer` puts a GPU-simulated
 particle swarm on top of your render, matched to your camera every frame
-(`bun run dev:three` runs the full example):
+(try it live via `bun run play` → the “three.js” recipe):
 
 ```ts
 import { yuraLayer } from 'yura/three'
