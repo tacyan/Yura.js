@@ -88,3 +88,30 @@ test('getZeroScratch is all zeroes at every size', () => {
     }
   }
 })
+
+// Note on function coverage: bun counts the class's implicit constructor as a
+// function that no call can ever mark as hit (verified: new C(), subclass
+// super() and Reflect.construct all leave it at 0), so this file reports 3/4
+// functions even at 100% line coverage. Everything reachable is exercised.
+
+test('interleaved invalidate: each texture is re-created exactly once per generation', () => {
+  const cache = new ViewCache<{ id: number; owner: FakeTexture }>()
+  const texA = new FakeTexture()
+  const texB = new FakeTexture()
+
+  const a1 = cache.getView(texA)
+  cache.invalidate()
+
+  // B was never seen in the old generation; A holds a stale entry.
+  const b2 = cache.getView(texB)
+  const a2 = cache.getView(texA)
+  expect(a2).not.toBe(a1)
+  expect(texA.createViewCalls).toBe(2)
+  expect(texB.createViewCalls).toBe(1)
+
+  // Repeat requests in the new generation stay cached for both.
+  expect(cache.getView(texA)).toBe(a2)
+  expect(cache.getView(texB)).toBe(b2)
+  expect(texA.createViewCalls).toBe(2)
+  expect(texB.createViewCalls).toBe(1)
+})
