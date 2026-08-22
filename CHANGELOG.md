@@ -20,14 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Lyrics helper: `at` is now optional — pass `{ every }` for evenly spaced automatic timing, and plain string arrays are accepted.
 - `mute()` audio toggle that preserves the current volume when unmuting.
 - The `studio` look and the `Backend`, `Vec3`, `LookParams`, `MotionParams`, and `SceneMaterial` types are exported from the package root.
-- New live demos: the ORB RUSH mini-game from the README and the Helix Storm showcase scene.
+- Soft particles: `LookParams.softParticles` fades scene-mode FX sprites where they meet 3D geometry instead of hard-clipping (the value is the fade distance in world units). The default `0` keeps the previous output bit-identical; the `sakura` look enables it at `0.3`.
+- Trail options `colorEnd` (fade toward a tail color over each particle's life), `width` (sprite-size multiplier), and `fade` (fade-curve exponent), accepted by the FX layer and passed through a scene object's `trail()`. Defaults are unchanged.
+- Vertical (tategaki) text: `vertical: true` on text shapes and lyrics lays glyphs top-to-bottom in right-to-left columns. The default horizontal layout is unchanged, and the column-layout helper `layoutColumns` is exported.
+- `gameAudio.loop(pattern, { bpm, wave, gain })`: a step-sequencer loop of note names (`null` for rests) that plays under the master volume/mute controls and returns a handle with `stop()`. `noteToFreq` and the `LoopOpts` / `LoopHandle` types are exported.
+- The Three.js layer accepts a `motion` option and adds `layer.motion()`, so turbulence and the other particle-physics controls also work in Three.js embeds.
+- New live demos and recipes: the ORB RUSH mini-game from the README (now with a chiptune background loop that starts on the first input), the Helix Storm showcase scene, a sakura showcase scene with a vertical lyric loop, and a playground `tategaki` recipe.
 
 ### Changed
 
 - Calling `scene()` while a scene is already active now runs the old scene's cleanups and emits warning `YURA-016` (`SCENE_REPLACED`) instead of leaving the old scene's resources behind.
 - `watchVisibility` emits the initial visibility state synchronously and guards non-DOM environments.
 - The npm build no longer depends on BSD `sed`, so it also runs on Linux, and CI now runs tests, type checks, and the npm build on both Ubuntu and macOS.
-- Internal: error codes are centralized in a `CODES` registry, demos and playground recipes were rewritten on the new helpers, deep relative imports were removed for single-package publish safety, and the test suite grew from 160 to 359 passing tests.
+- Internal: error codes are centralized in a `CODES` registry, demos and playground recipes were rewritten on the new helpers, deep relative imports were removed for single-package publish safety, and the test suite grew from 160 to 495 passing tests, bringing the core, WebGL renderer, glTF loader, model renderer, and app modules to 100% line coverage. The WebGPU-detection test now injects a stub `navigator` instead of assuming the ambient runtime lacks `navigator.gpu`, so CI passes on runtimes that ship it (such as Bun 1.4).
 
 ### Fixed
 
@@ -41,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The published type declarations now carry the WebGPU types reference through to `three.d.ts`, fixing type errors for `yurayura/three` consumers.
 - `volume()` guards against non-finite values, and the audio helpers stay safe in environments without `AudioContext`.
 - The ease-lookup error was renumbered to `YURA-015` because `YURA-012` was already assigned to invalid-color errors.
+- `.motion()` and `.look()` settings now survive a later `.preset()` call instead of being silently replaced by the preset's values; preset-to-preset swaps behave as before.
+- FX sprites honor `LookParams.blendMode` in scene (model) mode as well, so `screen` / `alpha` blending — as used by the sakura look — works alongside 3D models.
+- glTF loading: the GLB version header is validated (error `YURA-020`), truncated files fail with a descriptive error instead of a raw `RangeError`, indices are read through a `Uint32Array` so meshes with more than 2^24 vertices keep full index precision, and scene-graph pruning no longer visits child nodes twice.
 
 ### Performance
 

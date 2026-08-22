@@ -380,3 +380,80 @@ test('loop is safe without AudioContext: no throw, handle still works', () => {
     if (prev !== undefined) g.AudioContext = prev
   }
 })
+
+test('page-gesture arming: the first pointerdown creates the context and disarms both listeners', () => {
+  const g = globalThis as { AudioContext?: unknown; window?: unknown }
+  const prevAC = g.AudioContext
+  const prevWin = g.window
+  g.AudioContext = FakeAudioContext
+  const listeners = new Map<string, Array<() => void>>()
+  const removedTypes: string[] = []
+  g.window = {
+    addEventListener: (type: string, fn: () => void) => {
+      listeners.set(type, [...(listeners.get(type) ?? []), fn])
+    },
+    removeEventListener: (type: string, fn: () => void) => {
+      removedTypes.push(type)
+      listeners.set(
+        type,
+        (listeners.get(type) ?? []).filter((f) => f !== fn),
+      )
+    },
+  }
+  const before = FakeAudioContext.created.length
+  try {
+    gameAudio()
+    // Armed on both user-gesture channels, but still lazy: no context yet.
+    expect(listeners.get('pointerdown')).toHaveLength(1)
+    expect(listeners.get('keydown')).toHaveLength(1)
+    expect(FakeAudioContext.created.length).toBe(before)
+    // First gesture: context comes alive and BOTH listeners disarm.
+    listeners.get('pointerdown')![0]()
+    expect(FakeAudioContext.created.length).toBe(before + 1)
+    expect(listeners.get('pointerdown')).toHaveLength(0)
+    expect(listeners.get('keydown')).toHaveLength(0)
+    expect([...removedTypes].sort()).toEqual(['keydown', 'pointerdown'])
+  } finally {
+    if (prevAC === undefined) delete g.AudioContext
+    else g.AudioContext = prevAC
+    if (prevWin === undefined) delete g.window
+    else g.window = prevWin
+  }
+})
+
+test('one-shot tones clean up after themselves when the oscillator ends', () => {
+  withFakeAudio((_audio, _master, ctx) => {
+    // withFakeAudio already fired pickup(): its osc carries play()'s own
+    // onended cleanup (loop() never replaced it for one-shots).
+    const osc = ctx.oscillators[0]
+    const gain = ctx.gains[ctx.gains.length - 1]
+    expect(typeof osc.onended).toBe('function')
+    expect(osc.disconnected).toBe(false)
+    osc.onended!()
+    expect(osc.disconnected).toBe(true)
+    expect(gain.disconnected).toBe(true)
+  })
+})
+
+test('loop prunes naturally-ended notes: stop() no longer touches them', () => {
+  withFakeAudio((audio, _master, ctx) => {
+    // Ended note: the loop's onended handler disconnects and prunes it.
+    const h1 = audio.loop(['C4'])
+    const ended = ctx.oscillators[ctx.oscillators.length - 1]
+    const endedGain = ctx.gains[ctx.gains.length - 1]
+    expect(typeof ended.onended).toBe('function')
+    ended.onended!()
+    expect(ended.disconnected).toBe(true)
+    expect(endedGain.disconnected).toBe(true)
+    h1.stop()
+    // Pruned from the live set: stop() left its onended untouched…
+    expect(typeof ended.onended).toBe('function')
+
+    // …whereas a still-live note gets onended nulled and force-stopped.
+    const h2 = audio.loop(['C4'])
+    const live = ctx.oscillators[ctx.oscillators.length - 1]
+    h2.stop()
+    expect(live.onended).toBeNull()
+    expect(live.disconnected).toBe(true)
+  })
+})

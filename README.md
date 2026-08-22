@@ -354,6 +354,8 @@ substantially below WebGPU at high particle counts.
 | WebGL2 only | Particle swarms (hello, showcase, `yuraLayer`) via the transform-feedback fallback — same HDR post. `.scene()` and `.model()` need WebGPU. |
 | Neither | A static poster — never a white screen. |
 
+Hit a `YURA-xxx` code in the console? Every code is documented in the [error code reference](docs/ERRORS.md).
+
 ## Packages
 
 | Package | Role |

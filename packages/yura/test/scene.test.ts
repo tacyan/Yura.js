@@ -883,3 +883,265 @@ test('obj.trail passes colorEnd, width, and fade through to the FX emitter', () 
   }
   expect(minAlpha).toBeLessThan(0.5) // fade 8 collapses the oldest sparks
 })
+
+// --- edge-triggered key queries -------------------------------------------
+
+test('pressed() is true only on the frame the key goes down', () => {
+  const input = new SceneInput()
+  expect(input.pressed('KeyE')).toBe(false)
+  input.keyDown('KeyE')
+  expect(input.pressed('KeyE')).toBe(true)
+  input.endFrame(1 / 60) // frame boundary: the edge is consumed
+  expect(input.pressed('KeyE')).toBe(false)
+  expect(input.key('KeyE')).toBe(true) // …but the key is still held
+  input.keyUp('KeyE')
+  expect(input.pressed('KeyE')).toBe(false)
+})
+
+// --- DOM binding (headless fakes: window / document / element) ------------
+
+type Handler = (ev: unknown) => void
+type HandlerMap = Map<string, Handler[]>
+
+function listenerPair(m: HandlerMap): {
+  addEventListener: (t: string, f: Handler) => void
+  removeEventListener: (t: string, f: Handler) => void
+} {
+  return {
+    addEventListener: (t, f) => m.set(t, [...(m.get(t) ?? []), f]),
+    removeEventListener: (t, f) =>
+      m.set(
+        t,
+        (m.get(t) ?? []).filter((x) => x !== f),
+      ),
+  }
+}
+
+const dispatch = (m: HandlerMap, type: string, ev: unknown): void => {
+  for (const f of m.get(type) ?? []) f(ev)
+}
+
+test('bind() wires keyboard/blur/visibility to window+document and dispose() unwires', () => {
+  const g = globalThis as Record<string, unknown>
+  const prevWin = g.window
+  const prevDoc = g.document
+  const win: HandlerMap = new Map()
+  const doc: HandlerMap = new Map()
+  const visibility = { state: 'visible' }
+  g.window = listenerPair(win)
+  g.document = {
+    ...listenerPair(doc),
+    get visibilityState() {
+      return visibility.state
+    },
+  }
+  const input = new SceneInput()
+  let prevented = 0
+  const key = (code: string): unknown => ({
+    code,
+    repeat: false,
+    preventDefault: () => {
+      prevented++
+    },
+  })
+  try {
+    input.bind()
+    expect(win.get('keydown')).toHaveLength(1)
+    expect(win.get('keyup')).toHaveLength(1)
+    expect(win.get('blur')).toHaveLength(1)
+    expect(doc.get('visibilitychange')).toHaveLength(1)
+
+    // Navigation keys are prevented (no page scroll) and land in the key set.
+    dispatch(win, 'keydown', key('ArrowLeft'))
+    expect(prevented).toBe(1)
+    expect(input.key('ArrowLeft')).toBe(true)
+    expect(input.x).toBe(combineAxes(-1, 0, 0))
+    // Other keys pass through unprevented.
+    dispatch(win, 'keydown', key('KeyQ'))
+    expect(prevented).toBe(1)
+    expect(input.key('KeyQ')).toBe(true)
+    dispatch(win, 'keyup', { code: 'ArrowLeft' })
+    expect(input.key('ArrowLeft')).toBe(false)
+
+    // blur drops everything held (the keyups will never arrive).
+    dispatch(win, 'blur', {})
+    expect(input.key('KeyQ')).toBe(false)
+
+    // visibilitychange clears only when the tab actually hides.
+    dispatch(win, 'keydown', key('KeyD'))
+    dispatch(doc, 'visibilitychange', {})
+    expect(input.key('KeyD')).toBe(true) // still visible
+    visibility.state = 'hidden'
+    dispatch(doc, 'visibilitychange', {})
+    expect(input.key('KeyD')).toBe(false)
+
+    input.dispose()
+    expect(win.get('keydown')).toHaveLength(0)
+    expect(win.get('keyup')).toHaveLength(0)
+    expect(win.get('blur')).toHaveLength(0)
+    expect(doc.get('visibilitychange')).toHaveLength(0)
+  } finally {
+    if (prevWin === undefined) delete g.window
+    else g.window = prevWin
+    if (prevDoc === undefined) delete g.document
+    else g.document = prevDoc
+  }
+})
+
+test('bindPointer(): drag drives the stick, cancel drops it without a jump, dispose restores', () => {
+  const handlers: HandlerMap = new Map()
+  const captured: number[] = []
+  let capThrow = false
+  const el = {
+    style: { touchAction: 'pan-y' },
+    ...listenerPair(handlers),
+    setPointerCapture: (id: number) => {
+      if (capThrow) throw new Error('capture unavailable')
+      captured.push(id)
+    },
+  }
+  const input = new SceneInput()
+  input.bindPointer(el as unknown as Parameters<SceneInput['bindPointer']>[0])
+  expect(el.style.touchAction).toBe('none')
+
+  let prevented = 0
+  const pd = (id: number, x: number, y: number, type = 'touch'): unknown => ({
+    pointerId: id,
+    clientX: x,
+    clientY: y,
+    pointerType: type,
+    preventDefault: () => {
+      prevented++
+    },
+  })
+
+  // Touch drag: prevented, captured, and mapped onto the stick axes.
+  dispatch(handlers, 'pointerdown', pd(1, 100, 100))
+  expect(prevented).toBe(1)
+  expect(captured).toEqual([1])
+  dispatch(handlers, 'pointermove', { pointerId: 1, clientX: 160, clientY: 100 })
+  expect(input.x).toBe(combineAxes(0, stickAxes(60, 0).x, 0))
+  expect(isTap(0, 60)).toBe(false) // precondition: a 60px drag is not a tap
+  dispatch(handlers, 'pointerup', { pointerId: 1 })
+  expect(input.x).toBe(0)
+  expect(input.jump).toBe(false) // drag release is not a jump
+
+  // Mouse pointers keep default behavior (no preventDefault).
+  dispatch(handlers, 'pointerdown', pd(2, 0, 0, 'mouse'))
+  expect(prevented).toBe(1)
+  // A cancel for a foreign pointer id is ignored…
+  dispatch(handlers, 'pointercancel', { pointerId: 99 })
+  dispatch(handlers, 'pointermove', { pointerId: 2, clientX: 50, clientY: 0 })
+  expect(input.x).toBe(combineAxes(0, stickAxes(50, 0).x, 0)) // stick alive
+  // …while cancelling the stick pointer drops it with NO tap-jump.
+  expect(isTap(0, 0)).toBe(true) // a zero-length press WOULD be a tap on pointerup
+  dispatch(handlers, 'pointercancel', { pointerId: 2 })
+  expect(input.x).toBe(0)
+  expect(input.jump).toBe(false)
+
+  // setPointerCapture throwing is survivable — the drag still works.
+  capThrow = true
+  dispatch(handlers, 'pointerdown', pd(3, 10, 10))
+  dispatch(handlers, 'pointermove', { pointerId: 3, clientX: 70, clientY: 10 })
+  expect(input.x).toBe(combineAxes(0, stickAxes(60, 0).x, 0))
+  dispatch(handlers, 'pointercancel', { pointerId: 3 })
+
+  input.dispose()
+  expect(el.style.touchAction).toBe('pan-y')
+  for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+    expect(handlers.get(t)).toHaveLength(0)
+  }
+})
+
+// --- attach(): realize + shadow discs + follow/orbit camera ---------------
+
+interface MeshRec {
+  material: Record<string, unknown>
+  worlds: unknown[]
+}
+
+function fakeSceneRenderer(): {
+  r: { shadowArea: number; cameraPose: unknown; setFX: (a: unknown, n: number) => void; addMesh: (g: unknown, m: Record<string, unknown>, o?: unknown) => { setWorld: (w: unknown) => void; remove: () => void } }
+  meshes: MeshRec[]
+} {
+  const meshes: MeshRec[] = []
+  const r = {
+    shadowArea: 0,
+    cameraPose: undefined as unknown,
+    addMesh(_geo: unknown, material: Record<string, unknown>, _opts?: unknown) {
+      const rec: MeshRec = { material, worlds: [] }
+      meshes.push(rec)
+      return {
+        setWorld(w: unknown) {
+          rec.worlds.push(w)
+        },
+        remove() {},
+      }
+    },
+    setFX(_a: unknown, _n: number) {},
+  }
+  return { r, meshes }
+}
+
+test('attach() realizes queued objects (shadow disc included) and follow/orbit steer the camera', () => {
+  const scene = new YuraScene({ keyboard: false, bounds: 5, gravity: -10 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 2, 0], body: 'dynamic', shadow: true })
+  scene.add('box', { position: [3, 0, 0] })
+  const { r, meshes } = fakeSceneRenderer()
+  const g = globalThis as Record<string, unknown>
+  const prevGCS = g.getComputedStyle
+  g.getComputedStyle = () => ({ position: 'static' })
+  const container = { style: { position: '' } }
+  try {
+    const detach = scene.attach(
+      r as unknown as Parameters<YuraScene['attach']>[0],
+      container as unknown as Parameters<YuraScene['attach']>[1],
+    )
+    expect(container.style.position).toBe('relative')
+    expect(r.shadowArea).toBe(scene.bounds * 1.25 + 2)
+    // ball mesh + its shadow disc + box mesh, in realize order.
+    expect(meshes.length).toBe(3)
+    expect(meshes[0].material).toEqual(resolveMaterial(undefined) as unknown as Record<string, unknown>) // default look
+    expect(meshes[1].material.unlit).toBe(true) // shadow disc is unlit…
+    expect(meshes[1].material.fade).toBe(true) // …and distance-faded
+    expect((meshes[1].material.color as number[])[3]).toBeLessThan(1) // translucent
+
+    // A step syncs every realized handle's world matrix (shadow too).
+    scene.step(1 / 60, 0)
+    expect(meshes[0].worlds.length).toBeGreaterThan(0)
+    expect(meshes[1].worlds.length).toBeGreaterThan(0)
+    expect(meshes[2].worlds.length).toBeGreaterThan(0)
+
+    // Follow camera: stepping produces a concrete eye/target pose.
+    scene.camera.follow(ball, { distance: 6, height: 2 })
+    scene.step(1 / 60, 1 / 60)
+    const pose = r.cameraPose as { eye: number[]; target: number[] }
+    expect(pose).toBeTruthy()
+    expect(pose.eye).toHaveLength(3)
+    expect(pose.target).toHaveLength(3)
+    for (const v of [...pose.eye, ...pose.target]) expect(Number.isFinite(v)).toBe(true)
+
+    // Orbit hands the camera back to the renderer.
+    scene.camera.orbit()
+    expect(r.cameraPose).toBeNull()
+    detach()
+  } finally {
+    if (prevGCS === undefined) delete g.getComputedStyle
+    else g.getComputedStyle = prevGCS
+  }
+})
+
+// --- material fallback -----------------------------------------------------
+
+test('resolveMaterial falls back to pearl for unknown non-hex names', () => {
+  const fallback = resolveMaterial('definitely-not-a-preset')
+  expect(fallback).toBe(resolveMaterial(undefined)) // same shared pearl preset
+  expect(fallback).toEqual(materials.pearl)
+  // …unlike a KNOWN preset name, which is defensively copied.
+  expect(resolveMaterial('pearl')).not.toBe(materials.pearl)
+  expect(resolveMaterial('pearl')).toEqual(materials.pearl)
+  // Hex strings become plastic in that color; explicit objects pass through.
+  expect(resolveMaterial('#ff8800')).toEqual(materials.plastic('#ff8800'))
+  const custom = materials.metal('#4cc9f0')
+  expect(resolveMaterial(custom)).toBe(custom)
+})

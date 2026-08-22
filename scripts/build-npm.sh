@@ -73,4 +73,7 @@ sed -e "s|from 'yura'|from 'yurayura'|g" -e "s|from 'yura/three'|from 'yurayura/
   README.md > "$OUT/README.md"
 cp LICENSE "$OUT/LICENSE"
 
+# 4) Consumer smoke test: a synthetic consumer must type-check against dist-npm.
+bun scripts/check-dist-types.ts "$OUT"
+
 echo "dist-npm ready: $(du -sh "$OUT" | cut -f1)"

@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { segmentGraphemes, charCoord, layoutLines, layoutColumns, text } from '../src/shapes'
+import { segmentGraphemes, charCoord, layoutLines, layoutColumns, text, sphere, vortex, type ShapeSpec } from '../src/shapes'
 import {
   sweepProgress,
   applySweepDirection,
@@ -470,4 +470,175 @@ test('restore-on-stop returns bit-exact to neutral in finite time', () => {
   }
   expect(f).toBe(TEXT_DAMP_NEUTRAL) // exact ===: the renderer multiplies by 1.0 again
   expect(steps).toBeLessThan(200) // snaps in ~2 s, not asymptotically never
+})
+
+// ---- px-font auto-shrink when text overflows the fixed canvas ----
+
+test('overlong horizontal lines shrink px fonts: the line stack tightens', () => {
+  const rowGap = (fills: Fill[]): number => {
+    const ys = [...new Set(fills.map((f) => f.y))].sort((a, b) => a - b)
+    expect(ys.length).toBe(2) // one y per line
+    return ys[1] - ys[0]
+  }
+  const short = withMockCanvas(() => {
+    text('ab\ncd', { font: FONT }).generate(8)
+  }).fills
+  const long = withMockCanvas(() => {
+    text('あいうえおかきくけこさし\nたちつてとなにぬねのはひ', { font: FONT }).generate(8)
+  }).fills
+  expect(long).toHaveLength(24) // every glyph still drawn
+  // The overflow case rescaled fontPx down, so its line pitch is tighter.
+  expect(rowGap(long)).toBeLessThan(rowGap(short))
+})
+
+test('overlong tategaki columns shrink px fonts so the column fits the canvas', () => {
+  const glyphGap = (fills: Fill[]): number => {
+    expect(fills[1].x).toBeCloseTo(fills[0].x, 6) // same column
+    return fills[1].y - fills[0].y
+  }
+  const short = withMockCanvas(() => {
+    text('あい', { font: FONT, vertical: true }).generate(8)
+  }).fills
+  const long = withMockCanvas(() => {
+    text('あいうえおかきくけこさし', { font: FONT, vertical: true }).generate(8)
+  }).fills
+  expect(long).toHaveLength(12)
+  // Shrunken em cells: tighter vertical pitch than the unshrunk short column…
+  expect(glyphGap(long)).toBeLessThan(glyphGap(short))
+  // …and that is exactly what keeps every glyph inside the 1024px reading span
+  // (unshrunk, 12 cells at the short column's pitch would overflow it).
+  expect(glyphGap(short) * 12).toBeGreaterThan(1024)
+  for (const f of long) {
+    expect(f.y).toBeGreaterThan(0)
+    expect(f.y).toBeLessThan(1024)
+  }
+})
+
+test('empty or whitespace-only text falls back to the tiny sphere', () => {
+  const { result, fills } = withMockCanvas(
+    () => text('', { font: FONT }).generate(64) as Float32Array,
+  )
+  expect(fills).toHaveLength(0) // nothing was drawable
+  expect(result.length).toBe(64 * 4)
+  for (let i = 0; i < 64; i++) {
+    // sphere({ radius: 2 }) shell: r = 2 * (0.92 + rand * 0.08)
+    const r = Math.hypot(result[i * 4], result[i * 4 + 1], result[i * 4 + 2])
+    expect(r).toBeGreaterThan(2 * 0.92 - 1e-6)
+    expect(r).toBeLessThanOrEqual(2 + 1e-6)
+    expect(result[i * 4 + 3]).toBeGreaterThanOrEqual(0)
+    expect(result[i * 4 + 3]).toBeLessThanOrEqual(1)
+  }
+  // Whitespace-only: charCount > 0 but zero drawn pixels — same fallback.
+  const ws = withMockCanvas(() => text(' ', { font: FONT }).generate(8) as Float32Array)
+  expect(ws.fills).toHaveLength(0)
+  expect(ws.result.length).toBe(8 * 4)
+})
+
+// ---- lyrics runtime: interstitial blasts and the timer loop ----
+
+const sleep = (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms))
+
+const markShape = (kind: string): ShapeSpec => ({ kind, generate: () => new Float32Array(0) })
+
+test('explode style fires alternating interstitial blasts between lines', () => {
+  const morphs: Array<{ kind: string; opts: { sweep?: number; direction?: string } }> = []
+  const app = {
+    morphNow: (s: ShapeSpec, o: { sweep?: number; direction?: string }) => {
+      morphs.push({ kind: s.kind, opts: o })
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const lines: LyricLine[] = [
+    { text: 'x', at: 0 },
+    { text: 'y', at: 10 },
+    { text: 'z', at: 20 },
+  ]
+  // Derive the interstitial instants from the same timeline the runner builds.
+  const events = buildTimeline(orderLines(normalizeLines(lines)), { out: 'explode' })
+  const ints = events.filter((e) => e.kind === 'interstitial')
+  expect(ints.map((e) => e.line)).toEqual([1, 2])
+  const run = lyrics(app, lines, { style: 'explode' })
+  try {
+    run.seek(ints[0].time) // the newest overdue event at this instant IS the blast
+    expect(morphs).toHaveLength(1)
+    expect(morphs[0].kind).toBe(vortex().kind) // odd line index: light tornado
+    expect(morphs[0].opts.sweep).toBe(0.25)
+    expect(morphs[0].opts.direction).toBe('random')
+    run.seek(ints[1].time)
+    expect(morphs).toHaveLength(2)
+    expect(morphs[1].kind).toBe(sphere().kind) // even line index: shell burst
+  } finally {
+    run.stop()
+  }
+})
+
+test('the wall-clock timer loop fires lines in order and halts after the last (no loop)', async () => {
+  const fired: string[] = []
+  const app = {
+    morphNow: (s: ShapeSpec) => {
+      fired.push(s.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, [
+    { text: 'a', at: 0, shape: markShape('L0') },
+    { text: 'b', at: 0.3, shape: markShape('L1') },
+  ])
+  try {
+    const deadline = Date.now() + 3000
+    while (!fired.includes('L1') && Date.now() < deadline) await sleep(20)
+    expect(fired[fired.length - 1]).toBe('L1') // the last line lands last
+    // Background-throttle collapse may skip L0 under load, but never reorders.
+    expect(fired.length).toBeLessThanOrEqual(2)
+    if (fired.length === 2) expect(fired).toEqual(['L0', 'L1'])
+    const settled = fired.length
+    await sleep(120)
+    expect(fired.length).toBe(settled) // finished: without loop nothing re-fires
+  } finally {
+    run.stop()
+  }
+})
+
+test('loop: true wraps the timeline clock and replays from the top', async () => {
+  const fired: string[] = []
+  const app = {
+    morphNow: (s: ShapeSpec) => {
+      fired.push(s.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, [{ text: 'a', at: 0, shape: markShape('L') }], {
+    loop: true,
+    loopTail: 0.2, // duration = 0.2s per cycle
+  })
+  try {
+    const deadline = Date.now() + 4000
+    while (fired.length < 3 && Date.now() < deadline) await sleep(20)
+    expect(fired.length).toBeGreaterThanOrEqual(3) // wrapped at least twice
+    expect(fired.every((k) => k === 'L')).toBe(true)
+  } finally {
+    run.stop()
+  }
+})
+
+test('a seek mid-gap re-arms the timer without re-firing consumed lines', async () => {
+  const fired: string[] = []
+  const app = {
+    morphNow: (s: ShapeSpec) => {
+      fired.push(s.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, [
+    { text: 'a', at: 0, shape: markShape('L0') },
+    { text: 'b', at: 600, shape: markShape('L1') }, // far future: never due here
+  ])
+  try {
+    run.seek(1) // consumes L0 synchronously and re-arms the timer
+    expect(fired).toEqual(['L0'])
+    await sleep(120) // the re-armed tick runs, finds nothing due, re-schedules
+    expect(fired).toEqual(['L0'])
+  } finally {
+    run.stop()
+  }
 })
