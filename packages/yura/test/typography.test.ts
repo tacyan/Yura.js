@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { segmentGraphemes, charCoord, layoutLines, text } from '../src/shapes'
+import { segmentGraphemes, charCoord, layoutLines, layoutColumns, text } from '../src/shapes'
 import {
   sweepProgress,
   applySweepDirection,
@@ -85,6 +85,165 @@ test('text v2 accepts multi-line and layout options without breaking the API', (
   expect(spec.kind).toBe('text')
   const legacy = text('YURA', { font: '900 250px sans-serif', worldWidth: 20 })
   expect(legacy.kind).toBe('text') // v1 call sites still typecheck and build
+})
+
+// ---- vertical (tategaki) layout ----
+
+test('layoutColumns stacks columns right-to-left around the horizontal center', () => {
+  const placed = layoutColumns([300, 500], 100, 20, 'left', 1000)
+  // Total block = 2*100 + 20 = 220: centers at ±60, the FIRST column rightmost.
+  expect(placed[0].x).toBeCloseTo(60, 6)
+  expect(placed[1].x).toBeCloseTo(-60, 6)
+  expect(placed[0].x).toBeGreaterThan(placed[1].x) // line order runs right→left
+  // A single column sits exactly on the horizontal center.
+  expect(layoutColumns([300], 100, 20, 'center', 1000)[0].x).toBeCloseTo(0, 6)
+})
+
+test('layoutColumns transposes align onto the vertical reading axis', () => {
+  expect(layoutColumns([100], 50, 0, 'left', 1000)[0].y).toBe(0) // top
+  expect(layoutColumns([100], 50, 0, 'center', 1000)[0].y).toBe(450)
+  expect(layoutColumns([100], 50, 0, 'right', 1000)[0].y).toBe(900) // bottom
+})
+
+// The canvas half of text() runs headless here through a deterministic mock:
+// fillText calls are recorded, and getImageData lights one pixel per drawn
+// glyph, so layout decisions and the sampled particles are fully observable.
+
+interface Fill {
+  text: string
+  x: number
+  y: number
+}
+
+function withMockCanvas<T>(run: () => T): { result: T; fills: Fill[] } {
+  const fills: Fill[] = []
+  const g = globalThis as { document?: unknown }
+  const prevDoc = g.document
+  g.document = {
+    createElement: () => {
+      const canvas = {
+        width: 0,
+        height: 0,
+        getContext: () => ({
+          fillStyle: '',
+          textAlign: '',
+          textBaseline: '',
+          font: '',
+          measureText: (s: string) => ({ width: 100 * segmentGraphemes(s).length }),
+          fillText: (t: string, x: number, y: number) => {
+            fills.push({ text: t, x, y })
+          },
+          getImageData: (_x: number, _y: number, w: number, h: number) => {
+            const data = new Uint8ClampedArray(w * h * 4)
+            for (const f of fills) {
+              const px = Math.min(Math.max(Math.round(f.x), 0), w - 1)
+              const py = Math.min(Math.max(Math.round(f.y), 0), h - 1)
+              data[(py * w + px) * 4 + 3] = 255
+            }
+            return { data }
+          },
+        }),
+      }
+      return canvas
+    },
+  }
+  try {
+    return { result: run(), fills }
+  } finally {
+    if (prevDoc === undefined) delete g.document
+    else g.document = prevDoc
+  }
+}
+
+/** Runs `fn` with Math.random replaced by a seeded LCG (same sequence every call). */
+function stubRandom<T>(fn: () => T): T {
+  const orig = Math.random
+  let seed = 42
+  Math.random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 4294967296
+  }
+  try {
+    return fn()
+  } finally {
+    Math.random = orig
+  }
+}
+
+const FONT = '900 100px sans-serif'
+
+test('vertical text draws graphemes top-to-bottom and lines as columns right-to-left', () => {
+  const { fills } = withMockCanvas(() => {
+    text('ゆらめ\nヒカリ', { font: FONT, vertical: true }).generate(8)
+  })
+  const at = (g: string): Fill => fills.find((f) => f.text === g)!
+  const col1 = ['ゆ', 'ら', 'め'].map(at)
+  const col2 = ['ヒ', 'カ', 'リ'].map(at)
+  for (const col of [col1, col2]) {
+    // Within a column: one shared x, strictly increasing y (top→bottom).
+    expect(col[1].x).toBeCloseTo(col[0].x, 6)
+    expect(col[2].x).toBeCloseTo(col[0].x, 6)
+    expect(col[1].y).toBeGreaterThan(col[0].y)
+    expect(col[2].y).toBeGreaterThan(col[1].y)
+  }
+  // The FIRST input line is the RIGHTMOST column (tategaki reading order).
+  expect(col1[0].x).toBeGreaterThan(col2[0].x)
+  // Equal-height columns start at the same top edge.
+  expect(col2[0].y).toBeCloseTo(col1[0].y, 6)
+})
+
+test('vertical defaults off: omitted and vertical:false generate bit-identical particles', () => {
+  const gen = (opts: { vertical?: boolean }): Float32Array =>
+    withMockCanvas(() =>
+      stubRandom(() => text('ゆら\nYURA', { font: FONT, ...opts }).generate(96) as Float32Array),
+    ).result
+  const legacy = gen({})
+  const explicit = gen({ vertical: false })
+  expect(explicit.length).toBe(legacy.length)
+  let diffs = 0
+  for (let i = 0; i < legacy.length; i++) {
+    if (!Object.is(explicit[i], legacy[i])) diffs++
+  }
+  expect(diffs).toBe(0) // bit-exact: the flag's false path IS the legacy path
+  // ...while vertical:true actually changes the layout under the same seed.
+  const tategaki = gen({ vertical: true })
+  expect(tategaki.some((v, i) => !Object.is(v, legacy[i]))).toBe(true)
+})
+
+test('vertical composes with align, letterSpacing, and lineGap (meanings transposed)', () => {
+  const run = (opts: object): Fill[] =>
+    withMockCanvas(() => {
+      text('ゆら\nヒ', { font: FONT, vertical: true, ...opts }).generate(8)
+    }).fills
+  const at = (fills: Fill[], g: string): Fill => fills.find((f) => f.text === g)!
+  // align: 'left' pins the short column to the top, 'right' to the bottom.
+  expect(at(run({ align: 'right' }), 'ヒ').y).toBeGreaterThan(at(run({ align: 'left' }), 'ヒ').y)
+  const tight = run({})
+  // letterSpacing opens the gap along the READING axis (y), not x.
+  const spaced = run({ letterSpacing: 0.5 })
+  const gapY = (fills: Fill[]): number => at(fills, 'ら').y - at(fills, 'ゆ').y
+  expect(gapY(spaced)).toBeGreaterThan(gapY(tight))
+  expect(at(spaced, 'ら').x).toBeCloseTo(at(spaced, 'ゆ').x, 6) // still one column
+  // lineGap opens the gap BETWEEN columns (x).
+  const wide = run({ lineGap: 1.0 })
+  const gapX = (fills: Fill[]): number => at(fills, 'ゆ').x - at(fills, 'ヒ').x
+  expect(gapX(wide)).toBeGreaterThan(gapX(tight))
+})
+
+test('vertical particle coords sweep in tategaki reading order', () => {
+  // 2×2 grid: あ=right-top, い=right-bottom, う=left-top, え=left-bottom.
+  const data = withMockCanvas(() =>
+    stubRandom(() => text('あい\nうえ', { font: FONT, vertical: true }).generate(200) as Float32Array),
+  ).result
+  for (let i = 0; i < 200; i++) {
+    const x = data[i * 4]
+    const y = data[i * 4 + 1]
+    const c = data[i * 4 + 3]
+    // charCoord bands (charCount 4, intra 0.5): reading order is the right
+    // column top→bottom, THEN the left column — not row-major.
+    if (x > 0) expect(c).toBeCloseTo(y > 0 ? 0.125 : 0.375, 2)
+    else expect(c).toBeCloseTo(y > 0 ? 0.625 : 0.875, 2)
+  }
 })
 
 // ---- sweep clamp math (mirror of the WGSL/GLSL sim) ----

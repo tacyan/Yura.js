@@ -44,6 +44,8 @@ export interface LyricsOptions {
   lineGap?: number
   align?: TextAlign
   worldWidth?: number
+  /** Tategaki (縦書き) lyric lines — forwarded to shapes.text. */
+  vertical?: boolean
 }
 
 export interface LyricsRun {
@@ -169,6 +171,7 @@ export function lyrics(app: YuraApp, lines: readonly LyricInput[], opts: LyricsO
     lineGap: opts.lineGap,
     align: opts.align,
     worldWidth: opts.worldWidth,
+    vertical: opts.vertical,
   }
 
   let stopped = false

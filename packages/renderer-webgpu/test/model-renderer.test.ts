@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { ortho, lookAt, multiply, transform4, type Vec3 } from '@yura/core'
+import { ortho, lookAt, multiply, transform4, transformPoint, CODES, type Vec3 } from '@yura/core'
 import { WebGPUModelRenderer, computeLightViewProj, DEFAULT_SOFT_PARTICLES } from '../src/model-renderer'
 import type { SceneMaterial } from '../src/model-renderer'
 import { POST_WGSL } from '../src/shaders'
@@ -572,4 +572,426 @@ test('FX draws inside the scene pass by default; soft mode adds a read-only dept
   r.look = { ...LOOK, softParticles: 0 }
   r.frame(1 / 60, 2 / 60)
   expect(passes.filter((p) => p.label === 'yura-fx-soft').length).toBe(1)
+})
+
+// ---------------------------------------------------------------------------
+// Shared helpers for the camera / model-loading suites below.
+// ---------------------------------------------------------------------------
+
+function runFrames(r: WebGPUModelRenderer, n: number, dt = 1 / 60): void {
+  for (let i = 0; i < n; i++) r.frame(dt, i * dt)
+}
+
+function lastEye(writes: { label?: string; f32: Float32Array }[]): [number, number, number] {
+  const frames = writes.filter((w) => w.label === 'yura-frame-ub')
+  const f = frames[frames.length - 1]!.f32
+  return [f[32]!, f[33]!, f[34]!]
+}
+
+interface TexDesc {
+  size?: { width?: number; height?: number }
+  format?: string
+  mipLevelCount?: number
+}
+
+test('setWorld writes the mesh world matrix while alive and is inert after remove', async () => {
+  const { r, writes } = await makeRenderer()
+  const h = r.addMesh(triangleGeo(), PBR_MAT)
+  const world = new Float32Array(16)
+  world[0] = world[5] = world[10] = world[15] = 1
+  world[12] = 0.5
+  const before = writes.length
+  h.setWorld(world)
+  expect(writes.length).toBe(before + 1)
+  expect(Array.from(writes[writes.length - 1]!.f32)).toEqual(Array.from(world))
+
+  h.remove()
+  const after = writes.length
+  h.setWorld(world)
+  expect(writes.length).toBe(after)
+})
+
+test('pattern materials build a mip-chained texture once per kind and cache it', async () => {
+  const { r, textures, passes } = await makeRenderer()
+  const mipTextures = (from: number) =>
+    textures.slice(from).filter((t) => ((t.desc as TexDesc).mipLevelCount ?? 1) > 1)
+
+  let mark = textures.length
+  let passMark = passes.length
+  r.addMesh(triangleGeo(), { ...PBR_MAT, pattern: 'checker' })
+  const checker = mipTextures(mark)
+  expect(checker.length).toBe(1)
+  const desc = checker[0]!.desc as TexDesc
+  const mips = desc.mipLevelCount!
+  expect(mips).toBeGreaterThan(1)
+  expect(desc.size?.width).toBe(desc.size?.height)
+  expect(desc.format).toBe('rgba8unorm-srgb')
+  // encodeMipChain downsamples level m-1 -> m: one render pass per level,
+  // two views per pass, plus the single view bound into the material BG.
+  expect(passes.length - passMark).toBe(mips - 1)
+  expect(checker[0]!.views).toBe(2 * (mips - 1) + 1)
+
+  mark = textures.length
+  passMark = passes.length
+  r.addMesh(triangleGeo(), { ...PBR_MAT, pattern: 'checker' })
+  expect(mipTextures(mark).length).toBe(0)
+  expect(passes.length).toBe(passMark)
+  expect(checker[0]!.views).toBe(2 * (mips - 1) + 2)
+
+  mark = textures.length
+  passMark = passes.length
+  r.addMesh(triangleGeo(), { ...PBR_MAT, pattern: 'grid' })
+  const grid = mipTextures(mark)
+  expect(grid.length).toBe(1)
+  expect(passes.length - passMark).toBe(((grid[0]!.desc as TexDesc).mipLevelCount ?? 1) - 1)
+
+  mark = textures.length
+  passMark = passes.length
+  r.addMesh(triangleGeo(), { ...PBR_MAT, pattern: 'none' })
+  expect(mipTextures(mark).length).toBe(0)
+  expect(passes.length).toBe(passMark)
+})
+
+// ---------------------------------------------------------------------------
+// glTF loading through a real GLB container parsed by loadGLB (fetch and
+// createImageBitmap stubbed; every expected value derives from this fixture).
+// ---------------------------------------------------------------------------
+
+const GLB_URL = 'test://fixture/model.glb'
+const IMG_W = 4
+const IMG_H = 8
+const BASE_COLOR: [number, number, number, number] = [0.25, 0.5, 0.75, 1]
+const METALLIC = 0.4
+const ROUGHNESS = 0.6
+const EMISSIVE: [number, number, number] = [0.1, 0.2, 0.3]
+const POSITIONS = new Float32Array([0, 0, 0, 2, 0, 0, 0, 2, 0])
+
+function buildGlbFixture(): ArrayBuffer {
+  const bin = new Uint8Array(48)
+  bin.set(new Uint8Array(POSITIONS.buffer.slice(0)), 0) // 36 bytes of positions
+  bin.set(new Uint8Array(new Uint16Array([0, 1, 2]).buffer), 36) // 6 bytes of u16 indices
+  bin.set([1, 2, 3, 4], 44) // opaque image bytes (decoded by the stub)
+  const json = {
+    asset: { version: '2.0' },
+    buffers: [{ byteLength: bin.length }],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36 },
+      { buffer: 0, byteOffset: 36, byteLength: 6 },
+      { buffer: 0, byteOffset: 44, byteLength: 4 },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5123, count: 3, type: 'SCALAR' },
+    ],
+    images: [{ bufferView: 2, mimeType: 'image/png' }],
+    textures: [{ source: 0 }],
+    materials: [
+      {
+        pbrMetallicRoughness: {
+          baseColorFactor: BASE_COLOR,
+          baseColorTexture: { index: 0 },
+          metallicFactor: METALLIC,
+          roughnessFactor: ROUGHNESS,
+        },
+        emissiveTexture: { index: 0 },
+        emissiveFactor: EMISSIVE,
+      },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }] }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  }
+  const jsonBytes = new TextEncoder().encode(JSON.stringify(json))
+  const jsonPad = (4 - (jsonBytes.length % 4)) % 4
+  const total = 12 + 8 + jsonBytes.length + jsonPad + 8 + bin.length
+  const out = new ArrayBuffer(total)
+  const dv = new DataView(out)
+  const u8 = new Uint8Array(out)
+  dv.setUint32(0, 0x46546c67, true) // 'glTF'
+  dv.setUint32(4, 2, true)
+  dv.setUint32(8, total, true)
+  let o = 12
+  dv.setUint32(o, jsonBytes.length + jsonPad, true)
+  dv.setUint32(o + 4, 0x4e4f534a, true) // 'JSON'
+  o += 8
+  u8.set(jsonBytes, o)
+  u8.fill(0x20, o + jsonBytes.length, o + jsonBytes.length + jsonPad)
+  o += jsonBytes.length + jsonPad
+  dv.setUint32(o, bin.length, true)
+  dv.setUint32(o + 4, 0x004e4942, true) // 'BIN'
+  o += 8
+  u8.set(bin, o)
+  return out
+}
+
+test('loadModel uploads glTF primitives, materials, and cached image textures', async () => {
+  const { r, buffers, textures, writes, passes } = await makeRenderer()
+  const glb = buildGlbFixture()
+  const g = globalThis as Record<string, unknown>
+  const realFetch = globalThis.fetch
+  const realCIB = g.createImageBitmap
+  const fetched: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    fetched.push(String(url))
+    return new Response(glb.slice(0))
+  }) as unknown as typeof fetch
+  g.createImageBitmap = async () => ({ width: IMG_W, height: IMG_H, close() {} })
+
+  const buffersBefore = buffers.length
+  const texturesBefore = textures.length
+  const writesBefore = writes.length
+  const passesBefore = passes.length
+  try {
+    await r.loadModel(GLB_URL)
+  } finally {
+    globalThis.fetch = realFetch
+    g.createImageBitmap = realCIB
+  }
+  expect(fetched).toEqual([GLB_URL])
+
+  // 4 vertex/index uploads + material UB + object UB for the one primitive.
+  expect(buffers.length - buffersBefore).toBe(6)
+
+  const newWrites = writes.slice(writesBefore)
+  const matWrites = newWrites.filter((w) => w.f32.length === 12)
+  expect(matWrites.length).toBe(1)
+  const mat = matWrites[0]!.f32
+  expect(Array.from(mat.slice(0, 4))).toEqual(BASE_COLOR)
+  expect(mat[4]).toBeCloseTo(METALLIC, 6)
+  expect(mat[5]).toBeCloseTo(ROUGHNESS, 6)
+  expect(mat[6]).toBe(0) // fixture has no occlusion texture
+  expect(mat[8]).toBeCloseTo(EMISSIVE[0], 6)
+  expect(mat[9]).toBeCloseTo(EMISSIVE[1], 6)
+  expect(mat[10]).toBeCloseTo(EMISSIVE[2], 6)
+
+  // The fitted world transform is uniform and maps the bbox center to origin.
+  const worldWrites = newWrites.filter((w) => w.f32.length === 16)
+  expect(worldWrites.length).toBe(1)
+  const world = worldWrites[0]!.f32
+  const center: Vec3 = [0, 1, 2].map((axis) => {
+    let lo = Infinity
+    let hi = -Infinity
+    for (let i = axis; i < POSITIONS.length; i += 3) {
+      lo = Math.min(lo, POSITIONS[i]!)
+      hi = Math.max(hi, POSITIONS[i]!)
+    }
+    return (lo + hi) / 2
+  }) as unknown as Vec3
+  const mapped = transformPoint(world, center)
+  expect(mapped[0]).toBeCloseTo(0, 5)
+  expect(mapped[1]).toBeCloseTo(0, 5)
+  expect(mapped[2]).toBeCloseTo(0, 5)
+  expect(world[0]!).toBeGreaterThan(0)
+  expect(world[5]).toBe(world[0]!)
+  expect(world[10]).toBe(world[0]!)
+
+  // baseColor and emissive share image 0: the sRGB texture is created once,
+  // sized from the decoded bitmap, with a full mip chain blitted level by level.
+  const newTextures = textures.slice(texturesBefore)
+  const imageTex = newTextures.filter((t) => (t.desc as TexDesc).size?.width === IMG_W)
+  expect(imageTex.length).toBe(1)
+  const idesc = imageTex[0]!.desc as TexDesc
+  const expectedMips = Math.floor(Math.log2(Math.max(IMG_W, IMG_H))) + 1
+  expect(idesc.size?.height).toBe(IMG_H)
+  expect(idesc.mipLevelCount).toBe(expectedMips)
+  expect(idesc.format).toBe('rgba8unorm-srgb')
+  expect(passes.length - passesBefore).toBe(expectedMips - 1)
+
+  // The loaded primitive renders (frame no longer early-outs on empty scene).
+  r.resize(64, 64)
+  const passesAfterResize = passes.length
+  r.frame(1 / 60, 0)
+  expect(passes.length).toBeGreaterThan(passesAfterResize)
+
+  // And everything the load created is released on dispose.
+  r.dispose()
+  expect(buffers.filter((b) => !b.destroyed)).toEqual([])
+  expect(textures.filter((t) => !t.destroyed)).toEqual([])
+})
+
+// ---------------------------------------------------------------------------
+// Device loss.
+// ---------------------------------------------------------------------------
+
+async function makeLossyRenderer() {
+  const env = makeFakeGPU()
+  let fire!: (info: { reason: string; message: string }) => void
+  ;(env.device as unknown as { lost: Promise<unknown> }).lost = new Promise((res) => {
+    fire = res
+  })
+  const r = await WebGPUModelRenderer.create(
+    env.canvas as unknown as HTMLCanvasElement,
+    env.device as unknown as GPUDevice,
+    LOOK,
+  )
+  return { ...env, r, fire }
+}
+
+test('device.lost fires onDeviceLost once with the DEVICE_LOST warning code', async () => {
+  const { r, fire } = await makeLossyRenderer()
+  let calls = 0
+  r.onDeviceLost = () => {
+    calls++
+  }
+  const infos: string[] = []
+  const origInfo = console.info
+  console.info = (...a: unknown[]) => {
+    infos.push(a.join(' '))
+  }
+  try {
+    fire({ reason: 'unknown', message: 'simulated loss' })
+    await new Promise((res) => setTimeout(res, 0))
+  } finally {
+    console.info = origInfo
+  }
+  expect(calls).toBe(1)
+  expect(infos.some((m) => m.includes(CODES.DEVICE_LOST))).toBe(true)
+})
+
+test('device.lost is ignored after dispose and for reason "destroyed"', async () => {
+  const destroyed = await makeLossyRenderer()
+  let calls = 0
+  destroyed.r.onDeviceLost = () => {
+    calls++
+  }
+  destroyed.fire({ reason: 'destroyed', message: 'torn down' })
+  await new Promise((res) => setTimeout(res, 0))
+  expect(calls).toBe(0)
+
+  const disposed = await makeLossyRenderer()
+  disposed.r.onDeviceLost = () => {
+    calls++
+  }
+  disposed.r.dispose()
+  disposed.fire({ reason: 'unknown', message: 'after dispose' })
+  await new Promise((res) => setTimeout(res, 0))
+  expect(calls).toBe(0)
+})
+
+// ---------------------------------------------------------------------------
+// Orbit-camera interaction (rotate / zoom / aim / pan / reset / cameraPose).
+// ---------------------------------------------------------------------------
+
+async function makeOrbitRenderer() {
+  const env = await makeRenderer()
+  env.r.addMesh(triangleGeo(), PBR_MAT)
+  env.r.resize(64, 64)
+  env.r.autoRotate = 0
+  return env
+}
+
+test('rotateBy applies the drag delta immediately and adds inertia over frames', async () => {
+  const { r } = await makeOrbitRenderer()
+  const yaw0 = r.yaw
+  const pitch0 = r.pitch
+  r.rotateBy(0.3, -0.05)
+  expect(r.yaw).toBeCloseTo(yaw0 + 0.3, 12)
+  expect(r.pitch).toBeCloseTo(pitch0 - 0.05, 12)
+
+  runFrames(r, 30)
+  expect(r.yaw).toBeGreaterThan(yaw0 + 0.3)
+  expect(r.pitch).toBeLessThan(pitch0 - 0.05)
+})
+
+test('zoomBy multiplies distance and clamps idempotently at both ends', async () => {
+  const { r } = await makeOrbitRenderer()
+  const d0 = r.distance
+  r.zoomBy(1.1)
+  expect(r.distance).toBeCloseTo(d0 * 1.1, 12)
+
+  r.zoomBy(1e9)
+  const dmax = r.distance
+  expect(dmax).toBeGreaterThan(d0)
+  r.zoomBy(3)
+  expect(r.distance).toBe(dmax)
+
+  r.zoomBy(1e-9)
+  const dmin = r.distance
+  expect(dmin).toBeLessThan(d0)
+  r.zoomBy(0.5)
+  expect(r.distance).toBe(dmin)
+})
+
+test('aimTo eases to the requested yaw/pitch; aim and drag share one pitch clamp', async () => {
+  const a = await makeOrbitRenderer()
+  const goalYaw = a.r.yaw + 1
+  a.r.aimTo(goalYaw, 0.5)
+  runFrames(a.r, 400)
+  expect(a.r.yaw).toBeCloseTo(goalYaw, 2)
+  expect(a.r.pitch).toBeCloseTo(0.5, 2)
+
+  a.r.aimTo(goalYaw, 9)
+  runFrames(a.r, 400)
+  const aimClamped = a.r.pitch
+  expect(aimClamped).toBeLessThan(9)
+
+  // Dragging to the same absurd pitch and rendering once hits the same clamp.
+  const b = await makeOrbitRenderer()
+  b.r.rotateBy(0, 9)
+  b.r.frame(1 / 60, 0)
+  expect(aimClamped).toBeCloseTo(b.r.pitch, 2)
+})
+
+test('panBy shifts the camera eye linearly and clamps the total offset', async () => {
+  const { r, writes } = await makeOrbitRenderer()
+  r.frame(1 / 60, 0)
+  const eye0 = lastEye(writes)
+
+  r.panBy(100, 50)
+  r.frame(1 / 60, 1 / 60)
+  const eye1 = lastEye(writes)
+  const d1 = eye1.map((v, i) => v - eye0[i]!)
+  expect(Math.hypot(...d1)).toBeGreaterThan(0)
+
+  r.panBy(100, 50)
+  r.frame(1 / 60, 2 / 60)
+  const eye2 = lastEye(writes)
+  for (let i = 0; i < 3; i++) expect(eye2[i]! - eye0[i]!).toBeCloseTo(2 * d1[i]!, 5)
+
+  // A second gigantic pan in the same direction is absorbed by the clamp.
+  r.panBy(1e9, 0)
+  r.frame(1 / 60, 3 / 60)
+  const big1 = lastEye(writes)
+  r.panBy(1e9, 0)
+  r.frame(1 / 60, 4 / 60)
+  const big2 = lastEye(writes)
+  for (let i = 0; i < 3; i++) expect(big2[i]!).toBeCloseTo(big1[i]!, 5)
+})
+
+test('resetView converges to one front pose regardless of prior interaction', async () => {
+  const a = await makeOrbitRenderer()
+  const b = await makeOrbitRenderer()
+
+  a.r.rotateBy(2.7, 0.4)
+  a.r.zoomBy(1.5)
+  a.r.panBy(500, -300)
+  a.r.resetView()
+  runFrames(a.r, 400)
+
+  b.r.resetView()
+  runFrames(b.r, 400)
+
+  const wrap = (x: number) => Math.atan2(Math.sin(x), Math.cos(x))
+  expect(Math.abs(wrap(a.r.yaw - b.r.yaw))).toBeLessThan(0.01)
+  expect(a.r.pitch).toBeCloseTo(b.r.pitch, 2)
+  expect(a.r.distance).toBeCloseTo(b.r.distance, 1)
+  const ea = lastEye(a.writes)
+  const eb = lastEye(b.writes)
+  for (let i = 0; i < 3; i++) expect(ea[i]!).toBeCloseTo(eb[i]!, 1)
+})
+
+test('cameraPose overrides the orbit camera exactly and releases on null', async () => {
+  const { r, writes } = await makeOrbitRenderer()
+  r.cameraPose = { eye: [1, 2, 3], target: [0, 0, 0] }
+  r.frame(1 / 60, 0.5)
+  const frames = writes.filter((w) => w.label === 'yura-frame-ub')
+  const f = frames[frames.length - 1]!.f32
+  expect(Array.from(f.slice(32, 35))).toEqual([1, 2, 3])
+  expect(f[35]).toBe(0.5)
+
+  r.cameraPose = null
+  r.frame(1 / 60, 1)
+  const eye = lastEye(writes)
+  expect(eye[0] === 1 && eye[1] === 2 && eye[2] === 3).toBe(false)
 })

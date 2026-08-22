@@ -1,7 +1,12 @@
 import { test, expect } from 'bun:test'
-import { galaxy, sphere, ring, vortex, flow, box, cone, helix } from '../src/shapes'
+import { galaxy, sphere, ring, vortex, flow, box, cone, helix, text } from '../src/shapes'
 
 const N = 5000
+
+test('text accepts the vertical (tategaki) option without breaking the API', () => {
+  expect(text('ゆらめくヒカリ', { vertical: true }).kind).toBe('text')
+  expect(text('よこがき').kind).toBe('text') // default stays horizontal / v1-compatible
+})
 
 for (const [name, spec] of [
   ['galaxy', galaxy()],
