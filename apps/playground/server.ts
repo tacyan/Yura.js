@@ -14,6 +14,13 @@ import { Hono } from 'hono'
 import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
+// The whole Yura universe on ONE server: Bun bundles these pages (TS,
+// assets and all) and serves them as routes alongside the playground.
+import showcasePage from '../showcase/index.html'
+import benchPage from '../benchmarks/index.html'
+import lyricsPage from '../../examples/lyrics/index.html'
+import helloPage from '../../examples/hello/index.html'
+import modelPage from '../../examples/model/index.html'
 
 const MAX_CODE_BYTES = 32 * 1024
 
@@ -327,6 +334,10 @@ function page(snippetId: string | null): string {
     border: 0; color: #04050c;
     background: linear-gradient(90deg, var(--cyan), var(--violet));
   }
+  .pages { display: flex; gap: 14px; margin-left: 18px; }
+  .pages a { color: var(--muted); text-decoration: none; font-family: var(--mono);
+    font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; transition: color .2s; }
+  .pages a:hover { color: var(--cyan); }
   kbd { font-family: var(--mono); font-size: 0.7rem; color: var(--muted);
     border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; margin-left: 7px; }
   button.primary kbd { color: rgba(4,5,12,0.75); border-color: rgba(4,5,12,0.3); }
@@ -366,6 +377,13 @@ function page(snippetId: string | null): string {
 <body>
 <header>
   <div class="word">YURA<small>PLAYGROUND</small></div>
+  <nav class="pages">
+    <a href="/showcase">showcase</a>
+    <a href="/lyrics">lyrics</a>
+    <a href="/bench">bench</a>
+    <a href="/hello">hello</a>
+    <a href="/model">model</a>
+  </nav>
   <div class="spacer"></div>
   <button id="run" class="primary">Run<kbd>⌘⏎</kbd></button>
   <button id="share">Share</button>
@@ -512,4 +530,16 @@ if (app) {
   console.log(`YURA Playground → http://localhost:${port}/`)
 }
 
-export default app ? { port, fetch: app.fetch } : undefined
+export default app
+  ? {
+      port,
+      routes: {
+        '/showcase': showcasePage,
+        '/lyrics': lyricsPage,
+        '/bench': benchPage,
+        '/hello': helloPage,
+        '/model': modelPage,
+      },
+      fetch: app.fetch,
+    }
+  : undefined
