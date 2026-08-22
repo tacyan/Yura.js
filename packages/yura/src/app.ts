@@ -1,6 +1,7 @@
 import {
   YuraError,
   CODES,
+  warnCode,
   hexToLinear,
   acquireWebGPU,
   prefersReducedMotion,
@@ -12,6 +13,8 @@ import {
 import {
   WebGPUParticleRenderer,
   WebGPUModelRenderer,
+  MAX_ATTRACTORS,
+  type AttractorParams,
   type LookParams,
   type MotionParams,
 } from '@yura/renderer-webgpu'
@@ -20,8 +23,14 @@ import { resolvePreset, DEFAULT_MOTION } from './presets'
 import { looks as lookRegistry, type LookName } from './looks'
 import { shapes as shapeRegistry, type ShapeSpec } from './shapes'
 import { YuraScene, type SceneOptions } from './scene'
-import { lyrics as runLyrics, type LyricLine, type LyricsOptions, type LyricsRun } from './lyrics'
+import { lyrics as runLyrics, type LyricInput, type LyricsOptions, type LyricsRun } from './lyrics'
 
+/**
+ * Construction options for {@link yura} / {@link YuraApp}.
+ *
+ * @example
+ * yura('#hero', { quality: 'high', backend: 'webgpu' }).run()
+ */
 export interface YuraOptions {
   /** 'auto' adapts to the frame budget, 'high' pins max quality, 'low' starts conservative. */
   quality?: 'auto' | 'high' | 'low'
@@ -29,13 +38,24 @@ export interface YuraOptions {
   backend?: 'auto' | 'webgpu' | 'webgl2'
 }
 
+/**
+ * Live performance snapshot from {@link YuraApp.stats}. Format it as a
+ * one-line HUD string with {@link formatStats}.
+ */
 export interface YuraStats {
+  /** Active rendering backend ('webgpu', 'webgl2', or 'poster'). */
   backend: Backend
+  /** Smoothed frames per second. */
   fps: number
+  /** Frame time in milliseconds (one decimal). */
   frameMs: number
+  /** Particles actually simulated after quality governing (0 in model/scene mode). */
   particles: number
+  /** Particle count requested via `.particles()` or the preset. */
   requestedParticles: number
+  /** Render resolution multiplier the quality governor applied (1 = full). */
   resolutionScale: number
+  /** Current quality-governor step (higher = more aggressive degradation). */
   qualityLevel: number
 }
 
@@ -43,13 +63,114 @@ const HOLD_SECONDS = 3.2
 const MORPH_SECONDS = 2.6
 const MAX_DT = 1 / 30
 
+/** Floor for morph durations — keeps `timer / duration` finite (≈ instant). */
+const MIN_MORPH_SECONDS = 1e-4
+
+/** Setup callback for {@link YuraApp.game}: receives the fresh scene; may be async. */
+export type GameSetup = (scene: YuraScene) => void | Promise<void>
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+}
+
+/** An easing curve: f(0) = 0 and f(1) = 1 (values may overshoot in between). */
+export type EaseFn = (t: number) => number
+
+/**
+ * Named easing curves for morph choreography. Every curve satisfies
+ * f(0) = 0 and f(1) = 1; all but `back` stay monotone inside [0, 1]
+ * (`back` overshoots past 1 and springs back — that is its point).
+ */
+export const eases = {
+  /** The classic smooth in-out — the default, identical to the legacy curve. */
+  cubic: easeInOutCubic as EaseFn,
+  /** Dramatic in-out: near-still at both ends, a rush through the middle. */
+  expo: ((t) =>
+    t <= 0 ? 0 : t >= 1 ? 1 : t < 0.5 ? Math.pow(2, 20 * t - 10) / 2 : (2 - Math.pow(2, -20 * t + 10)) / 2) as EaseFn,
+  /** Overshoots the target and springs back — snappy design-reel arrivals. */
+  back: ((t) => {
+    const c1 = 1.70158
+    const c3 = c1 + 1
+    const u = t - 1
+    return 1 + c3 * u * u * u + c1 * u * u
+  }) as EaseFn,
+  /** Hermite smoothstep — gentler shoulders than cubic, a GPU classic. */
+  smooth: ((t) => t * t * (3 - 2 * t)) as EaseFn,
+  /** No easing — constant speed. */
+  linear: ((t) => t) as EaseFn,
+} satisfies Record<string, EaseFn>
+
+/** A key of the `eases` registry. */
+export type EaseName = keyof typeof eases
+
+/** An easing, referenced by registry name or supplied as a custom curve. */
+export type Ease = EaseName | EaseFn
+
+function resolveEase(e: Ease): EaseFn {
+  if (typeof e === 'function') return e
+  const fn = (eases as Record<string, EaseFn | undefined>)[e]
+  if (!fn) {
+    throw new YuraError(
+      CODES.UNKNOWN_EASE,
+      `Unknown ease "${String(e)}". Available: ${Object.keys(eases).join(', ')}.`,
+      `app.motion({ ease: 'expo' })  // or pass any f(0)=0, f(1)=1 function`,
+    )
+  }
+  return fn
+}
+
+/**
+ * Timing knobs for the morph choreography, accepted by `.motion()` alongside
+ * the physics params. Omitted fields keep their current values; the defaults
+ * reproduce the historical fixed constants exactly (hold 3.2s, morph 2.6s,
+ * cubic easing).
+ */
+export interface MotionTimingOptions {
+  /** Seconds a shape holds before the automatic cycle morphs on. Default 3.2. */
+  hold?: number
+  /** Seconds a morph transition takes. Default 2.6. */
+  morph?: number
+  /** Easing for morph transitions: an `eases` name or a custom curve. Default 'cubic'. */
+  ease?: Ease
+}
+
+/**
+ * Options for {@link YuraApp.interactive}. Passing an object (instead of a
+ * boolean) turns pointer reactivity on and configures how the cursor couples
+ * to the simulation.
+ */
+export interface InteractiveOptions {
+  /**
+   * Cursor gravity: the pointer's world position is injected every frame as
+   * one `motion.attractors` gravity well of this strength. Positive pulls
+   * particles toward the cursor, negative pushes them away. Omit to keep the
+   * classic hover/click force field only (exact legacy behavior).
+   */
+  gravity?: number
+}
+
+/**
+ * Composes the per-frame attractor list the renderer simulates while cursor
+ * gravity is active: the pointer well leads, the user's `.motion({ attractors })`
+ * follow, clamped to the sims' MAX_ATTRACTORS uniform capacity. The pointer
+ * takes the head slot so a live cursor force never silently vanishes behind a
+ * full static list. Pure — `base` is never mutated (exported for tests).
+ */
+export function withPointerAttractor(
+  base: readonly AttractorParams[] | undefined,
+  position: Vec3,
+  strength: number,
+): AttractorParams[] {
+  // Copy the position so the packed attractor never aliases pointer state
+  // that keeps moving after this frame.
+  const pointer: AttractorParams = { position: [position[0], position[1], position[2]], strength }
+  return [pointer, ...(base ?? [])].slice(0, MAX_ATTRACTORS)
 }
 
 /** Travel direction of a morph sweep across the target's coordinate ordering. */
 export type SweepDirection = 'ltr' | 'rtl' | 'center' | 'random'
 
+/** Per-call options for {@link YuraApp.morphNow} — sweep staggering plus one-off timing overrides. */
 export interface MorphNowOptions {
   /**
    * 0..1 per-particle stagger: how much of the morph is spent sweeping across
@@ -61,6 +182,13 @@ export interface MorphNowOptions {
   direction?: SweepDirection
   /** Reserved for lyric scheduling; unused by morphNow itself. */
   hold?: number
+  /**
+   * Seconds THIS transition takes. Default: the app-level morph duration
+   * (2.6s, or whatever `.motion({ morph })` set).
+   */
+  duration?: number
+  /** Easing for THIS transition (an `eases` name or a custom curve). Default: the app-level ease. */
+  ease?: Ease
 }
 
 /**
@@ -345,6 +473,84 @@ export function watchDprChanges(
 }
 
 /**
+ * One-line HUD text for `YuraStats` — the exact string the demos used to
+ * assemble by hand (pure; exported so `hud.textContent = formatStats(app.stats)`
+ * is the whole integration).
+ */
+export function formatStats(stats: YuraStats): string {
+  const k = (n: number): string => `${(n / 1000).toFixed(0)}k`
+  return (
+    `${stats.backend} · ${stats.fps} fps (${stats.frameMs} ms) · ` +
+    `${k(stats.particles)} / ${k(stats.requestedParticles)} particles · ` +
+    `res ×${stats.resolutionScale} · Q${stats.qualityLevel}`
+  )
+}
+
+/** Ring capacity backing `YuraApp.frames()` — a 4s sparkline window at 60fps. */
+export const FRAME_RING_CAPACITY = 240
+
+/**
+ * Fixed-capacity ring buffer of recent frame times (pure bookkeeping; exported
+ * for tests and for demos that want their own sparkline source).
+ */
+export class FrameRing {
+  private buf: number[]
+  /** Next write slot. */
+  private head = 0
+  private count = 0
+
+  constructor(readonly capacity: number = FRAME_RING_CAPACITY) {
+    if (!Number.isInteger(capacity) || capacity <= 0) {
+      throw new RangeError(`FrameRing capacity must be a positive integer, got ${capacity}`)
+    }
+    this.buf = new Array<number>(capacity)
+  }
+
+  get size(): number {
+    return this.count
+  }
+
+  push(v: number): void {
+    this.buf[this.head] = v
+    this.head = (this.head + 1) % this.capacity
+    if (this.count < this.capacity) this.count++
+  }
+
+  /** The last `n` pushed values, oldest → newest (fewer while still filling). */
+  last(n: number = this.capacity): number[] {
+    const take = Math.min(Math.max(Math.floor(n), 0), this.count)
+    const out = new Array<number>(take)
+    for (let i = 0; i < take; i++) {
+      out[i] = this.buf[(this.head - take + i + this.capacity) % this.capacity]
+    }
+    return out
+  }
+}
+
+/**
+ * Interval bookkeeping behind `YuraApp.onStats()` (exported for tests). Each
+ * `start()` returns an idempotent stop function; `stopAll()` is the dispose
+ * hook — a stop handle used after `stopAll()` is a harmless no-op.
+ */
+export class StatsTicker {
+  private timers = new Set<ReturnType<typeof setInterval>>()
+
+  start(fn: () => void, intervalMs: number): () => void {
+    const id = setInterval(fn, intervalMs)
+    this.timers.add(id)
+    return () => {
+      if (!this.timers.delete(id)) return
+      clearInterval(id)
+    }
+  }
+
+  stopAll(): void {
+    for (const id of this.timers) clearInterval(id)
+    this.timers.clear()
+  }
+}
+
+/**
  * The chainable facade (spec §8.1). Configuration is collected synchronously;
  * everything async (GPU init, shape generation, asset loads) happens in run().
  */
@@ -364,15 +570,44 @@ export class YuraApp {
   private colorB = '#8b5cf6'
   private lookParams: LookParams = lookRegistry.cinematic()
   private motionParams: MotionParams = { ...DEFAULT_MOTION }
+  /**
+   * Physics values the user set explicitly via `.motion()`. `preset()`
+   * re-applies them on top of the preset's motion so an explicit
+   * `.motion({ turbulence: 0.8 })` survives a later `.preset('aurora')`
+   * instead of being silently discarded (mirrors `shapeOverridden`).
+   */
+  private userMotion: Partial<MotionParams> = {}
+  /**
+   * The look the user set explicitly via `.look()`. `preset()` keeps it
+   * instead of swapping in the preset's look, so
+   * `.look(looks.sakura()).preset('aurora')` works in either order
+   * (mirrors `userMotion`; look() always supplies a whole LookParams,
+   * so retention is the full value rather than a per-key merge).
+   */
+  private userLook: LookParams | null = null
   private shapeSeq: ShapeSpec[] = [shapeRegistry.galaxy()]
   private shapeOverridden = false
   /** Pointer reactivity ships ON — the zero-config path is the flagship path. */
   private pointerEnabled = true
+  /**
+   * Cursor-gravity strength from `.interactive({ gravity })`, or null for the
+   * classic pointer force field only. Deliberately NOT part of userMotion:
+   * the injection is a per-frame dynamic composition (see tick), never a
+   * sticky physics value that preset() would re-apply.
+   */
+  private pointerGravity: number | null = null
   private qualityMode: 'auto' | 'high' | 'low'
   private backendOpt: 'auto' | 'webgpu' | 'webgl2'
 
   private shapeData: Float32Array<ArrayBuffer>[] = []
   private morph = { pos: 0 as 0 | 1, phase: 'hold' as 'hold' | 'move', timer: 0, nextShape: 2 }
+  /** App-level morph choreography — `.motion({ hold, morph, ease })` retunes these. */
+  private holdSeconds = HOLD_SECONDS
+  private morphSeconds = MORPH_SECONDS
+  private morphEase: EaseFn = eases.cubic
+  /** Timing of the transition currently in flight (morphNow can override per call). */
+  private activeMorphSeconds = MORPH_SECONDS
+  private activeMorphEase: EaseFn = eases.cubic
   /** Set by morphNow(): halts the automatic shape cycle on arrival. */
   private morphPinned = false
   /** ShapeSpec.kind currently living in [targetA, targetB] — mirrors every
@@ -401,6 +636,10 @@ export class YuraApp {
   /** 1 right after a click, decaying — drives the shockwave burst. */
   private burst = 0
   private cleanups: Array<() => void> = []
+  /** Recent frame times (ms) — fed by tick(), read by frames(). */
+  private frameRing = new FrameRing()
+  /** onStats() interval bookkeeping — stopped wholesale in dispose(). */
+  private statsTicker = new StatsTicker()
 
   constructor(target: string | HTMLElement, options: YuraOptions = {}) {
     const el = typeof target === 'string' ? document.querySelector<HTMLElement>(target) : target
@@ -420,6 +659,7 @@ export class YuraApp {
     this.preset('neon-galaxy')
   }
 
+  /** Requested particle count (floored, min 1). The governor may simulate fewer under load. */
   particles(n: number): this {
     this.particleCount = Math.max(1, Math.floor(n))
     return this
@@ -434,18 +674,71 @@ export class YuraApp {
   /**
    * Procedural 3D scene + game kit: primitives, PBR materials, physics-lite,
    * input, follow camera, HUD text. No assets required.
+   *
+   * Calling scene() again replaces the live scene: the previous scene is
+   * detached first — its registered cleanups run and its GPU handles are
+   * reset — so nothing from the old game silently keeps running or leaking.
    */
   scene(opts: SceneOptions = {}): YuraScene {
+    if (this.sceneObj) {
+      warnCode(
+        CODES.SCENE_REPLACED,
+        `scene() called again: the previous scene was detached (listeners removed, GPU handles reset). ` +
+          `It stops receiving updates — call run() to start the new scene.`,
+      )
+      this.cleanups = drainCleanups(this.cleanups)
+      resetSceneHandles(this.sceneObj)
+    }
     this.sceneObj = new YuraScene(opts)
     return this.sceneObj
   }
 
+  /**
+   * The shortest path from zero to a running game:
+   * `scene(opts)` → `setup(scene)` (sync or async) → `run()`, in one call.
+   *
+   *   yura('#game').game({ gravity: -20 }, (s) => {
+   *     const hero = s.add('sphere', { radius: 0.5, body: 'dynamic' })
+   *     s.camera.follow(hero)
+   *   })
+   *
+   * Resolves with the scene once run() has started the loop.
+   */
+  game(setup?: GameSetup): Promise<YuraScene>
+  game(opts: SceneOptions, setup?: GameSetup): Promise<YuraScene>
+  async game(
+    optsOrSetup: SceneOptions | GameSetup = {},
+    maybeSetup?: GameSetup,
+  ): Promise<YuraScene> {
+    const setup = typeof optsOrSetup === 'function' ? optsOrSetup : maybeSetup
+    const opts = typeof optsOrSetup === 'function' ? {} : optsOrSetup
+    const scene = this.scene(opts)
+    if (setup) await setup(scene)
+    await this.run()
+    return scene
+  }
+
+  /**
+   * Two-stop color gradient, swept along each shape's palette coordinate
+   * (core → rim for a galaxy, character order for text).
+   *
+   * @example
+   * yura('#stage').gradient('#22d3ee', '#f472b6').run()
+   */
   gradient(a: string, b: string): this {
     this.colorA = a
     this.colorB = b
     return this
   }
 
+  /**
+   * Apply a curated look by name or as full LookParams. Explicit looks are
+   * sticky: a later `.preset()` keeps them. Unknown names throw a YuraError
+   * (UNKNOWN_LOOK) listing the available looks.
+   *
+   * @example
+   * yura('#hero').look('cyberpunk').run()
+   */
   look(l: LookParams | LookName): this {
     if (typeof l === 'string') {
       const factory = lookRegistry[l]
@@ -460,34 +753,70 @@ export class YuraApp {
     } else {
       this.lookParams = l
     }
+    this.userLook = this.lookParams
     this.lookExplicit = true
     return this
   }
 
-  motion(m: Partial<MotionParams>): this {
-    this.motionParams = { ...this.motionParams, ...m }
+  /**
+   * Motion physics plus morph choreography in one call. The physics fields
+   * merge into the simulation params exactly as before; `hold`, `morph`
+   * and `ease` retune the shape-cycle timing at runtime. All optional —
+   * omitted knobs keep their current values.
+   *
+   * Explicitly-set physics fields are sticky: a later `.preset()` swaps its
+   * own motion defaults in but keeps every key you set here, so
+   * `.motion({ turbulence: 0.8 }).preset('aurora')` works in either order.
+   */
+  motion(m: Partial<MotionParams> & MotionTimingOptions): this {
+    const { hold, morph, ease, ...physics } = m
+    if (hold !== undefined) this.holdSeconds = Math.max(hold, 0)
+    if (morph !== undefined) this.morphSeconds = Math.max(morph, MIN_MORPH_SECONDS)
+    if (ease !== undefined) this.morphEase = resolveEase(ease)
+    this.userMotion = { ...this.userMotion, ...physics }
+    this.motionParams = { ...this.motionParams, ...physics }
     return this
   }
 
+  /** Render a single shape (a ShapeSpec, or a string rendered as particle text). */
   shape(s: ShapeSpec | string): this {
     this.shapeSeq = [this.toShape(s)]
     this.shapeOverridden = true
     return this
   }
 
+  /**
+   * The sequence the automatic cycle morphs through (strings become text).
+   * After `.shape()`, the explicit shape stays first and the sequence follows.
+   *
+   * @example
+   * yura('#hero').morphTo([shapes.galaxy(), 'YURA', shapes.vortex()]).run()
+   */
   morphTo(seq: Array<ShapeSpec | string>): this {
     const rest = seq.map((s) => this.toShape(s))
     this.shapeSeq = this.shapeOverridden ? [this.shapeSeq[0], ...rest] : rest.length ? rest : this.shapeSeq
     return this
   }
 
+  /**
+   * Apply a named preset — particles, gradient, look, motion, and shape
+   * sequence in one call (see `presetNames()`). Values set explicitly via
+   * `.motion()` / `.look()` / `.shape()` survive the swap.
+   *
+   * @example
+   * yura('#hero').preset('cyberpunk').run()
+   */
   preset(name: string): this {
     const p = resolvePreset(name)
     this.particleCount = p.particles
     this.colorA = p.colorA
     this.colorB = p.colorB
-    this.lookParams = p.look
-    this.motionParams = p.motion
+    // The preset look applies only when the user never pinned one through
+    // .look() — an explicit look survives preset swaps, see userLook.
+    this.lookParams = this.userLook ?? p.look
+    // Preset motion replaces preset-era values, but keys the user set
+    // explicitly through .motion() win — see userMotion.
+    this.motionParams = { ...p.motion, ...this.userMotion }
     if (!this.shapeOverridden) this.shapeSeq = p.shapes
     return this
   }
@@ -495,9 +824,21 @@ export class YuraApp {
   /**
    * Pointer reactivity. ON by default — call `.interactive(false)` for a
    * purely ambient background that ignores the cursor.
+   *
+   * Pass an options object to give the cursor gravity:
+   * `.interactive({ gravity: 40 })` injects the pointer's world position
+   * every frame as a `motion.attractors` well (positive pulls, negative
+   * repels) alongside any attractors set via `.motion()`. A boolean call
+   * only toggles reactivity and leaves the gravity configuration alone;
+   * an object call without `gravity` restores the classic force field.
    */
-  interactive(on = true): this {
-    this.pointerEnabled = on
+  interactive(on: boolean | InteractiveOptions = true): this {
+    if (typeof on === 'boolean') {
+      this.pointerEnabled = on
+      return this
+    }
+    this.pointerEnabled = true
+    this.pointerGravity = on.gravity ?? null
     return this
   }
 
@@ -516,9 +857,11 @@ export class YuraApp {
 
   /**
    * A lyric video in one call: `app.lyrics([{ text: '君の声が', at: 0 }, …])`.
+   * Bare strings are sugar for `{ text }` and auto-time via `every`:
+   * `app.lyrics(['行1', '行2'], { every: 3 })`.
    * Sugar for the standalone `lyrics(app, lines, opts)`.
    */
-  lyrics(lines: LyricLine[], opts: LyricsOptions = {}): LyricsRun {
+  lyrics(lines: readonly LyricInput[], opts: LyricsOptions = {}): LyricsRun {
     return runLyrics(this, lines, opts)
   }
 
@@ -536,8 +879,8 @@ export class YuraApp {
     // Mid-flight: adopt the nearer endpoint as the new origin so the goal
     // interpolation barely snaps (the swarm itself always moves smoothly).
     if (m.phase === 'move') {
-      const k = Math.min(m.timer / MORPH_SECONDS, 1)
-      const e = easeInOutCubic(k)
+      const k = Math.min(m.timer / this.activeMorphSeconds, 1)
+      const e = this.activeMorphEase(k)
       const t = m.pos === 0 ? e : 1 - e
       m.pos = t > 0.5 ? (m.pos === 0 ? 1 : 0) : m.pos
     }
@@ -549,17 +892,26 @@ export class YuraApp {
     const spread = Math.min(Math.max(opts.sweep ?? 0, 0), 1)
     this.renderer.morphSpread = m.pos === 0 ? spread : -spread
     this.renderer.morphT = m.pos
+    // Per-call duration/ease apply to THIS transition only; the app-level
+    // choreography (.motion) is untouched and defaults are exactly it.
+    this.activeMorphSeconds =
+      opts.duration !== undefined ? Math.max(opts.duration, MIN_MORPH_SECONDS) : this.morphSeconds
+    this.activeMorphEase = opts.ease !== undefined ? resolveEase(opts.ease) : this.morphEase
     m.phase = 'move'
     m.timer = 0
     this.morphPinned = true
     return this
   }
 
-  /** Alias kept for spec §8.1 parity. */
+  /**
+   * Alias kept for spec §8.1 parity.
+   * @deprecated Use interactive() instead.
+   */
   reactToPointer(): this {
     return this.interactive()
   }
 
+  /** Live performance snapshot — backend, fps, particle counts, quality level. */
   get stats(): YuraStats {
     const level = this.governor.current()
     return {
@@ -573,6 +925,34 @@ export class YuraApp {
     }
   }
 
+  /**
+   * HUD sugar (F-HUD): invoke `cb` every `intervalMs` with fresh stats plus
+   * the `formatStats` one-liner, so a demo HUD is
+   * `app.onStats((_, text) => { hud.textContent = text })`. Returns a stop
+   * function; every subscription also stops automatically on dispose().
+   */
+  onStats(cb: (stats: YuraStats, text: string) => void, intervalMs = 500): () => void {
+    if (this.disposed) return () => {}
+    return this.statsTicker.start(() => {
+      if (this.disposed) return
+      const s = this.stats
+      cb(s, formatStats(s))
+    }, intervalMs)
+  }
+
+  /** The last `n` frame times in ms, oldest → newest (sparkline feed). */
+  frames(n = 120): readonly number[] {
+    return this.frameRing.last(n)
+  }
+
+  /**
+   * Mount the canvas, acquire the GPU, and start the render loop — the one
+   * async step where everything configured so far comes to life. Falls back
+   * WebGPU → WebGL2 → static poster, so it never leaves a white screen.
+   *
+   * @example
+   * await yura('#hero').preset('aurora').run()
+   */
   async run(): Promise<this> {
     if (this.disposed) return this
     this.mountCanvas()
@@ -692,12 +1072,14 @@ export class YuraApp {
     return this
   }
 
+  /** Stop the render loop; the last frame stays on screen. Reversed by resume(). */
   pause(): void {
     this.running = false
     if (this.rafId) cancelAnimationFrame(this.rafId)
     this.rafId = 0
   }
 
+  /** Restart the loop after pause(). No-op while running or after dispose(). */
   resume(): void {
     if (this.disposed || this.running) return
     this.running = true
@@ -705,10 +1087,12 @@ export class YuraApp {
     this.rafId = requestAnimationFrame(this.tick)
   }
 
+  /** Tear down permanently: stop the loop, release GPU resources, remove the canvas. */
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
     this.pause()
+    this.statsTicker.stopAll()
     this.cleanups = drainCleanups(this.cleanups)
     this.renderer?.dispose()
     this.renderer = null
@@ -969,17 +1353,19 @@ export class YuraApp {
     if (m.phase === 'hold') {
       this.renderer.morphBoost = 0
       // Pinned by morphNow(): hold the shape until the next explicit morph.
-      if (!this.morphPinned && m.timer >= HOLD_SECONDS) {
+      if (!this.morphPinned && m.timer >= this.holdSeconds) {
         // The automatic cycle always morphs uniformly (legacy behavior);
         // only explicit morphNow({ sweep }) staggers particles.
         this.renderer.morphSpread = 0
+        this.activeMorphSeconds = this.morphSeconds
+        this.activeMorphEase = this.morphEase
         m.phase = 'move'
         m.timer = 0
       }
       return
     }
-    const k = Math.min(m.timer / MORPH_SECONDS, 1)
-    const e = easeInOutCubic(k)
+    const k = Math.min(m.timer / this.activeMorphSeconds, 1)
+    const e = this.activeMorphEase(k)
     this.renderer.morphT = m.pos === 0 ? e : 1 - e
     // Extra turbulence mid-flight turns transitions into comet swarms.
     this.renderer.morphBoost = Math.sin(Math.PI * k) ** 2
@@ -1019,6 +1405,7 @@ export class YuraApp {
     const dt = Math.min(dtMs / 1000, MAX_DT)
     this.simTime += dt
     this.fpsEma = this.fpsEma * 0.95 + (1000 / Math.max(dtMs, 0.1)) * 0.05
+    this.frameRing.push(dtMs)
 
     if (this.governor.update(dtMs)) this.applyResolution()
 
@@ -1049,6 +1436,21 @@ export class YuraApp {
         this.renderer.pointerWorld = world
         // Hover repels gently; a click detonates a decaying shockwave.
         this.renderer.pointerStrength = 60 + this.burst * 2400
+        // Cursor gravity (.interactive({ gravity })): hand the renderer a
+        // fresh motion snapshot with the pointer well composed in front of
+        // the user's attractors. Composing on a COPY of motionParams keeps
+        // the injection fully dynamic — motionParams/userMotion never see
+        // the pointer entry, so preset() sticky-merges stay untouched.
+        if (this.pointerGravity !== null) {
+          this.renderer.motion = {
+            ...this.motionParams,
+            attractors: withPointerAttractor(
+              this.motionParams.attractors,
+              world,
+              this.pointerGravity,
+            ),
+          }
+        }
       }
       this.renderer.parallax = [
         this.renderer.parallax[0] * 0.92 + this.pointerNdc[0] * 0.08,
@@ -1056,6 +1458,10 @@ export class YuraApp {
       ]
     } else {
       this.renderer.pointerStrength = 0
+      // Pointer gone: hand back the un-injected params so the cursor well
+      // disappears with the cursor. Only gravity mode ever touches
+      // renderer.motion — default behavior is byte-identical to before.
+      if (this.pointerGravity !== null) this.renderer.motion = this.motionParams
     }
     this.burst *= Math.exp(-dt * 5)
 
@@ -1172,6 +1578,15 @@ export class YuraApp {
   }
 }
 
+/**
+ * Entry point: create a chainable {@link YuraApp} bound to a container
+ * element (CSS selector or node). Nothing renders until `.run()` — zero
+ * config already is the flagship neon-galaxy experience.
+ *
+ * @example
+ * import { yura } from 'yurayura'
+ * yura('#hero').run() // a cursor-reactive million-particle galaxy
+ */
 export function yura(target: string | HTMLElement, options: YuraOptions = {}): YuraApp {
   return new YuraApp(target, options)
 }

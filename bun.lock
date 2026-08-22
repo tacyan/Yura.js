@@ -35,6 +35,13 @@
         "yura": "workspace:*",
       },
     },
+    "examples/game": {
+      "name": "example-game",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
     "examples/hello": {
       "name": "example-hello",
       "version": "0.1.0",
@@ -113,6 +120,8 @@
     "app-showcase": ["app-showcase@workspace:apps/showcase"],
 
     "bun-types": ["bun-types@1.4.0", "", { "dependencies": { "@types/node": "*" } }, "sha512-iIKw23BspnQQYd3prITOBxeUsxBHnwzX6YJfGMuNOZzeNcMmVqzIIVGRm1l69ogaPQmb4wB6BN8mA5bE9YuC5Q=="],
+
+    "example-game": ["example-game@workspace:examples/game"],
 
     "example-hello": ["example-hello@workspace:examples/hello"],
 

@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { segmentGraphemes, charCoord, layoutLines, text } from '../src/shapes'
+import { segmentGraphemes, charCoord, layoutLines, layoutColumns, text, sphere, vortex, type ShapeSpec } from '../src/shapes'
 import {
   sweepProgress,
   applySweepDirection,
@@ -16,8 +16,11 @@ import {
   timelineDuration,
   wrapTime,
   advanceCursor,
+  normalizeLines,
+  lyrics,
   type LyricLine,
 } from '../src/lyrics'
+import type { YuraApp } from '../src/app'
 
 // Kinetic-typography pure math: grapheme segmentation, per-character
 // coordinate ordering, multi-line layout, the shader sweep mirror, and the
@@ -82,6 +85,165 @@ test('text v2 accepts multi-line and layout options without breaking the API', (
   expect(spec.kind).toBe('text')
   const legacy = text('YURA', { font: '900 250px sans-serif', worldWidth: 20 })
   expect(legacy.kind).toBe('text') // v1 call sites still typecheck and build
+})
+
+// ---- vertical (tategaki) layout ----
+
+test('layoutColumns stacks columns right-to-left around the horizontal center', () => {
+  const placed = layoutColumns([300, 500], 100, 20, 'left', 1000)
+  // Total block = 2*100 + 20 = 220: centers at ±60, the FIRST column rightmost.
+  expect(placed[0].x).toBeCloseTo(60, 6)
+  expect(placed[1].x).toBeCloseTo(-60, 6)
+  expect(placed[0].x).toBeGreaterThan(placed[1].x) // line order runs right→left
+  // A single column sits exactly on the horizontal center.
+  expect(layoutColumns([300], 100, 20, 'center', 1000)[0].x).toBeCloseTo(0, 6)
+})
+
+test('layoutColumns transposes align onto the vertical reading axis', () => {
+  expect(layoutColumns([100], 50, 0, 'left', 1000)[0].y).toBe(0) // top
+  expect(layoutColumns([100], 50, 0, 'center', 1000)[0].y).toBe(450)
+  expect(layoutColumns([100], 50, 0, 'right', 1000)[0].y).toBe(900) // bottom
+})
+
+// The canvas half of text() runs headless here through a deterministic mock:
+// fillText calls are recorded, and getImageData lights one pixel per drawn
+// glyph, so layout decisions and the sampled particles are fully observable.
+
+interface Fill {
+  text: string
+  x: number
+  y: number
+}
+
+function withMockCanvas<T>(run: () => T): { result: T; fills: Fill[] } {
+  const fills: Fill[] = []
+  const g = globalThis as { document?: unknown }
+  const prevDoc = g.document
+  g.document = {
+    createElement: () => {
+      const canvas = {
+        width: 0,
+        height: 0,
+        getContext: () => ({
+          fillStyle: '',
+          textAlign: '',
+          textBaseline: '',
+          font: '',
+          measureText: (s: string) => ({ width: 100 * segmentGraphemes(s).length }),
+          fillText: (t: string, x: number, y: number) => {
+            fills.push({ text: t, x, y })
+          },
+          getImageData: (_x: number, _y: number, w: number, h: number) => {
+            const data = new Uint8ClampedArray(w * h * 4)
+            for (const f of fills) {
+              const px = Math.min(Math.max(Math.round(f.x), 0), w - 1)
+              const py = Math.min(Math.max(Math.round(f.y), 0), h - 1)
+              data[(py * w + px) * 4 + 3] = 255
+            }
+            return { data }
+          },
+        }),
+      }
+      return canvas
+    },
+  }
+  try {
+    return { result: run(), fills }
+  } finally {
+    if (prevDoc === undefined) delete g.document
+    else g.document = prevDoc
+  }
+}
+
+/** Runs `fn` with Math.random replaced by a seeded LCG (same sequence every call). */
+function stubRandom<T>(fn: () => T): T {
+  const orig = Math.random
+  let seed = 42
+  Math.random = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0
+    return seed / 4294967296
+  }
+  try {
+    return fn()
+  } finally {
+    Math.random = orig
+  }
+}
+
+const FONT = '900 100px sans-serif'
+
+test('vertical text draws graphemes top-to-bottom and lines as columns right-to-left', () => {
+  const { fills } = withMockCanvas(() => {
+    text('ゆらめ\nヒカリ', { font: FONT, vertical: true }).generate(8)
+  })
+  const at = (g: string): Fill => fills.find((f) => f.text === g)!
+  const col1 = ['ゆ', 'ら', 'め'].map(at)
+  const col2 = ['ヒ', 'カ', 'リ'].map(at)
+  for (const col of [col1, col2]) {
+    // Within a column: one shared x, strictly increasing y (top→bottom).
+    expect(col[1].x).toBeCloseTo(col[0].x, 6)
+    expect(col[2].x).toBeCloseTo(col[0].x, 6)
+    expect(col[1].y).toBeGreaterThan(col[0].y)
+    expect(col[2].y).toBeGreaterThan(col[1].y)
+  }
+  // The FIRST input line is the RIGHTMOST column (tategaki reading order).
+  expect(col1[0].x).toBeGreaterThan(col2[0].x)
+  // Equal-height columns start at the same top edge.
+  expect(col2[0].y).toBeCloseTo(col1[0].y, 6)
+})
+
+test('vertical defaults off: omitted and vertical:false generate bit-identical particles', () => {
+  const gen = (opts: { vertical?: boolean }): Float32Array =>
+    withMockCanvas(() =>
+      stubRandom(() => text('ゆら\nYURA', { font: FONT, ...opts }).generate(96) as Float32Array),
+    ).result
+  const legacy = gen({})
+  const explicit = gen({ vertical: false })
+  expect(explicit.length).toBe(legacy.length)
+  let diffs = 0
+  for (let i = 0; i < legacy.length; i++) {
+    if (!Object.is(explicit[i], legacy[i])) diffs++
+  }
+  expect(diffs).toBe(0) // bit-exact: the flag's false path IS the legacy path
+  // ...while vertical:true actually changes the layout under the same seed.
+  const tategaki = gen({ vertical: true })
+  expect(tategaki.some((v, i) => !Object.is(v, legacy[i]))).toBe(true)
+})
+
+test('vertical composes with align, letterSpacing, and lineGap (meanings transposed)', () => {
+  const run = (opts: object): Fill[] =>
+    withMockCanvas(() => {
+      text('ゆら\nヒ', { font: FONT, vertical: true, ...opts }).generate(8)
+    }).fills
+  const at = (fills: Fill[], g: string): Fill => fills.find((f) => f.text === g)!
+  // align: 'left' pins the short column to the top, 'right' to the bottom.
+  expect(at(run({ align: 'right' }), 'ヒ').y).toBeGreaterThan(at(run({ align: 'left' }), 'ヒ').y)
+  const tight = run({})
+  // letterSpacing opens the gap along the READING axis (y), not x.
+  const spaced = run({ letterSpacing: 0.5 })
+  const gapY = (fills: Fill[]): number => at(fills, 'ら').y - at(fills, 'ゆ').y
+  expect(gapY(spaced)).toBeGreaterThan(gapY(tight))
+  expect(at(spaced, 'ら').x).toBeCloseTo(at(spaced, 'ゆ').x, 6) // still one column
+  // lineGap opens the gap BETWEEN columns (x).
+  const wide = run({ lineGap: 1.0 })
+  const gapX = (fills: Fill[]): number => at(fills, 'ゆ').x - at(fills, 'ヒ').x
+  expect(gapX(wide)).toBeGreaterThan(gapX(tight))
+})
+
+test('vertical particle coords sweep in tategaki reading order', () => {
+  // 2×2 grid: あ=right-top, い=right-bottom, う=left-top, え=left-bottom.
+  const data = withMockCanvas(() =>
+    stubRandom(() => text('あい\nうえ', { font: FONT, vertical: true }).generate(200) as Float32Array),
+  ).result
+  for (let i = 0; i < 200; i++) {
+    const x = data[i * 4]
+    const y = data[i * 4 + 1]
+    const c = data[i * 4 + 3]
+    // charCoord bands (charCount 4, intra 0.5): reading order is the right
+    // column top→bottom, THEN the left column — not row-major.
+    if (x > 0) expect(c).toBeCloseTo(y > 0 ? 0.125 : 0.375, 2)
+    else expect(c).toBeCloseTo(y > 0 ? 0.625 : 0.875, 2)
+  }
 })
 
 // ---- sweep clamp math (mirror of the WGSL/GLSL sim) ----
@@ -204,6 +366,59 @@ test('advanceCursor fires only the newest overdue event (tab-switch catch-up)', 
   expect(advanceCursor(events, 3, 5.0).fire).toBe(-1)
 })
 
+// ---- auto-timing & input normalization ----
+
+test('normalizeLines auto-times omitted at as previous at (or 0) + every', () => {
+  const auto = normalizeLines([{ text: 'a' }, { text: 'b' }, { text: 'c' }])
+  expect(auto.map((l) => l.at)).toEqual([3.5, 7, 10.5]) // default every = 3.5
+  const chained = normalizeLines([{ text: 'a', at: 0 }, { text: 'b' }, { text: 'c' }], 2)
+  expect(chained.map((l) => l.at)).toEqual([0, 2, 4])
+  // Fully-timed input passes through byte-identical in time (legacy behavior).
+  expect(normalizeLines(LINES).map((l) => l.at)).toEqual(LINES.map((l) => l.at))
+})
+
+test('normalizeLines accepts bare strings and keeps per-line overrides', () => {
+  const lines = normalizeLines(['YURA', '君の声が'], 3.4)
+  expect(lines.map((l) => l.text)).toEqual(['YURA', '君の声が'])
+  expect(lines[0].at).toBeCloseTo(3.4, 6)
+  expect(lines[1].at).toBeCloseTo(6.8, 6)
+  const mixed = normalizeLines(['intro', { text: 'x', at: 8, sweep: 0.5 }, 'outro'], 3.5)
+  expect(mixed.map((l) => l.at)).toEqual([3.5, 8, 11.5])
+  expect(mixed[1].sweep).toBe(0.5)
+})
+
+test('mixed explicit and auto-timed lines build a strictly monotone timeline', () => {
+  const lines = normalizeLines([
+    { text: 'auto-a' }, // 3.5
+    { text: 'jump', at: 10 }, // explicit
+    { text: 'auto-b' }, // 13.5 — chains from the explicit at
+    { text: 'early', at: 1 }, // explicit, earlier than the autos
+  ])
+  expect(lines.map((l) => l.at)).toEqual([3.5, 10, 13.5, 1])
+  const events = buildTimeline(lines, { out: 'dissolve' })
+  expect(events.map((e) => e.time)).toEqual([1, 3.5, 10, 13.5])
+  for (let i = 1; i < events.length; i++) {
+    expect(events[i].time).toBeGreaterThan(events[i - 1].time)
+  }
+})
+
+test('lyrics() accepts a plain string array end-to-end', () => {
+  const morphs: string[] = []
+  const app = {
+    morphNow: (shape: { kind: string }) => {
+      morphs.push(shape.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, ['YURA', '君の声が'], { every: 3.5 })
+  run.seek(3.5) // first auto-timed line is due
+  expect(morphs).toHaveLength(1)
+  run.seek(7) // second line
+  expect(morphs).toHaveLength(2)
+  expect(morphs.every((k) => k === 'text')).toBe(true)
+  run.stop()
+})
+
 // ---- text-readability damping (renderer brightness/bloom scaling) ----
 
 test('no text target -> factor is exactly neutral at any count', () => {
@@ -255,4 +470,175 @@ test('restore-on-stop returns bit-exact to neutral in finite time', () => {
   }
   expect(f).toBe(TEXT_DAMP_NEUTRAL) // exact ===: the renderer multiplies by 1.0 again
   expect(steps).toBeLessThan(200) // snaps in ~2 s, not asymptotically never
+})
+
+// ---- px-font auto-shrink when text overflows the fixed canvas ----
+
+test('overlong horizontal lines shrink px fonts: the line stack tightens', () => {
+  const rowGap = (fills: Fill[]): number => {
+    const ys = [...new Set(fills.map((f) => f.y))].sort((a, b) => a - b)
+    expect(ys.length).toBe(2) // one y per line
+    return ys[1] - ys[0]
+  }
+  const short = withMockCanvas(() => {
+    text('ab\ncd', { font: FONT }).generate(8)
+  }).fills
+  const long = withMockCanvas(() => {
+    text('あいうえおかきくけこさし\nたちつてとなにぬねのはひ', { font: FONT }).generate(8)
+  }).fills
+  expect(long).toHaveLength(24) // every glyph still drawn
+  // The overflow case rescaled fontPx down, so its line pitch is tighter.
+  expect(rowGap(long)).toBeLessThan(rowGap(short))
+})
+
+test('overlong tategaki columns shrink px fonts so the column fits the canvas', () => {
+  const glyphGap = (fills: Fill[]): number => {
+    expect(fills[1].x).toBeCloseTo(fills[0].x, 6) // same column
+    return fills[1].y - fills[0].y
+  }
+  const short = withMockCanvas(() => {
+    text('あい', { font: FONT, vertical: true }).generate(8)
+  }).fills
+  const long = withMockCanvas(() => {
+    text('あいうえおかきくけこさし', { font: FONT, vertical: true }).generate(8)
+  }).fills
+  expect(long).toHaveLength(12)
+  // Shrunken em cells: tighter vertical pitch than the unshrunk short column…
+  expect(glyphGap(long)).toBeLessThan(glyphGap(short))
+  // …and that is exactly what keeps every glyph inside the 1024px reading span
+  // (unshrunk, 12 cells at the short column's pitch would overflow it).
+  expect(glyphGap(short) * 12).toBeGreaterThan(1024)
+  for (const f of long) {
+    expect(f.y).toBeGreaterThan(0)
+    expect(f.y).toBeLessThan(1024)
+  }
+})
+
+test('empty or whitespace-only text falls back to the tiny sphere', () => {
+  const { result, fills } = withMockCanvas(
+    () => text('', { font: FONT }).generate(64) as Float32Array,
+  )
+  expect(fills).toHaveLength(0) // nothing was drawable
+  expect(result.length).toBe(64 * 4)
+  for (let i = 0; i < 64; i++) {
+    // sphere({ radius: 2 }) shell: r = 2 * (0.92 + rand * 0.08)
+    const r = Math.hypot(result[i * 4], result[i * 4 + 1], result[i * 4 + 2])
+    expect(r).toBeGreaterThan(2 * 0.92 - 1e-6)
+    expect(r).toBeLessThanOrEqual(2 + 1e-6)
+    expect(result[i * 4 + 3]).toBeGreaterThanOrEqual(0)
+    expect(result[i * 4 + 3]).toBeLessThanOrEqual(1)
+  }
+  // Whitespace-only: charCount > 0 but zero drawn pixels — same fallback.
+  const ws = withMockCanvas(() => text(' ', { font: FONT }).generate(8) as Float32Array)
+  expect(ws.fills).toHaveLength(0)
+  expect(ws.result.length).toBe(8 * 4)
+})
+
+// ---- lyrics runtime: interstitial blasts and the timer loop ----
+
+const sleep = (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms))
+
+const markShape = (kind: string): ShapeSpec => ({ kind, generate: () => new Float32Array(0) })
+
+test('explode style fires alternating interstitial blasts between lines', () => {
+  const morphs: Array<{ kind: string; opts: { sweep?: number; direction?: string } }> = []
+  const app = {
+    morphNow: (s: ShapeSpec, o: { sweep?: number; direction?: string }) => {
+      morphs.push({ kind: s.kind, opts: o })
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const lines: LyricLine[] = [
+    { text: 'x', at: 0 },
+    { text: 'y', at: 10 },
+    { text: 'z', at: 20 },
+  ]
+  // Derive the interstitial instants from the same timeline the runner builds.
+  const events = buildTimeline(orderLines(normalizeLines(lines)), { out: 'explode' })
+  const ints = events.filter((e) => e.kind === 'interstitial')
+  expect(ints.map((e) => e.line)).toEqual([1, 2])
+  const run = lyrics(app, lines, { style: 'explode' })
+  try {
+    run.seek(ints[0].time) // the newest overdue event at this instant IS the blast
+    expect(morphs).toHaveLength(1)
+    expect(morphs[0].kind).toBe(vortex().kind) // odd line index: light tornado
+    expect(morphs[0].opts.sweep).toBe(0.25)
+    expect(morphs[0].opts.direction).toBe('random')
+    run.seek(ints[1].time)
+    expect(morphs).toHaveLength(2)
+    expect(morphs[1].kind).toBe(sphere().kind) // even line index: shell burst
+  } finally {
+    run.stop()
+  }
+})
+
+test('the wall-clock timer loop fires lines in order and halts after the last (no loop)', async () => {
+  const fired: string[] = []
+  const app = {
+    morphNow: (s: ShapeSpec) => {
+      fired.push(s.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, [
+    { text: 'a', at: 0, shape: markShape('L0') },
+    { text: 'b', at: 0.3, shape: markShape('L1') },
+  ])
+  try {
+    const deadline = Date.now() + 3000
+    while (!fired.includes('L1') && Date.now() < deadline) await sleep(20)
+    expect(fired[fired.length - 1]).toBe('L1') // the last line lands last
+    // Background-throttle collapse may skip L0 under load, but never reorders.
+    expect(fired.length).toBeLessThanOrEqual(2)
+    if (fired.length === 2) expect(fired).toEqual(['L0', 'L1'])
+    const settled = fired.length
+    await sleep(120)
+    expect(fired.length).toBe(settled) // finished: without loop nothing re-fires
+  } finally {
+    run.stop()
+  }
+})
+
+test('loop: true wraps the timeline clock and replays from the top', async () => {
+  const fired: string[] = []
+  const app = {
+    morphNow: (s: ShapeSpec) => {
+      fired.push(s.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, [{ text: 'a', at: 0, shape: markShape('L') }], {
+    loop: true,
+    loopTail: 0.2, // duration = 0.2s per cycle
+  })
+  try {
+    const deadline = Date.now() + 4000
+    while (fired.length < 3 && Date.now() < deadline) await sleep(20)
+    expect(fired.length).toBeGreaterThanOrEqual(3) // wrapped at least twice
+    expect(fired.every((k) => k === 'L')).toBe(true)
+  } finally {
+    run.stop()
+  }
+})
+
+test('a seek mid-gap re-arms the timer without re-firing consumed lines', async () => {
+  const fired: string[] = []
+  const app = {
+    morphNow: (s: ShapeSpec) => {
+      fired.push(s.kind)
+      return Promise.resolve()
+    },
+  } as unknown as YuraApp
+  const run = lyrics(app, [
+    { text: 'a', at: 0, shape: markShape('L0') },
+    { text: 'b', at: 600, shape: markShape('L1') }, // far future: never due here
+  ])
+  try {
+    run.seek(1) // consumes L0 synchronously and re-arms the timer
+    expect(fired).toEqual(['L0'])
+    await sleep(120) // the re-armed tick runs, finds nothing due, re-schedules
+    expect(fired).toEqual(['L0'])
+  } finally {
+    run.stop()
+  }
 })

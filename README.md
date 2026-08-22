@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/v/yurayura?color=c4b5fd&label=npm%20yurayura)](https://www.npmjs.com/package/yurayura)
 
 **Make the web move.** Two lines. One million particles.
-**[▶ Live demos](https://tacyan.github.io/Yura.js/)** — showcase, lyric motion, glTF viewer, all in your browser (WebGPU).
+**[▶ Live demos](https://tacyan.github.io/Yura.js/)** — showcase, lyric motion, ORB RUSH mini-game, glTF viewer, all in your browser (WebGPU).
 
 ```ts
 import { yura } from 'yura'
@@ -53,41 +53,55 @@ bun run typecheck
 
 `yura(sel).scene()` is a zero-asset game kit: procedural PBR primitives,
 physics, input, collisions, a follow camera, HUD text, and GPU particle FX —
-all from one chainable API. Try it live: `bun run play`, then hit the
-“mini game” recipe (PRISM RUSH). The essence:
+all from one chainable API — and `app.game(opts, setup)` collapses the whole
+ritual (create the scene, run your setup, start the loop) into a single call.
+Try it live: **[ORB RUSH](https://tacyan.github.io/Yura.js/game/)**
+(this exact code, running in your browser), or locally with
+`bun examples/game/index.html`. The whole game — `examples/game/main.ts`,
+verbatim (the scoring helpers live next door in `score.ts`):
 
 ```ts
-import { yura, materials } from 'yura'
+/**
+ * ORB RUSH — the README mini-game, verbatim. Roll with WASD/arrows/drag,
+ * jump with Space/tap, collect all 10 orbs. Needs WebGPU.
+ */
+import { yura, materials, gameAudio, type LoopHandle } from 'yura'
+import { isWin, orbLabel, orbRing } from './score'
 
-const app = yura('#game')
-const scene = app.scene({ gravity: -22, bounds: 12 })
+const audio = gameAudio()
+const riff = ['C3', 'C4', 'G3', 'C4', 'A2', 'A3', 'E3', 'A3', 'F2', 'F3', 'C3', 'F3', 'G2', 'G3', 'D3', 'G3']
+let bgm: LoopHandle | null = null
+const startBgm = () => { bgm ??= audio.loop(riff, { bpm: 300, wave: 'square', gain: 0.18 }) }
+window.addEventListener('pointerdown', startBgm, { once: true })
+window.addEventListener('keydown', startBgm, { once: true })
 
-scene.add('plane', { size: 24, material: 'checker' })
-const player = scene.add('sphere', { radius: 0.45, material: 'chrome', body: 'dynamic', shadow: true })
-scene.add('sphere', { radius: 0.26, material: materials.neon('#22d3ee'), tag: 'orb', position: [3, 1, 0] })
-// ...loop this line to ring the arena with 10 orbs
-
-const hud = scene.text('ORBS 0', { anchor: 'top' })
-scene.camera.follow(player, { distance: 8, height: 3.6 })
-player.trail()                                  // comet trail, one line
-
-scene.onUpdate((dt, input) => {
-  player.velocity[0] += input.x * 26 * dt
-  player.velocity[2] -= input.y * 26 * dt
-  if (input.jump && player.grounded) player.velocity[1] = 8.5
-})
-
-let score = 0
-player.onCollide((other) => {
-  if (other.tag === 'orb' && other.alive) {
-    other.remove()
-    scene.burst(other.position)                 // particle pop, one line
-    hud.set(`ORBS ${++score}`)
-    if (score === 10) scene.celebrate()         // confetti finale, one line
+yura('#game').game({ gravity: -22, bounds: 12 }, (scene) => {
+  scene.add('plane', { size: 24, material: 'checker' })
+  const player = scene.add('sphere', { radius: 0.45, material: 'chrome', body: 'dynamic', shadow: true })
+  for (const position of orbRing()) {
+    scene.add('sphere', { radius: 0.26, material: materials.neon('#22d3ee'), tag: 'orb', position })
   }
-})
 
-app.run()
+  const hud = scene.text(orbLabel(0), { anchor: 'top' })
+  scene.camera.follow(player, { distance: 8, height: 3.6 })
+  player.trail()                                // comet trail, one line
+
+  scene.onUpdate((dt, input) => {
+    player.velocity[0] += input.x * 26 * dt
+    player.velocity[2] -= input.y * 26 * dt
+    if (input.jump && player.grounded) player.velocity[1] = 8.5
+  })
+
+  let score = 0
+  player.onCollide((other) => {
+    if (other.tag === 'orb' && other.alive) {
+      other.remove()
+      scene.burst(other.position)               // particle pop, one line
+      hud.set(orbLabel(++score))
+      if (isWin(score)) { bgm?.stop(); audio.win(); scene.celebrate() }  // fanfare + confetti
+    }
+  })
+})
 ```
 
 What you get for free:
@@ -102,11 +116,30 @@ What you get for free:
 - **Sound one-liners** — `gameAudio()` gives zero-asset WebAudio effects:
   `pickup(combo)`, `jump()`, `land(intensity)`, `win()`, with `volume` and
   `mute()`; the AudioContext is created lazily on the first user gesture.
+  There's chiptune BGM too — `loop()` plays note names one beat per step
+  (`null` = rest) until you call `stop()` on the handle it returns:
+
+  ```ts
+  const audio = gameAudio()
+  audio.loop(['C4', 'E4', null, 'G4'], { bpm: 140 })   // wave: 'square' by default
+  ```
 - **Follow camera** — `scene.camera.follow(obj)` with exponential smoothing;
   `scene.camera.orbit()` to hand control back.
 - **Shadows** — shadow-mapped meshes plus automatic ground blob shadows.
 - **Particle FX one-liners** — `scene.burst(pos)`, `obj.trail()`,
-  `scene.celebrate()` render through the same GPU pipeline as everything else.
+  `scene.celebrate()` render through the same GPU pipeline as everything else,
+  and `scene.gravityWell([0, 5, 0], 12)` bends them all into a black-hole zone.
+  Bursts take direction when you want more than a pop, and trails take a
+  color ramp, width, and fade curve:
+
+  ```ts
+  scene.burst(player.position, {
+    direction: [0, 1, 0], spread: Math.PI / 6,   // cone (30° half-angle) instead of a full sphere
+    shape: 'disc', radius: 0.8,                  // spawn volume: 'sphere' | 'disc' | 'box'
+    colorEnd: '#7c3aed', drag: 2,                // fade to violet over life; air drag
+  })
+  player.trail({ color: '#4cc9f0', colorEnd: '#1e3a8a', width: 2, fade: 2 })  // cyan → deep blue tail, 2× width, quicker fade-out
+  ```
 - **Zero assets** — seven procedural shapes (`sphere`, `box`, `torus`,
   `knot`, `cylinder`, `plane`, `disc`) and curated PBR materials
   (`chrome`, `gold`, `obsidian`, `checker`, `materials.neon(hex)`, …).
@@ -173,6 +206,21 @@ lyrics(app, [
 })
 ```
 
+No timestamps yet? Bare strings are sugar for `{ text }` and auto-time
+themselves, one line every `every` seconds:
+
+```ts
+lyrics(app, ['君の声が', '粒子のなかで', 'また君に出会う'], { every: 3.4 })
+```
+
+Vertical Japanese? `vertical: true` lays every line out as tategaki — this
+is how the showcase's sakura look runs its verses:
+
+```ts
+// glyphs sweep top to bottom; a \n inside a line adds columns, read right to left
+lyrics(app, ['桜ひらひら', '春の宵に\n舞い散る'], { every: 3, vertical: true })
+```
+
 How the char-by-char sweep works: text shapes assign each grapheme a
 contiguous band of the palette/delay coordinate in reading order, and
 `app.morphNow(shape, { sweep, direction })` staggers per-particle morph
@@ -182,6 +230,34 @@ letters land one after another, and the color gradient follows the same
 ordering. Graphemes are segmented with `Intl.Segmenter('ja')` when
 available (Japanese-first: CJK, combining marks, and compound emoji stay
 whole), with a surrogate-pair-safe fallback elsewhere.
+
+The choreography itself is tunable: `.motion()` retimes the automatic shape
+cycle app-wide, `morphNow` overrides per call, and `ease` takes a name from
+the `eases` registry (`cubic`, `expo`, `back`, `smooth`, `linear`) or any
+custom `f(0)=0, f(1)=1` function:
+
+```ts
+app.motion({ hold: 2.2, morph: 1.4, ease: 'expo' })   // automatic shape cycle
+app.morphNow(shapes.helix({ turns: 5 }), { duration: 0.8, ease: 'back' })
+app.motion({ turbulence: 0.8, turbulenceScale: 0.35 }) // organic fluid drift
+app.motion({ attractors: [{ position: [4, 0, 0], strength: 30 },    // gravity well
+                          { position: [-4, 0, 0], strength: -20 }] }) // repulsor
+```
+
+The same call tunes the physics: `turbulence` adds divergence-free curl
+noise — fluid-like swirls with zero clumping — and at the default `0` the
+term vanishes from the shader math, so it costs nothing until you turn it on.
+`attractors` pins up to 4 softened inverse-square gravity wells on the swarm
+(`radius` widens the calm core, negative `strength` repels), and the empty
+default skips that term the same way — free until you place one.
+
+Physics keys you set through `.motion()` are sticky: a later `.preset()`
+still swaps in its own motion defaults, but every key you set explicitly
+survives the swap — so `.motion({ turbulence: 0.8 }).preset('aurora')` and
+`.preset('aurora').motion({ turbulence: 0.8 })` end up identical.
+
+(`shapes.box()`, `shapes.cone()`, and `shapes.helix()` are morph targets too,
+next to `galaxy`, `sphere`, `ring`, `vortex`, `flow`, `text`, and `image`.)
 
 Per line you can override `sweep`, `direction`, or substitute any
 `ShapeSpec` instead of text; the run handle has `stop()` and `seek(t)`.
@@ -194,14 +270,15 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 
 | Surface | Highlights |
 | --- | --- |
-| `yura(sel)` | `.preset()` `.look()` `.model(url)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD', { sweep, direction })` |
-| `app.scene(opts)` | `add(shape, opts)`, `onUpdate(cb)`, `camera.follow/orbit`, `text()`, `each(tag, cb)`, `count(tag)`, `burst/trail/celebrate`, `input` (keyboard + touch + gamepad) |
-| `SceneObject` | `position` `velocity` `spin`, `body: 'dynamic'`, `solid`, `tag`, `grounded`, `onCollide()`, `trail()`, `remove()` |
-| `yuraLayer(renderer, camera, opts)` | `attach(obj)`, `at(x, y, z)`, `setRadius(r)`, `morphTo(textOrShape)`, `sync()`, `stats`, `dispose()` |
-| `lyrics(app, lines, opts)` | timed lines → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop`, per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
-| `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, `volume`, `mute()`; context created lazily on first user gesture |
-| `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
-| `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` |
+| `yura(sel)` | `.preset()` `.look()` `.motion({ hold, morph, ease })` `.morphTo(seq)` `.model(url)` `.game(opts, setup)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD', { sweep, direction, duration, ease })`, `app.onStats(cb)`, `app.frames(n)` |
+| `app.scene(opts)` | `add(shape, opts)`, `onUpdate(cb)`, `camera.follow/orbit`, `text()`, `each(tag, cb)`, `count(tag)`, `burst/trail/celebrate/gravityWell`, `fx` (raw `FxPool`), `input` (keyboard + touch + gamepad) |
+| `SceneObject` | `position` `velocity` `spin`, `body: 'dynamic'`, `solid`, `tag`, `grounded`, `onCollide()`, `onLand()`, `trail()`, `remove()` |
+| `yuraLayer(renderer, camera, opts)` | `attach(obj)`, `at(x, y, z)`, `setRadius(r)`, `motion(m)`, `morphTo(textOrShape)`, `sync()`, `stats`, `dispose()` |
+| `lyrics(app, lines, opts)` | timed lines (or bare strings auto-timed `every` seconds apart) → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop` (with `loopTail` hold), per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
+| `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, chiptune-style BGM `loop(pattern, { bpm, wave, gain })`, `volume`, `mute()`; context created lazily on first user gesture |
+| `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `box` `cone` `helix` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
+| `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` `sakura` — each takes `Partial<LookParams>` overrides, e.g. `neon({ blendMode: 'alpha', toneMapping: 'reinhard' })` |
+| `eases` | named morph curves `cubic` `expo` `back` `smooth` `linear` for `.motion({ ease })` / `morphNow({ ease })`; any `f(0)=0, f(1)=1` function is also accepted |
 | `materials` | `matte` `plastic` `metal` `neon(hex)` + named presets (`chrome`, `gold`, `obsidian`, `checker`, …) |
 
 ## What works today (v0.1 prototype)
@@ -221,7 +298,20 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 - **HDR pipeline** — rgba16float scene target, light trails, threshold
   bloom, anamorphic streaks, chromatic aberration, ACES tonemapping,
   vignette, film grain; procedural nebula + starfield backdrop, zero assets.
+  Particle blending and tone mapping are look params, so every look preset
+  accepts them as overrides:
+
+  ```ts
+  app.look(looks.neon({ blendMode: 'alpha', toneMapping: 'reinhard' }))
+  // blendMode: 'additive' | 'alpha' | 'screen' · toneMapping: 'aces' | 'reinhard' | 'linear'
+  ```
+
+  `softParticles` is a look param too: a world-unit depth-fade so scene-mode
+  FX sprites melt into nearby geometry instead of clipping (the `sakura`
+  look ships with it on; the default 0 keeps it off at zero cost).
 - **Interaction** — hover repels particles; click detonates a shockwave.
+  `.interactive({ gravity: 40 })` upgrades the cursor to a live gravity well
+  that pulls the whole swarm toward the pointer (negative values repel).
 - **glTF 2.0 / PBR** — `.model('/file.glb')` loads GLB and renders
   Cook-Torrance GGX with IBL from a procedural studio environment (no LUT,
   no HDR files), 2048² PCF shadow maps, orbit/zoom/auto-rotate controls.
@@ -232,6 +322,11 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   thresholds and hitch rejection so a GC pause never costs you quality.
   Surviving particles are intensity-compensated so governed frames keep the
   same light on screen.
+- **Stats HUD one-liner** — `app.onStats((_, text) => { hud.textContent = text })`
+  calls back every 500 ms with live `YuraStats` plus the preformatted
+  `formatStats` string; `app.frames(120)` returns recent frame times in ms
+  for a sparkline. `onStats` returns a stop function, and every subscription
+  ends on `dispose()`.
 - **Web-native behavior** — `prefers-reduced-motion` renders a settled
   static frame; the loop pauses offscreen and on hidden tabs; device-lost
   recovers; every failure is a stable `YURA-xxx` error code with a fix
@@ -266,6 +361,8 @@ substantially below WebGPU at high particle counts.
 | WebGPU (Chrome/Edge 113+, Safari 26+, Firefox 141+) | Everything: particles, `.model()`, `.scene()` games, `yuraLayer` |
 | WebGL2 only | Particle swarms (hello, showcase, `yuraLayer`) via the transform-feedback fallback — same HDR post. `.scene()` and `.model()` need WebGPU. |
 | Neither | A static poster — never a white screen. |
+
+Hit a `YURA-xxx` code in the console? Every code is documented in the [error code reference](docs/ERRORS.md).
 
 ## Packages
 

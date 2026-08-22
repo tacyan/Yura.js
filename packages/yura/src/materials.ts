@@ -17,7 +17,11 @@ function solid(
   return { color, metallic, roughness, emissive }
 }
 
-export const materialPresets: Record<string, SceneMaterial> = {
+/**
+ * Named PBR material presets — pass a name anywhere a material is accepted,
+ * e.g. `scene.add('sphere', { material: 'chrome' })`.
+ */
+export const materialPresets = {
   chrome: solid([0.85, 0.87, 0.9, 1], 1, 0.07),
   gold: solid([1.0, 0.56, 0.09, 1], 1, 0.16),
   copper: solid([0.9, 0.28, 0.13, 1], 1, 0.24),
@@ -28,7 +32,7 @@ export const materialPresets: Record<string, SceneMaterial> = {
   grid: { color: [1, 1, 1, 1], metallic: 0.1, roughness: 0.4, emissive: BLACK, pattern: 'grid' },
   // Lightless pastel rainbow shaded from surface normals — the flagship look.
   iridescent: { color: [1, 1, 1, 1], metallic: 0, roughness: 0.5, emissive: BLACK, iridescent: true },
-}
+} satisfies Record<string, SceneMaterial>
 
 /** Matte diffuse surface in any color. */
 export function matte(hex: string): SceneMaterial {
@@ -56,12 +60,25 @@ export function neon(hex: string, strength = 4): SceneMaterial {
   }
 }
 
+/**
+ * Anything that resolves to a material: a full SceneMaterial, a preset name
+ * ('chrome', 'gold', …), or a '#rrggbb' hex color (rendered as plastic).
+ */
 export type MaterialLike = SceneMaterial | keyof typeof materialPresets | (string & {})
 
+/**
+ * Resolves a MaterialLike to a concrete SceneMaterial: preset names return a
+ * copy of the preset, '#hex' strings become plastic in that color, and
+ * anything unknown (or undefined) falls back to pearl.
+ *
+ * @example
+ * resolveMaterial('gold')    // the gold preset
+ * resolveMaterial('#22d3ee') // plastic('#22d3ee')
+ */
 export function resolveMaterial(m: MaterialLike | undefined): SceneMaterial {
   if (!m) return materialPresets.pearl
   if (typeof m === 'string') {
-    const preset = materialPresets[m]
+    const preset = (materialPresets as Record<string, SceneMaterial | undefined>)[m]
     if (preset) return { ...preset }
     if (m.startsWith('#')) return plastic(m)
     return materialPresets.pearl
@@ -69,4 +86,10 @@ export function resolveMaterial(m: MaterialLike | undefined): SceneMaterial {
   return m
 }
 
+/**
+ * The material toolbox: every named preset plus the parameterized builders.
+ *
+ * @example
+ * scene.add('sphere', { radius: 0.26, material: materials.neon('#22d3ee') })
+ */
 export const materials = { ...materialPresets, matte, plastic, metal, neon }

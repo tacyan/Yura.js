@@ -1,6 +1,10 @@
-import { test, expect } from 'bun:test'
+import { test, expect, spyOn } from 'bun:test'
+import { YuraError, CODES } from '@yura/core'
 import {
   YuraScene,
+  SHAPE_NAMES,
+  type ShapeName,
+  type AddOptions,
   SceneInput,
   rollDelta,
   cameraFollowGoal,
@@ -18,6 +22,8 @@ import {
   sweptCylinderTOI,
 } from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
+import { FX_FLOATS } from '../src/fx'
+import { MAX_ATTRACTORS } from '@yura/renderer-webgpu'
 
 // Scenes run headless before attach(): physics and collisions are pure JS.
 
@@ -498,11 +504,17 @@ function installFakeDocument(): { made: FakeEl[]; uninstall: () => void } {
     },
     body: { appendChild: () => {} },
   }
-  ;(globalThis as { document?: unknown }).document = doc
+  // Save/restore the previous global instead of assuming no ambient document
+  // exists (runtime versions differ in which globals they ship).
+  const g = globalThis as { document?: unknown }
+  const hadDoc = 'document' in g
+  const prevDoc = g.document
+  g.document = doc
   return {
     made,
     uninstall: () => {
-      delete (globalThis as { document?: unknown }).document
+      if (hadDoc) g.document = prevDoc
+      else delete g.document
     },
   }
 }
@@ -750,4 +762,455 @@ test('hitRadius defaults to radius — behavior identical when unset', () => {
   const b = scene.add('sphere', { radius: 0.3, position: [5, 0, 0] })
   expect(a.hitRadius).toBe(0.5)
   expect(b.hitRadius).toBe(0.3)
+})
+
+// --- Edge cases: unknown shape names, duplicate ground planes ---------------
+
+test('an unknown shape name throws YURA-013 listing the available shapes', () => {
+  const scene = new YuraScene({})
+  let err: unknown = null
+  try {
+    scene.add('cube' as ShapeName) // what a plain-JS caller can pass
+  } catch (e) {
+    err = e
+  }
+  expect(err).toBeInstanceOf(YuraError)
+  const yerr = err as YuraError
+  expect(yerr.code).toBe('YURA-013')
+  expect(yerr.message).toContain('cube')
+  expect(yerr.message).toContain(SHAPE_NAMES.join(', ')) // full available list
+  expect(yerr.hint).toContain("scene.add('sphere'") // fix example
+})
+
+test("a second add('plane') warns with YURA-014 but still moves the ground", () => {
+  const scene = new YuraScene({ gravity: -20 })
+  const info = spyOn(console, 'info').mockImplementation(() => {})
+  try {
+    scene.add('plane', { size: 10 })
+    expect(info).not.toHaveBeenCalled() // first plane is silent
+    scene.add('plane', { size: 10, position: [0, 2, 0] })
+    expect(info).toHaveBeenCalledTimes(1)
+    expect(String(info.mock.calls[0][0])).toContain('YURA-014')
+  } finally {
+    info.mockRestore()
+  }
+  // Behavior unchanged: the newest plane owns the ground height.
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 6, 0], body: 'dynamic' })
+  for (let i = 0; i < 600; i++) scene.step(1 / 60, i / 60)
+  expect(ball.position[1]).toBeCloseTo(2.5, 1)
+})
+
+// --- Mesh-asset shape vocabulary --------------------------------------------
+// The renderer's mesh assets (torusMesh/torusKnotMesh/cylinderMesh/discMesh)
+// are exposed through scene.add as torus/knot/cylinder/disc. Each case pins
+// the option style and the collision-radius approximation buildShape assigns.
+
+const MESH_ASSET_SHAPES: ShapeName[] = ['torus', 'knot', 'cylinder', 'disc']
+
+const MESH_ASSET_CASES: Array<{ shape: ShapeName; opts?: AddOptions; radius: number; note: string }> = [
+  { shape: 'torus', radius: 1.2, note: 'default ring radius 1 → bound r*1.2' },
+  { shape: 'torus', opts: { radius: 2 }, radius: 2.4, note: 'radius option scales the bound' },
+  { shape: 'knot', radius: 1.3, note: 'default radius 1 → bound r*1.3' },
+  { shape: 'knot', opts: { radius: 2 }, radius: 2.6, note: 'radius option scales the bound' },
+  { shape: 'disc', radius: 1, note: 'default radius 1 → collision radius = visual radius' },
+  { shape: 'disc', opts: { radius: 2 }, radius: 2, note: 'radius option is the collision radius' },
+  { shape: 'cylinder', opts: { size: [1.1, 2.6, 1.1] }, radius: 0.55, note: 'size → radial radius s3[0]/2' },
+]
+
+for (const { shape, opts, radius, note } of MESH_ASSET_CASES) {
+  test(`add('${shape}'${opts ? ', ' + JSON.stringify(opts) : ''}) builds geometry with radius ${radius} (${note})`, () => {
+    const scene = new YuraScene({})
+    const obj = scene.add(shape, opts)
+    // Real geometry came back from the renderer's mesh asset.
+    expect(obj.geo.positions.length).toBeGreaterThan(0)
+    expect(obj.geo.indices.length).toBeGreaterThan(0)
+    expect(obj.geo.normals.length).toBe(obj.geo.positions.length)
+    // Collision radius follows the documented approximation…
+    expect(obj.radius).toBeCloseTo(radius, 5)
+    // …and hitRadius defaults to it, like every other shape.
+    expect(obj.hitRadius).toBeCloseTo(radius, 5)
+  })
+}
+
+test('cylinder keeps its band collider; the other mesh-asset shapes stay spheres', () => {
+  const scene = new YuraScene({})
+  const pillar = scene.add('cylinder', { size: [1.1, 2.6, 1.1] })
+  expect(pillar.collider).toBe('cylinder')
+  expect(pillar.halfHeight).toBeCloseTo(1.3, 5) // s3[1]/2
+  for (const shape of ['torus', 'knot', 'disc'] as ShapeName[]) {
+    const obj = scene.add(shape)
+    expect(obj.collider).toBe('sphere')
+    expect(obj.halfHeight).toBeCloseTo(obj.radius, 5) // sphere colliders: band = radius
+  }
+})
+
+test('every mesh-asset shape is listed in SHAPE_NAMES and the YURA-013 error', () => {
+  for (const shape of MESH_ASSET_SHAPES) expect(SHAPE_NAMES).toContain(shape)
+  const scene = new YuraScene({})
+  let err: unknown = null
+  try {
+    scene.add('pyramid' as ShapeName)
+  } catch (e) {
+    err = e
+  }
+  expect(err).toBeInstanceOf(YuraError)
+  const message = (err as YuraError).message
+  // SHAPE_NAMES is the single source of truth, so each name flows into the list.
+  for (const shape of MESH_ASSET_SHAPES) expect(message).toContain(shape)
+})
+
+test('obj.trail passes colorEnd, width, and fade through to the FX emitter', () => {
+  const run = (opts: Record<string, unknown>): { out: Float32Array; n: number } => {
+    const scene = new YuraScene({})
+    const obj = scene.add('sphere', { radius: 0.5, position: [0, 3, 0] })
+    obj.trail({ rate: 60, life: 10, color: '#ff0000', intensity: 1, ...opts })
+    for (let i = 0; i < 60; i++) scene.step(1 / 60, i / 60)
+    const out = new Float32Array(scene.fx.capacity * FX_FLOATS)
+    const n = scene.fx.writeInstances(out)
+    expect(n).toBeGreaterThan(0)
+    return { out, n }
+  }
+
+  // Defaults: pure-red sparks, small sprites, linear fade barely bitten after 1s.
+  const base = run({})
+  for (let i = 0; i < base.n; i++) {
+    const o = i * FX_FLOATS
+    expect(base.out[o + 6]).toBe(0) // no blue without colorEnd
+    expect(base.out[o + 3]).toBeLessThan(0.15) // size 0.11 x <= 1.3 jitter
+    expect(base.out[o + 7]).toBeGreaterThan(0.7) // (1 - 1/7)^2 lower bound
+  }
+
+  const custom = run({ colorEnd: '#0000ff', width: 5, fade: 8 })
+  let minAlpha = 1
+  for (let i = 0; i < custom.n; i++) {
+    const o = i * FX_FLOATS
+    expect(custom.out[o + 6]).toBeGreaterThan(0) // colorEnd blends blue in with age
+    expect(custom.out[o + 3]).toBeGreaterThan(0.2) // width 5: 0.55 x 5 x 0.11 x 0.7
+    minAlpha = Math.min(minAlpha, custom.out[o + 7])
+  }
+  expect(minAlpha).toBeLessThan(0.5) // fade 8 collapses the oldest sparks
+})
+
+// --- edge-triggered key queries -------------------------------------------
+
+test('pressed() is true only on the frame the key goes down', () => {
+  const input = new SceneInput()
+  expect(input.pressed('KeyE')).toBe(false)
+  input.keyDown('KeyE')
+  expect(input.pressed('KeyE')).toBe(true)
+  input.endFrame(1 / 60) // frame boundary: the edge is consumed
+  expect(input.pressed('KeyE')).toBe(false)
+  expect(input.key('KeyE')).toBe(true) // …but the key is still held
+  input.keyUp('KeyE')
+  expect(input.pressed('KeyE')).toBe(false)
+})
+
+// --- DOM binding (headless fakes: window / document / element) ------------
+
+type Handler = (ev: unknown) => void
+type HandlerMap = Map<string, Handler[]>
+
+function listenerPair(m: HandlerMap): {
+  addEventListener: (t: string, f: Handler) => void
+  removeEventListener: (t: string, f: Handler) => void
+} {
+  return {
+    addEventListener: (t, f) => m.set(t, [...(m.get(t) ?? []), f]),
+    removeEventListener: (t, f) =>
+      m.set(
+        t,
+        (m.get(t) ?? []).filter((x) => x !== f),
+      ),
+  }
+}
+
+const dispatch = (m: HandlerMap, type: string, ev: unknown): void => {
+  for (const f of m.get(type) ?? []) f(ev)
+}
+
+test('bind() wires keyboard/blur/visibility to window+document and dispose() unwires', () => {
+  const g = globalThis as Record<string, unknown>
+  const prevWin = g.window
+  const prevDoc = g.document
+  const win: HandlerMap = new Map()
+  const doc: HandlerMap = new Map()
+  const visibility = { state: 'visible' }
+  g.window = listenerPair(win)
+  g.document = {
+    ...listenerPair(doc),
+    get visibilityState() {
+      return visibility.state
+    },
+  }
+  const input = new SceneInput()
+  let prevented = 0
+  const key = (code: string): unknown => ({
+    code,
+    repeat: false,
+    preventDefault: () => {
+      prevented++
+    },
+  })
+  try {
+    input.bind()
+    expect(win.get('keydown')).toHaveLength(1)
+    expect(win.get('keyup')).toHaveLength(1)
+    expect(win.get('blur')).toHaveLength(1)
+    expect(doc.get('visibilitychange')).toHaveLength(1)
+
+    // Navigation keys are prevented (no page scroll) and land in the key set.
+    dispatch(win, 'keydown', key('ArrowLeft'))
+    expect(prevented).toBe(1)
+    expect(input.key('ArrowLeft')).toBe(true)
+    expect(input.x).toBe(combineAxes(-1, 0, 0))
+    // Other keys pass through unprevented.
+    dispatch(win, 'keydown', key('KeyQ'))
+    expect(prevented).toBe(1)
+    expect(input.key('KeyQ')).toBe(true)
+    dispatch(win, 'keyup', { code: 'ArrowLeft' })
+    expect(input.key('ArrowLeft')).toBe(false)
+
+    // blur drops everything held (the keyups will never arrive).
+    dispatch(win, 'blur', {})
+    expect(input.key('KeyQ')).toBe(false)
+
+    // visibilitychange clears only when the tab actually hides.
+    dispatch(win, 'keydown', key('KeyD'))
+    dispatch(doc, 'visibilitychange', {})
+    expect(input.key('KeyD')).toBe(true) // still visible
+    visibility.state = 'hidden'
+    dispatch(doc, 'visibilitychange', {})
+    expect(input.key('KeyD')).toBe(false)
+
+    input.dispose()
+    expect(win.get('keydown')).toHaveLength(0)
+    expect(win.get('keyup')).toHaveLength(0)
+    expect(win.get('blur')).toHaveLength(0)
+    expect(doc.get('visibilitychange')).toHaveLength(0)
+  } finally {
+    if (prevWin === undefined) delete g.window
+    else g.window = prevWin
+    if (prevDoc === undefined) delete g.document
+    else g.document = prevDoc
+  }
+})
+
+test('bindPointer(): drag drives the stick, cancel drops it without a jump, dispose restores', () => {
+  const handlers: HandlerMap = new Map()
+  const captured: number[] = []
+  let capThrow = false
+  const el = {
+    style: { touchAction: 'pan-y' },
+    ...listenerPair(handlers),
+    setPointerCapture: (id: number) => {
+      if (capThrow) throw new Error('capture unavailable')
+      captured.push(id)
+    },
+  }
+  const input = new SceneInput()
+  input.bindPointer(el as unknown as Parameters<SceneInput['bindPointer']>[0])
+  expect(el.style.touchAction).toBe('none')
+
+  let prevented = 0
+  const pd = (id: number, x: number, y: number, type = 'touch'): unknown => ({
+    pointerId: id,
+    clientX: x,
+    clientY: y,
+    pointerType: type,
+    preventDefault: () => {
+      prevented++
+    },
+  })
+
+  // Touch drag: prevented, captured, and mapped onto the stick axes.
+  dispatch(handlers, 'pointerdown', pd(1, 100, 100))
+  expect(prevented).toBe(1)
+  expect(captured).toEqual([1])
+  dispatch(handlers, 'pointermove', { pointerId: 1, clientX: 160, clientY: 100 })
+  expect(input.x).toBe(combineAxes(0, stickAxes(60, 0).x, 0))
+  expect(isTap(0, 60)).toBe(false) // precondition: a 60px drag is not a tap
+  dispatch(handlers, 'pointerup', { pointerId: 1 })
+  expect(input.x).toBe(0)
+  expect(input.jump).toBe(false) // drag release is not a jump
+
+  // Mouse pointers keep default behavior (no preventDefault).
+  dispatch(handlers, 'pointerdown', pd(2, 0, 0, 'mouse'))
+  expect(prevented).toBe(1)
+  // A cancel for a foreign pointer id is ignored…
+  dispatch(handlers, 'pointercancel', { pointerId: 99 })
+  dispatch(handlers, 'pointermove', { pointerId: 2, clientX: 50, clientY: 0 })
+  expect(input.x).toBe(combineAxes(0, stickAxes(50, 0).x, 0)) // stick alive
+  // …while cancelling the stick pointer drops it with NO tap-jump.
+  expect(isTap(0, 0)).toBe(true) // a zero-length press WOULD be a tap on pointerup
+  dispatch(handlers, 'pointercancel', { pointerId: 2 })
+  expect(input.x).toBe(0)
+  expect(input.jump).toBe(false)
+
+  // setPointerCapture throwing is survivable — the drag still works.
+  capThrow = true
+  dispatch(handlers, 'pointerdown', pd(3, 10, 10))
+  dispatch(handlers, 'pointermove', { pointerId: 3, clientX: 70, clientY: 10 })
+  expect(input.x).toBe(combineAxes(0, stickAxes(60, 0).x, 0))
+  dispatch(handlers, 'pointercancel', { pointerId: 3 })
+
+  input.dispose()
+  expect(el.style.touchAction).toBe('pan-y')
+  for (const t of ['pointerdown', 'pointermove', 'pointerup', 'pointercancel']) {
+    expect(handlers.get(t)).toHaveLength(0)
+  }
+})
+
+// --- attach(): realize + shadow discs + follow/orbit camera ---------------
+
+interface MeshRec {
+  material: Record<string, unknown>
+  worlds: unknown[]
+}
+
+function fakeSceneRenderer(): {
+  r: { shadowArea: number; cameraPose: unknown; setFX: (a: unknown, n: number) => void; addMesh: (g: unknown, m: Record<string, unknown>, o?: unknown) => { setWorld: (w: unknown) => void; remove: () => void } }
+  meshes: MeshRec[]
+} {
+  const meshes: MeshRec[] = []
+  const r = {
+    shadowArea: 0,
+    cameraPose: undefined as unknown,
+    addMesh(_geo: unknown, material: Record<string, unknown>, _opts?: unknown) {
+      const rec: MeshRec = { material, worlds: [] }
+      meshes.push(rec)
+      return {
+        setWorld(w: unknown) {
+          rec.worlds.push(w)
+        },
+        remove() {},
+      }
+    },
+    setFX(_a: unknown, _n: number) {},
+  }
+  return { r, meshes }
+}
+
+test('attach() realizes queued objects (shadow disc included) and follow/orbit steer the camera', () => {
+  const scene = new YuraScene({ keyboard: false, bounds: 5, gravity: -10 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 2, 0], body: 'dynamic', shadow: true })
+  scene.add('box', { position: [3, 0, 0] })
+  const { r, meshes } = fakeSceneRenderer()
+  const g = globalThis as Record<string, unknown>
+  const prevGCS = g.getComputedStyle
+  g.getComputedStyle = () => ({ position: 'static' })
+  const container = { style: { position: '' } }
+  try {
+    const detach = scene.attach(
+      r as unknown as Parameters<YuraScene['attach']>[0],
+      container as unknown as Parameters<YuraScene['attach']>[1],
+    )
+    expect(container.style.position).toBe('relative')
+    expect(r.shadowArea).toBe(scene.bounds * 1.25 + 2)
+    // ball mesh + its shadow disc + box mesh, in realize order.
+    expect(meshes.length).toBe(3)
+    expect(meshes[0].material).toEqual(resolveMaterial(undefined) as unknown as Record<string, unknown>) // default look
+    expect(meshes[1].material.unlit).toBe(true) // shadow disc is unlit…
+    expect(meshes[1].material.fade).toBe(true) // …and distance-faded
+    expect((meshes[1].material.color as number[])[3]).toBeLessThan(1) // translucent
+
+    // A step syncs every realized handle's world matrix (shadow too).
+    scene.step(1 / 60, 0)
+    expect(meshes[0].worlds.length).toBeGreaterThan(0)
+    expect(meshes[1].worlds.length).toBeGreaterThan(0)
+    expect(meshes[2].worlds.length).toBeGreaterThan(0)
+
+    // Follow camera: stepping produces a concrete eye/target pose.
+    scene.camera.follow(ball, { distance: 6, height: 2 })
+    scene.step(1 / 60, 1 / 60)
+    const pose = r.cameraPose as { eye: number[]; target: number[] }
+    expect(pose).toBeTruthy()
+    expect(pose.eye).toHaveLength(3)
+    expect(pose.target).toHaveLength(3)
+    for (const v of [...pose.eye, ...pose.target]) expect(Number.isFinite(v)).toBe(true)
+
+    // Orbit hands the camera back to the renderer.
+    scene.camera.orbit()
+    expect(r.cameraPose).toBeNull()
+    detach()
+  } finally {
+    if (prevGCS === undefined) delete g.getComputedStyle
+    else g.getComputedStyle = prevGCS
+  }
+})
+
+// --- material fallback -----------------------------------------------------
+
+test('resolveMaterial falls back to pearl for unknown non-hex names', () => {
+  const fallback = resolveMaterial('definitely-not-a-preset')
+  expect(fallback).toBe(resolveMaterial(undefined)) // same shared pearl preset
+  expect(fallback).toEqual(materials.pearl)
+  // …unlike a KNOWN preset name, which is defensively copied.
+  expect(resolveMaterial('pearl')).not.toBe(materials.pearl)
+  expect(resolveMaterial('pearl')).toEqual(materials.pearl)
+  // Hex strings become plastic in that color; explicit objects pass through.
+  expect(resolveMaterial('#ff8800')).toEqual(materials.plastic('#ff8800'))
+  const custom = materials.metal('#4cc9f0')
+  expect(resolveMaterial(custom)).toBe(custom)
+})
+
+// --- gravityWell: black-hole zones for scene particles ----------------------
+// scene.gravityWell feeds FxPool.attractors with the GPU sims' shared
+// AttractorParams vocabulary; each call returns a release function, wells
+// accumulate, and calls past MAX_ATTRACTORS warn (YURA-017) and queue.
+
+test('gravityWell pulls scene particles toward the well; the release function removes it', () => {
+  const scene = new YuraScene({})
+  scene.fx.spawn(3, 0, 0, 0, 0, 0, 60, 0.1, 1, 1, 1, 0, 0)
+  const release = scene.gravityWell([0, 0, 0], 10)
+  expect(scene.fx.attractors).toHaveLength(1)
+  for (let i = 0; i < 30; i++) scene.step(1 / 60, i / 60)
+  const out = new Float32Array(FX_FLOATS)
+  expect(scene.fx.writeInstances(out)).toBe(1)
+  expect(out[0]).toBeLessThan(3) // pulled toward the origin well
+  release()
+  expect(scene.fx.attractors).toHaveLength(0)
+})
+
+test('a negative-strength gravityWell repels scene particles', () => {
+  const scene = new YuraScene({})
+  scene.fx.spawn(3, 0, 0, 0, 0, 0, 60, 0.1, 1, 1, 1, 0, 0)
+  scene.gravityWell([0, 0, 0], -10)
+  for (let i = 0; i < 30; i++) scene.step(1 / 60, i / 60)
+  const out = new Float32Array(FX_FLOATS)
+  expect(scene.fx.writeInstances(out)).toBe(1)
+  expect(out[0]).toBeGreaterThan(3) // pushed away from the origin well
+})
+
+test('gravityWell accumulates per call, warns past MAX_ATTRACTORS, and releasing frees the slot', () => {
+  const scene = new YuraScene({})
+  const info = spyOn(console, 'info').mockImplementation(() => {})
+  try {
+    const releases = Array.from({ length: MAX_ATTRACTORS }, (_, i) =>
+      scene.gravityWell([i, 0, 0], 1),
+    )
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS)
+    expect(info).not.toHaveBeenCalled() // within budget: silent
+    expect('radius' in scene.fx.attractors[0]).toBe(false) // omitted -> sims' default applies
+
+    const releaseExtra = scene.gravityWell([9, 9, 9], 2, 0.5)
+    expect(info).toHaveBeenCalledTimes(1)
+    expect(String(info.mock.calls[0][0])).toContain(CODES.GRAVITY_WELL_CLAMPED)
+    // The extra well is queued (the pool clamps to the first MAX_ATTRACTORS)…
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS + 1)
+    expect(scene.fx.attractors[MAX_ATTRACTORS]).toEqual({
+      position: [9, 9, 9],
+      strength: 2,
+      radius: 0.5,
+    })
+    // …and releasing an active well promotes it into the acting set.
+    releases[0]()
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS)
+    expect(scene.fx.attractors[MAX_ATTRACTORS - 1].position).toEqual([9, 9, 9])
+    releaseExtra()
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS - 1)
+    releaseExtra() // release is idempotent
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS - 1)
+  } finally {
+    info.mockRestore()
+  }
 })

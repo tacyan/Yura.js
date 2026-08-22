@@ -4,6 +4,14 @@ import type { LookParams } from '@yura/renderer-webgpu'
  * Looks are curated post/appearance settings (spec §7.2). Users apply them by
  * name and never have to balance bloom vs exposure themselves.
  */
+
+/**
+ * Filmic default: warm highlights, gentle bloom, soft vignette — the look
+ * every particle app starts with.
+ *
+ * @example
+ * yura('#hero').look(cinematic({ vignette: 0.4 })).run()
+ */
 export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.0,
@@ -25,6 +33,7 @@ export function cinematic(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
+/** Night-city glow: hard bloom, magenta-violet haze, visible chromatic aberration. */
 export function cyberpunk(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.15,
@@ -46,6 +55,7 @@ export function cyberpunk(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
+/** Soft polar curtains: large particles, long trails, heavy nebula haze. */
 export function aurora(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 0.95,
@@ -67,6 +77,7 @@ export function aurora(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
+/** Crisp cyan glow with strong twinkle over a dense starfield. */
 export function neon(overrides: Partial<LookParams> = {}): LookParams {
   return {
     exposure: 1.1,
@@ -110,5 +121,47 @@ export function studio(overrides: Partial<LookParams> = {}): LookParams {
   }
 }
 
-export const looks = { cinematic, cyberpunk, aurora, neon, studio }
+/**
+ * 桜 (sakura) — Japanese spring dusk. Three-color palette: petal pink
+ * (#f7c9d4-family, carried by `hot` lifted toward white), white (the soft
+ * screen-blend glow core, which never clips), and pale gold (the twilight
+ * haze tinted by `background` through the nebula). Restrained bloom and
+ * Reinhard tone mapping keep highlights gentle.
+ */
+export function sakura(overrides: Partial<LookParams> = {}): LookParams {
+  return {
+    exposure: 0.95,
+    bloomStrength: 0.45,
+    bloomThreshold: 0.7,
+    vignette: 0.4,
+    grain: 0.02,
+    background: [0.012, 0.009, 0.008],
+    particleSize: 0.03,
+    intensity: 0.34,
+    hot: [1.0, 0.82, 0.85],
+    twinkle: 0.25,
+    trail: 0.3,
+    aberration: 0.0015,
+    streak: 0.2,
+    nebula: 0.7,
+    stars: 0.5,
+    // Scene-mode FX depth-fade distance (world units): petals melt into
+    // nearby geometry over ~2-3 sprite radii instead of hard-clipping.
+    softParticles: 0.3,
+    blendMode: 'screen',
+    toneMapping: 'reinhard',
+    ...overrides,
+  }
+}
+
+/**
+ * Registry of every curated look, keyed by the same names `.look()` accepts
+ * as strings. Each factory takes `Partial<LookParams>` overrides.
+ *
+ * @example
+ * app.look(looks.neon({ blendMode: 'alpha', toneMapping: 'reinhard' }))
+ */
+export const looks = { cinematic, cyberpunk, aurora, neon, studio, sakura }
+
+/** A key of the `looks` registry — every name `.look()` accepts. */
 export type LookName = keyof typeof looks

@@ -1,3 +1,5 @@
+import { CODES, warnCode } from './errors'
+
 export type Vec3 = [number, number, number]
 export type Vec4 = [number, number, number, number]
 
@@ -131,7 +133,20 @@ export function identity(): Float32Array<ArrayBuffer> {
 
 /** Compose translation, quaternion rotation, and scale into a mat4. */
 export function trsToMat4(t: Vec3, q: Vec4, s: Vec3): Float32Array<ArrayBuffer> {
-  const [x, y, z, w] = q
+  let [x, y, z, w] = q
+  // The rotation formula below assumes a unit quaternion; a denormalized one
+  // (e.g. huge components from a corrupt asset) overflows the Float32 output to
+  // +/-Infinity. Normalize only when |q|^2 strays from 1 by more than a 1e-6
+  // relative tolerance, so already-unit quaternions pass through bit-for-bit.
+  // A zero or non-finite length has no meaningful direction: fall back to the
+  // identity rotation.
+  const lenSq = x * x + y * y + z * z + w * w
+  if (lenSq === 0 || !Number.isFinite(lenSq)) {
+    x = 0; y = 0; z = 0; w = 1
+  } else if (Math.abs(lenSq - 1) > 1e-6) {
+    const inv = 1 / Math.sqrt(lenSq)
+    x *= inv; y *= inv; z *= inv; w *= inv
+  }
   const x2 = x + x, y2 = y + y, z2 = z + z
   const xx = x * x2, xy = x * y2, xz = x * z2
   const yy = y * y2, yz = y * z2, zz = z * z2
@@ -176,10 +191,28 @@ export function transformPoint(m: Float32Array, p: Vec3): Vec3 {
   ]
 }
 
-/** sRGB hex ("#8b5cf6") to linear RGB, for HDR-correct colors. */
+/**
+ * sRGB hex ("#8b5cf6") to linear RGB, for HDR-correct colors.
+ *
+ * Accepts "#rgb", "#rrggbb", and "#rrggbbaa" (alpha ignored), with or without
+ * the leading "#". Anything else (named colors, wrong lengths, non-hex
+ * digits) warns once per call and falls back to white so NaN never reaches a
+ * color buffer. The result is always three finite components.
+ */
 export function hexToLinear(hex: string): Vec3 {
-  const h = hex.replace('#', '')
-  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
+  const h = typeof hex === 'string' ? hex.replace('#', '') : ''
+  let full: string
+  if (/^[0-9a-fA-F]{3}$/.test(h)) {
+    full = h.split('').map((c) => c + c).join('')
+  } else if (/^[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(h)) {
+    full = h.slice(0, 6)
+  } else {
+    warnCode(
+      CODES.INVALID_COLOR,
+      `Unsupported color "${hex}". Use "#rgb", "#rrggbb", or "#rrggbbaa". Falling back to white.`,
+    )
+    return [1, 1, 1]
+  }
   const r = parseInt(full.slice(0, 2), 16) / 255
   const g = parseInt(full.slice(2, 4), 16) / 255
   const b = parseInt(full.slice(4, 6), 16) / 255

@@ -1,8 +1,26 @@
 import { hexToLinear, type Vec3 } from '@yura/core'
+import {
+  packAttractors,
+  ATTRACTOR_ARRAY_VEC4S,
+  ATTRACTOR_VEC4S,
+  ATTRACTOR_RADIUS2_SLOT,
+  ATTRACTOR_DIST_EPSILON,
+  type AttractorParams,
+} from '@yura/renderer-webgpu'
 
 // Pure particle-FX logic: emitter math, pooled stepping, lifetimes.
 // No DOM, no GPU — fully unit-testable. The scene packs the pool into
 // camera-facing sprite instances each frame and hands them to the renderer.
+
+// Attractors reuse the GPU sims' vocabulary wholesale: the AttractorParams
+// type, MAX_ATTRACTORS / DEFAULT_ATTRACTOR_RADIUS / ATTRACTOR_DIST_EPSILON
+// constants, and the packAttractors layout all come from
+// @yura/renderer-webgpu (single source of truth), and step() evaluates the
+// exact softened inverse-square term attractorTermSource emits:
+//   vel += toAtt * strength / ((d² + r² + ε) * sqrt(d² + ε)) * dt
+
+/** Gravity well / repulsor shared with the GPU sims. Re-exported for scene FX. */
+export type { AttractorParams }
 
 /** Floats per packed FX sprite instance: x, y, z, size, r, g, b, alpha. */
 export const FX_FLOATS = 8
@@ -26,6 +44,37 @@ export interface BurstOptions {
   gravity?: number
   /** HDR brightness multiplier — values above 1 feed the bloom pass. Default 2. */
   intensity?: number
+  /**
+   * Emission direction. When set (or when `spread` is set), particles emit in a
+   * cone around this vector instead of the default full sphere. Zero/invalid
+   * vectors fall back to +Y.
+   */
+  direction?: [number, number, number]
+  /**
+   * Cone half-angle in radians around `direction`. 0 sends every particle
+   * exactly along `direction`; Math.PI approximates the full sphere.
+   * Default 0 when `direction` is given. Ignored when both are omitted.
+   */
+  spread?: number
+  /**
+   * Emission source shape. Particles spawn at a random offset inside the shape
+   * (scaled by `radius`) instead of a single point. Default: point emission.
+   */
+  shape?: 'sphere' | 'disc' | 'box'
+  /** Extent of `shape` in world units (sphere/disc radius, box half-size). Default 1. */
+  radius?: number
+  /**
+   * End color reached at the end of each particle's life. Interpolated linearly
+   * from the start color by t = age / life in writeInstances. A hex string, or a
+   * linear-RGB triple (multiplied by `intensity`). Default: no color shift.
+   */
+  colorEnd?: string | [number, number, number]
+  /**
+   * Linear velocity damping per second: each step applies
+   * v *= max(0, 1 - drag * dt) on top of the built-in exponential damping.
+   * Default 0 (no extra damping).
+   */
+  drag?: number
 }
 
 /** Options for a following trail behind a moving object. */
@@ -42,6 +91,21 @@ export interface TrailOptions {
   jitter?: number
   /** HDR brightness multiplier. Default 1.6. */
   intensity?: number
+  /**
+   * End color reached at the end of each particle's life, so the trail fades
+   * toward its tail. Interpolated linearly from the start color by
+   * t = age / life in writeInstances. A hex string, or a linear-RGB triple
+   * (multiplied by `intensity`). Default: no color shift.
+   */
+  colorEnd?: string | [number, number, number]
+  /** Extra multiplier on the sprite radius (`size * width`). Default 1. */
+  width?: number
+  /**
+   * Exponent shaping the lifetime fade curve: the linear remaining-life
+   * fraction is raised to this power before driving sprite size and alpha.
+   * 1 keeps the default linear fade; >1 dies out sooner, <1 lingers. Default 1.
+   */
+  fade?: number
 }
 
 /** Options for a fireworks-like multi-burst celebration. */
@@ -70,6 +134,11 @@ interface PendingBurst {
   t: number
   position: Vec3
   opts: BurstOptions
+}
+
+/** Returns `v` when it is a finite number, otherwise `fallback`. */
+function fin(v: number | undefined, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
 }
 
 function resolvePalette(color: string | string[] | undefined, fallback: string): Vec3[] {
@@ -101,11 +170,28 @@ export class FxPool {
   private cb: Float32Array
   private grav: Float32Array
   private drag: Float32Array
+  private ldrag: Float32Array
+  private er: Float32Array
+  private eg: Float32Array
+  private eb: Float32Array
+  private fpow: Float32Array
+
+  /**
+   * Gravity wells / repulsors applied to every particle each step — the same
+   * {@link AttractorParams} vocabulary and force math as the GPU particle
+   * sims. Unset/empty keeps stepping bit-identical to a pool without
+   * attractors (the term is skipped entirely, exactly like the shaders'
+   * count-0 guard); entries beyond MAX_ATTRACTORS are ignored via the same
+   * packAttractors clamp the GPU upload path uses.
+   */
+  attractors: readonly AttractorParams[] = []
 
   private count = 0
   private cursor = 0
   private pending: PendingBurst[] = []
   private rng: FxRandom
+  /** Scratch buffer for packAttractors — the same packed layout the shaders read. */
+  private attractorData: Float32Array | null = null
 
   constructor(capacity = 8192, rng: FxRandom = Math.random) {
     this.capacity = Math.max(1, Math.floor(capacity))
@@ -125,6 +211,11 @@ export class FxPool {
     this.cb = new Float32Array(n)
     this.grav = new Float32Array(n)
     this.drag = new Float32Array(n)
+    this.ldrag = new Float32Array(n)
+    this.er = new Float32Array(n)
+    this.eg = new Float32Array(n)
+    this.eb = new Float32Array(n)
+    this.fpow = new Float32Array(n)
   }
 
   /** Number of currently live particles. */
@@ -134,28 +225,113 @@ export class FxPool {
 
   /** Spawns a radial burst at `position`. */
   burst(position: Readonly<Vec3> | readonly number[], opts: BurstOptions = {}): void {
-    const count = Math.max(1, Math.floor(opts.count ?? 80))
-    const speed = opts.speed ?? 6
-    const life = opts.life ?? 0.9
-    const size = opts.size ?? 0.16
-    const gravity = opts.gravity ?? -6
-    const intensity = opts.intensity ?? 2
+    const count = Math.max(1, Math.floor(fin(opts.count, 80)))
+    const speed = fin(opts.speed, 6)
+    const life = fin(opts.life, 0.9)
+    const size = fin(opts.size, 0.16)
+    const gravity = fin(opts.gravity, -6)
+    const intensity = fin(opts.intensity, 2)
+    const dragLin = Math.max(fin(opts.drag, 0), 0)
     const palette = resolvePalette(opts.color, '#ffd166')
+    const bx = fin(position[0], 0)
+    const by = fin(position[1], 0)
+    const bz = fin(position[2], 0)
+
+    // Optional cone emission: normalized axis + Frisvad orthonormal basis.
+    const cone = opts.direction !== undefined || opts.spread !== undefined
+    let nx = 0, ny = 1, nz = 0
+    let t1x = 1, t1y = 0, t1z = 0
+    let t2x = 0, t2y = 0, t2z = 1
+    let cosSpread = 1
+    if (cone) {
+      const d = opts.direction
+      const dx = fin(d?.[0], 0)
+      const dy = fin(d?.[1], d === undefined ? 1 : 0)
+      const dz = fin(d?.[2], 0)
+      const len = Math.hypot(dx, dy, dz)
+      if (len > 1e-8) {
+        nx = dx / len
+        ny = dy / len
+        nz = dz / len
+      }
+      const sgn = nz >= 0 ? 1 : -1
+      const ac = -1 / (sgn + nz)
+      const bb = nx * ny * ac
+      t1x = 1 + sgn * nx * nx * ac
+      t1y = sgn * bb
+      t1z = -sgn * nx
+      t2x = bb
+      t2y = sgn + ny * ny * ac
+      t2z = -ny
+      cosSpread = Math.cos(Math.min(Math.max(fin(opts.spread, 0), 0), Math.PI))
+    }
+
+    // Optional volumetric source shape.
+    const shape = opts.shape
+    const shapeR = Math.max(fin(opts.radius, 1), 0)
+
+    // Optional end color (linear-RGB), interpolated over each particle's life.
+    const ce = opts.colorEnd
+    const endCol: Vec3 | null =
+      typeof ce === 'string'
+        ? hexToLinear(ce)
+        : Array.isArray(ce)
+          ? [fin(ce[0], 0), fin(ce[1], 0), fin(ce[2], 0)]
+          : null
+
     for (let i = 0; i < count; i++) {
-      // Uniform direction on the unit sphere.
-      const y = this.rng() * 2 - 1
-      const a = this.rng() * Math.PI * 2
-      const r = Math.sqrt(Math.max(1 - y * y, 0))
+      let ux: number, uy: number, uz: number
+      if (cone) {
+        // Uniform direction on the spherical cap of half-angle `spread`.
+        const cosT = 1 - this.rng() * (1 - cosSpread)
+        const sinT = Math.sqrt(Math.max(1 - cosT * cosT, 0))
+        const phi = this.rng() * Math.PI * 2
+        const cp = Math.cos(phi) * sinT
+        const sp = Math.sin(phi) * sinT
+        ux = t1x * cp + t2x * sp + nx * cosT
+        uy = t1y * cp + t2y * sp + ny * cosT
+        uz = t1z * cp + t2z * sp + nz * cosT
+      } else {
+        // Uniform direction on the unit sphere.
+        const y = this.rng() * 2 - 1
+        const a = this.rng() * Math.PI * 2
+        const r = Math.sqrt(Math.max(1 - y * y, 0))
+        ux = r * Math.cos(a)
+        uy = y
+        uz = r * Math.sin(a)
+      }
       const s = speed * (0.35 + 0.65 * this.rng())
       const c = palette[Math.floor(this.rng() * palette.length) % palette.length]
+      let ox = 0, oy = 0, oz = 0
+      if (shape === 'sphere') {
+        const sy = this.rng() * 2 - 1
+        const sa = this.rng() * Math.PI * 2
+        const sr = Math.sqrt(Math.max(1 - sy * sy, 0))
+        const rad = shapeR * Math.cbrt(this.rng())
+        ox = sr * Math.cos(sa) * rad
+        oy = sy * rad
+        oz = sr * Math.sin(sa) * rad
+      } else if (shape === 'disc') {
+        const rad = shapeR * Math.sqrt(this.rng())
+        const sa = this.rng() * Math.PI * 2
+        ox = Math.cos(sa) * rad
+        oz = Math.sin(sa) * rad
+      } else if (shape === 'box') {
+        ox = (this.rng() * 2 - 1) * shapeR
+        oy = (this.rng() * 2 - 1) * shapeR
+        oz = (this.rng() * 2 - 1) * shapeR
+      }
+      const end = endCol ?? c
       this.spawn(
-        position[0], position[1], position[2],
-        r * Math.cos(a) * s, y * s, r * Math.sin(a) * s,
+        bx + ox, by + oy, bz + oz,
+        ux * s, uy * s, uz * s,
         life * (0.7 + 0.45 * this.rng()),
         size * (0.7 + 0.6 * this.rng()),
         c[0] * intensity, c[1] * intensity, c[2] * intensity,
         gravity,
         1.5,
+        dragLin,
+        end[0] * intensity, end[1] * intensity, end[2] * intensity,
       )
     }
   }
@@ -200,6 +376,15 @@ export class FxPool {
       }
       this.pending = keep
     }
+    // Pack the wells once per step through the GPU sims' own packAttractors
+    // (clamps to MAX_ATTRACTORS, squares/defaults the radius). Count 0 skips
+    // the term entirely — legacy trajectories stay bit-identical.
+    let attData: Float32Array | null = null
+    let attCount = 0
+    if (this.attractors.length) {
+      attData = this.attractorData ??= new Float32Array(ATTRACTOR_ARRAY_VEC4S * 4)
+      attCount = packAttractors(this.attractors, attData)
+    }
     const damp = (d: number) => Math.exp(-d * dt)
     for (let i = this.count - 1; i >= 0; i--) {
       this.age[i] += dt
@@ -208,10 +393,44 @@ export class FxPool {
         continue
       }
       this.vy[i] += this.grav[i] * dt
+      if (attData !== null && attCount > 0) {
+        // Same math as attractorTermSource (@yura/renderer-webgpu), reading
+        // the same packed [pos.xyz, strength] + [radius², …] vec4 pairs:
+        // vel += toAtt * strength / ((d² + r² + ε) * sqrt(d² + ε)) * dt.
+        const ax = this.px[i]
+        const ay = this.py[i]
+        const az = this.pz[i]
+        let dvx = 0
+        let dvy = 0
+        let dvz = 0
+        for (let j = 0; j < attCount; j++) {
+          const base = j * ATTRACTOR_VEC4S * 4
+          const tx = attData[base] - ax
+          const ty = attData[base + 1] - ay
+          const tz = attData[base + 2] - az
+          const d2 = tx * tx + ty * ty + tz * tz
+          const soft2 = attData[base + ATTRACTOR_RADIUS2_SLOT * 4]
+          const s =
+            (attData[base + 3] /
+              ((d2 + soft2 + ATTRACTOR_DIST_EPSILON) * Math.sqrt(d2 + ATTRACTOR_DIST_EPSILON))) *
+            dt
+          dvx += tx * s
+          dvy += ty * s
+          dvz += tz * s
+        }
+        this.vx[i] += dvx
+        this.vy[i] += dvy
+        this.vz[i] += dvz
+      }
       const f = damp(this.drag[i])
       this.vx[i] *= f
       this.vy[i] *= f
       this.vz[i] *= f
+      // Optional linear drag: v *= max(0, 1 - drag * dt). No-op at drag = 0.
+      const q = Math.max(1 - this.ldrag[i] * dt, 0)
+      this.vx[i] *= q
+      this.vy[i] *= q
+      this.vz[i] *= q
       this.px[i] += this.vx[i] * dt
       this.py[i] += this.vy[i] * dt
       this.pz[i] += this.vz[i] * dt
@@ -225,15 +444,19 @@ export class FxPool {
   writeInstances(out: Float32Array): number {
     const n = Math.min(this.count, Math.floor(out.length / FX_FLOATS))
     for (let i = 0; i < n; i++) {
-      const fade = Math.max(1 - this.age[i] / this.life[i], 0)
+      const t = Math.min(Math.max(this.age[i] / this.life[i], 0), 1)
+      // Per-particle fade exponent shapes the decay curve (1 = linear default).
+      const k = this.fpow[i]
+      const fade = k === 1 ? 1 - t : Math.pow(1 - t, k)
       const o = i * FX_FLOATS
       out[o] = this.px[i]
       out[o + 1] = this.py[i]
       out[o + 2] = this.pz[i]
       out[o + 3] = this.size[i] * (0.55 + 0.45 * fade)
-      out[o + 4] = this.cr[i]
-      out[o + 5] = this.cg[i]
-      out[o + 6] = this.cb[i]
+      // Lerp start → end color by life fraction (end === start by default).
+      out[o + 4] = this.cr[i] + (this.er[i] - this.cr[i]) * t
+      out[o + 5] = this.cg[i] + (this.eg[i] - this.cg[i]) * t
+      out[o + 6] = this.cb[i] + (this.eb[i] - this.cb[i]) * t
       out[o + 7] = fade * fade
     }
     return n
@@ -253,6 +476,7 @@ export class FxPool {
     life: number, size: number,
     r: number, g: number, b: number,
     gravity: number, drag: number,
+    dragLin = 0, endR = r, endG = g, endB = b, fadeExp = 1,
   ): void {
     let i: number
     if (this.count < this.capacity) {
@@ -261,20 +485,25 @@ export class FxPool {
       i = this.cursor
       this.cursor = (this.cursor + 1) % this.capacity
     }
-    this.px[i] = x
-    this.py[i] = y
-    this.pz[i] = z
-    this.vx[i] = vx
-    this.vy[i] = vy
-    this.vz[i] = vz
+    this.px[i] = fin(x, 0)
+    this.py[i] = fin(y, 0)
+    this.pz[i] = fin(z, 0)
+    this.vx[i] = fin(vx, 0)
+    this.vy[i] = fin(vy, 0)
+    this.vz[i] = fin(vz, 0)
     this.age[i] = 0
-    this.life[i] = Math.max(life, 1e-3)
-    this.size[i] = size
-    this.cr[i] = r
-    this.cg[i] = g
-    this.cb[i] = b
-    this.grav[i] = gravity
-    this.drag[i] = drag
+    this.life[i] = Math.max(fin(life, 1e-3), 1e-3)
+    this.size[i] = fin(size, 0)
+    this.cr[i] = fin(r, 0)
+    this.cg[i] = fin(g, 0)
+    this.cb[i] = fin(b, 0)
+    this.grav[i] = fin(gravity, 0)
+    this.drag[i] = fin(drag, 0)
+    this.ldrag[i] = Math.max(fin(dragLin, 0), 0)
+    this.er[i] = fin(endR, 0)
+    this.eg[i] = fin(endG, 0)
+    this.eb[i] = fin(endB, 0)
+    this.fpow[i] = Math.max(fin(fadeExp, 1), 1e-3)
   }
 
   /** Injected rng, shared with emitters bound to this pool. */
@@ -299,6 +528,11 @@ export class FxPool {
       this.cb[i] = this.cb[last]
       this.grav[i] = this.grav[last]
       this.drag[i] = this.drag[last]
+      this.ldrag[i] = this.ldrag[last]
+      this.er[i] = this.er[last]
+      this.eg[i] = this.eg[last]
+      this.eb[i] = this.eb[last]
+      this.fpow[i] = this.fpow[last]
     }
     if (this.cursor >= this.count) this.cursor = 0
   }
@@ -317,6 +551,9 @@ export class FxTrailEmitter {
   private size: number
   private jitter: number
   private intensity: number
+  private endColor: Vec3 | null
+  private width: number
+  private fade: number
   private acc = 0
 
   constructor(pool: FxPool, opts: TrailOptions = {}) {
@@ -327,6 +564,16 @@ export class FxTrailEmitter {
     this.size = opts.size ?? 0.11
     this.jitter = opts.jitter ?? 0.12
     this.intensity = opts.intensity ?? 1.6
+    // Optional end color (linear-RGB), resolved the same way as burst colorEnd.
+    const ce = opts.colorEnd
+    this.endColor =
+      typeof ce === 'string'
+        ? hexToLinear(ce)
+        : Array.isArray(ce)
+          ? [fin(ce[0], 0), fin(ce[1], 0), fin(ce[2], 0)]
+          : null
+    this.width = Math.max(fin(opts.width, 1), 0)
+    this.fade = fin(opts.fade, 1)
   }
 
   /** Emits `rate * dt` particles (accumulated) at `position`, drifting against `velocity`. */
@@ -338,6 +585,8 @@ export class FxTrailEmitter {
     while (n-- > 0) {
       const j = this.jitter
       const c = this.palette[Math.floor(rng() * this.palette.length) % this.palette.length]
+      // End color defaults to the particle's start color (no shift), matching burst.
+      const end = this.endColor ?? c
       this.pool.spawn(
         position[0] + (rng() * 2 - 1) * j,
         position[1] + (rng() * 2 - 1) * j,
@@ -346,10 +595,13 @@ export class FxTrailEmitter {
         -velocity[1] * 0.2 + (rng() * 2 - 1) * 0.4,
         -velocity[2] * 0.2 + (rng() * 2 - 1) * 0.4,
         this.life * (0.7 + 0.45 * rng()),
-        this.size * (0.7 + 0.6 * rng()),
+        this.size * this.width * (0.7 + 0.6 * rng()),
         c[0] * this.intensity, c[1] * this.intensity, c[2] * this.intensity,
         0,
         2.5,
+        0,
+        end[0] * this.intensity, end[1] * this.intensity, end[2] * this.intensity,
+        this.fade,
       )
     }
   }

@@ -101,6 +101,14 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
   if (buf.byteLength < 20 || view.getUint32(0, true) !== 0x46546c67) {
     throw new YuraError(CODES.ASSET_LOAD_FAILED, 'Not a GLB file (bad magic).', 'Export your model as .glb (binary glTF 2.0).')
   }
+  const version = view.getUint32(4, true)
+  if (version !== 2) {
+    throw new YuraError(
+      CODES.ASSET_LOAD_FAILED,
+      `Unsupported GLB container version ${version} (expected 2).`,
+      'Re-export your model as binary glTF 2.0 (.glb).',
+    )
+  }
   let json: GltfJson | null = null
   let bin: Uint8Array<ArrayBuffer> | null = null
   let offset = 12
@@ -108,8 +116,23 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     const len = view.getUint32(offset, true)
     const type = view.getUint32(offset + 4, true)
     const start = offset + 8
+    if (start + len > buf.byteLength) {
+      throw new YuraError(
+        CODES.ASSET_LOAD_FAILED,
+        `GLB chunk at byte ${offset} declares ${len} bytes but the file ends at byte ${buf.byteLength}.`,
+        'The file is truncated or corrupt. Re-export the .glb.',
+      )
+    }
     if (type === 0x4e4f534a) {
-      json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, start, len))) as GltfJson
+      try {
+        json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, start, len))) as GltfJson
+      } catch (err) {
+        throw new YuraError(
+          CODES.ASSET_LOAD_FAILED,
+          `GLB JSON chunk is not valid JSON (${err instanceof Error ? err.message : String(err)}).`,
+          'The file is corrupt. Re-export the .glb.',
+        )
+      }
     } else if (type === 0x004e4942) {
       bin = new Uint8Array(buf.slice(start, start + len))
     }
@@ -129,24 +152,89 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     }
   }
 
+  // Corrupt files reference accessors/bufferViews/buffers that do not exist, or
+  // declare counts/offsets that read past the end of their buffer. Every lookup
+  // below is validated so corruption surfaces as YURA-020 instead of a raw
+  // TypeError/RangeError.
+  const malformed = (detail: string): YuraError =>
+    new YuraError(
+      CODES.ASSET_LOAD_FAILED,
+      `Malformed glTF: ${detail}.`,
+      'The file is corrupt or truncated. Re-export the .glb.',
+    )
+
+  const isIndexLike = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+
+  const getAccessor = (idx: number): NonNullable<GltfJson['accessors']>[number] => {
+    const acc = json!.accessors?.[idx]
+    if (acc === null || typeof acc !== 'object') {
+      throw malformed(`accessor ${idx} is referenced but not defined`)
+    }
+    if (!isIndexLike(acc.count)) {
+      throw malformed(`accessor ${idx} declares an invalid count (${acc.count})`)
+    }
+    if (COMP_SIZE[acc.componentType] === undefined) {
+      throw malformed(`accessor ${idx} has an unknown componentType (${acc.componentType})`)
+    }
+    return acc
+  }
+
+  const getBufferView = (idx: unknown, referrer: string): { bv: NonNullable<GltfJson['bufferViews']>[number]; src: Uint8Array } => {
+    const bv = isIndexLike(idx) ? json!.bufferViews?.[idx] : undefined
+    if (bv === null || typeof bv !== 'object') {
+      throw malformed(`${referrer} references bufferView ${idx}, which is not defined`)
+    }
+    const src = isIndexLike(bv.buffer) ? buffers[bv.buffer] : undefined
+    if (src === undefined) {
+      throw malformed(`bufferView ${idx} references buffer ${bv.buffer}, which is not defined`)
+    }
+    return { bv, src }
+  }
+
+  // Resolves where an accessor's bytes live and proves every element read stays
+  // inside the backing buffer before any DataView access happens.
+  const accessorSource = (
+    idx: number,
+    acc: NonNullable<GltfJson['accessors']>[number],
+    elemSize: number,
+    useViewStride: boolean,
+  ): { dv: DataView; base: number; stride: number } => {
+    const { bv, src } = getBufferView(acc.bufferView, `accessor ${idx}`)
+    const bvOffset = bv.byteOffset ?? 0
+    const accOffset = acc.byteOffset ?? 0
+    const stride = useViewStride ? bv.byteStride ?? elemSize : elemSize
+    if (!isIndexLike(bvOffset) || !isIndexLike(accOffset) || !isIndexLike(stride)) {
+      throw malformed(`accessor ${idx} declares an invalid byteOffset or byteStride`)
+    }
+    const relBase = bvOffset + accOffset
+    const span = acc.count === 0 ? 0 : (acc.count - 1) * stride + elemSize
+    if (relBase + span > src.byteLength) {
+      throw malformed(
+        `accessor ${idx} needs ${relBase + span} bytes but buffer ${bv.buffer} holds ${src.byteLength}`,
+      )
+    }
+    return { dv: new DataView(src.buffer), base: src.byteOffset + relBase, stride }
+  }
+
   const readAccessor = (idx: number): { data: Float32Array<ArrayBuffer>; comps: number; count: number } => {
-    const acc = json!.accessors![idx]
+    const acc = getAccessor(idx)
     const comps = TYPE_COMPS[acc.type]
+    if (comps === undefined) {
+      throw malformed(`accessor ${idx} has an unknown type (${JSON.stringify(acc.type)})`)
+    }
     const compSize = COMP_SIZE[acc.componentType]
+    if (acc.bufferView === undefined) {
+      return { data: new Float32Array(acc.count * comps), comps, count: acc.count }
+    }
+    const { dv, base, stride } = accessorSource(idx, acc, comps * compSize, true)
     const out = new Float32Array(acc.count * comps)
-    if (acc.bufferView === undefined) return { data: out, comps, count: acc.count }
-    const bv = json!.bufferViews![acc.bufferView]
-    const src = buffers[bv.buffer]
-    const base = src.byteOffset + (bv.byteOffset ?? 0) + (acc.byteOffset ?? 0)
-    const stride = bv.byteStride ?? comps * compSize
-    const dv = new DataView(src.buffer)
     for (let i = 0; i < acc.count; i++) {
       for (let c = 0; c < comps; c++) {
         const o = base + i * stride + c * compSize
         let v: number
         switch (acc.componentType) {
           case 5126: v = dv.getFloat32(o, true); break
-          case 5125: v = dv.getUint32(o, true); break
           case 5123: v = dv.getUint16(o, true); if (acc.normalized) v /= 65535; break
           case 5121: v = dv.getUint8(o); if (acc.normalized) v /= 255; break
           case 5122: v = dv.getInt16(o, true); if (acc.normalized) v = Math.max(v / 32767, -1); break
@@ -158,13 +246,31 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     return { data: out, comps, count: acc.count }
   }
 
+  // Index accessors (SCALAR uint32/uint16/uint8) stay on an integer path so
+  // uint32 indices above 2^24 are never rounded through a Float32.
+  const readIndices = (idx: number): Uint32Array<ArrayBuffer> => {
+    const acc = getAccessor(idx)
+    if (acc.bufferView === undefined) return new Uint32Array(acc.count)
+    const compSize = COMP_SIZE[acc.componentType]
+    const { dv, base } = accessorSource(idx, acc, compSize, false)
+    const out = new Uint32Array(acc.count)
+    for (let i = 0; i < acc.count; i++) {
+      const o = base + i * compSize
+      switch (acc.componentType) {
+        case 5125: out[i] = dv.getUint32(o, true); break
+        case 5123: out[i] = dv.getUint16(o, true); break
+        default: out[i] = dv.getUint8(o); break
+      }
+    }
+    return out
+  }
+
   // Images: decode embedded or external to ImageBitmaps.
   const images: ImageBitmap[] = []
   for (const img of json.images ?? []) {
     let blob: Blob
     if (img.bufferView !== undefined) {
-      const bv = json.bufferViews![img.bufferView]
-      const src = buffers[bv.buffer]
+      const { bv, src } = getBufferView(img.bufferView, 'image')
       const bytes = src.subarray(bv.byteOffset ?? 0, (bv.byteOffset ?? 0) + bv.byteLength)
       blob = new Blob([bytes.slice()], { type: img.mimeType ?? 'image/png' })
     } else if (img.uri) {
@@ -216,7 +322,10 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
   const max: Vec3 = [-Infinity, -Infinity, -Infinity]
 
   const visit = (nodeIdx: number, parent: Float32Array): void => {
-    const node = json!.nodes![nodeIdx]
+    const node = json!.nodes?.[nodeIdx]
+    if (node === null || typeof node !== 'object') {
+      throw malformed(`node ${nodeIdx} is referenced but not defined`)
+    }
     let local: Float32Array
     if (node.matrix) {
       local = new Float32Array(node.matrix)
@@ -229,9 +338,14 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     }
     const world = multiply(parent, local)
     if (node.mesh !== undefined) {
-      for (const prim of json!.meshes![node.mesh].primitives) {
+      const mesh = json!.meshes?.[node.mesh]
+      if (mesh === null || typeof mesh !== 'object' || !Array.isArray(mesh.primitives)) {
+        throw malformed(`node ${nodeIdx} references mesh ${node.mesh}, which is not defined`)
+      }
+      for (const prim of mesh.primitives) {
+        if (prim === null || typeof prim !== 'object') continue
         if (prim.mode !== undefined && prim.mode !== 4) continue // triangles only
-        const posAcc = prim.attributes['POSITION']
+        const posAcc = prim.attributes?.['POSITION']
         if (posAcc === undefined) continue
         const pos = readAccessor(posAcc)
         const norm = prim.attributes['NORMAL'] !== undefined
@@ -242,9 +356,7 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
           : new Float32Array(pos.count * 2)
         let indices: Uint32Array<ArrayBuffer>
         if (prim.indices !== undefined) {
-          const idxData = readAccessor(prim.indices).data
-          indices = new Uint32Array(idxData.length)
-          for (let i = 0; i < idxData.length; i++) indices[i] = idxData[i]
+          indices = readIndices(prim.indices)
         } else {
           indices = new Uint32Array(pos.count)
           for (let i = 0; i < pos.count; i++) indices[i] = i
@@ -271,10 +383,10 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
 
   const sceneNodes = json.scenes?.[json.scene ?? 0]?.nodes ?? (json.nodes ? json.nodes.map((_, i) => i) : [])
   const roots = new Set(sceneNodes)
-  if (json.scenes === undefined && json.nodes) {
-    // No scene: treat only unparented nodes as roots.
-    for (const n of json.nodes) for (const c of n.children ?? []) roots.delete(c)
-  }
+  // Valid scene.nodes entries are always unparented, so pruning every child is
+  // a no-op for them — and it stops double visits when we fell back to "all
+  // nodes" (no scenes array, or the selected scene declares no node list).
+  for (const n of json.nodes ?? []) for (const c of n.children ?? []) roots.delete(c)
   for (const idx of roots) visit(idx, identity())
 
   if (primitives.length === 0) {

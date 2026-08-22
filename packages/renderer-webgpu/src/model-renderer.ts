@@ -9,8 +9,10 @@ import {
   warnCode,
   type Vec3,
 } from '@yura/core'
-import { POST_WGSL } from './shaders'
-import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL, FX_WGSL } from './model-shaders'
+import { buildPostWgsl } from './shaders'
+import { gpuBlendState, resolveBlendMode, resolveToneMapping, type BlendMode, type ToneMapping } from './blend'
+import { ViewCache } from './view-cache'
+import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL, FX_WGSL, FX_SOFT_WGSL } from './model-shaders'
 import { loadGLB, type GLTFModel } from './gltf'
 import type { MeshGeometry } from './meshes'
 import type { LookParams } from './renderer'
@@ -18,6 +20,59 @@ import type { LookParams } from './renderer'
 const ENV_SIZE = 256
 const ENV_MIPS = 7
 const SHADOW_SIZE = 2048
+
+/** Camera frustum planes; also feed the soft-particle depth linearization. */
+const MODEL_CAMERA_NEAR = 0.05
+const MODEL_CAMERA_FAR = 200
+
+/**
+ * Default soft-particle fade distance (world units) for scene-mode FX
+ * sprites. 0 = off: the FX path stays bit-identical to the legacy shader
+ * and pipeline (same discipline as DEFAULT_TURBULENCE in shaders.ts).
+ */
+export const DEFAULT_SOFT_PARTICLES = 0
+
+/** FX frame uniform floats: viewProj (16) + right (4) + up (4) + soft params (4). */
+const FX_FRAME_FLOATS = 28
+
+/** Direction of the key light (matches the analytic light fed to the PBR shader). */
+const MODEL_LIGHT_DIR: Vec3 = [-0.5, 0.5, -0.65]
+
+let lightVPMemo: { area: number; dir: Vec3; matrix: Float32Array<ArrayBuffer> } | null = null
+
+/**
+ * Light view-projection matrix for the key-light shadow camera: an
+ * orthographic box of half-extent `shadowArea` looking down `lightDir`.
+ *
+ * Pure and memoized — identical inputs return the exact same Float32Array
+ * instance, so the steady state (light and area unchanged) allocates
+ * nothing. Callers must treat the returned matrix as immutable.
+ */
+export function computeLightViewProj(shadowArea: number, lightDir: Vec3): Float32Array<ArrayBuffer> {
+  const memo = lightVPMemo
+  if (
+    memo !== null &&
+    memo.area === shadowArea &&
+    memo.dir[0] === lightDir[0] &&
+    memo.dir[1] === lightDir[1] &&
+    memo.dir[2] === lightDir[2]
+  ) {
+    return memo.matrix
+  }
+  const a = shadowArea
+  const ll = Math.hypot(lightDir[0], lightDir[1], lightDir[2])
+  const lightEye: Vec3 = [
+    (lightDir[0] / ll) * a * 2.4,
+    (lightDir[1] / ll) * a * 2.4,
+    (lightDir[2] / ll) * a * 2.4,
+  ]
+  const matrix = multiply(
+    ortho(-a, a, -a, a, 0.1, a * 6),
+    lookAt(lightEye, [0, 0, 0], [0, 1, 0]),
+  )
+  lightVPMemo = { area: a, dir: [lightDir[0], lightDir[1], lightDir[2]], matrix }
+  return matrix
+}
 /** Boot framing for the orbit camera — a stylish three-quarter view. */
 const ModelHome: { yaw: number; pitch: number; distance: number } = {
   yaw: Math.PI + 0.93,
@@ -102,6 +157,13 @@ export class WebGPUModelRenderer {
   private compositePipeline!: GPURenderPipeline
   private fxPipeline!: GPURenderPipeline
 
+  private postModule!: GPUShaderModule
+  private fxModule!: GPUShaderModule
+  private appliedToneMapping: ToneMapping
+  private appliedBlendMode: BlendMode
+  /** Caches per-frame texture views; invalidated when render targets are recreated. */
+  private readonly viewCache = new ViewCache()
+
   private envTex!: GPUTexture
   private shadowTex!: GPUTexture
   private envSampler!: GPUSampler
@@ -138,9 +200,13 @@ export class WebGPUModelRenderer {
   private primitives: GpuPrimitive[] = []
   private dynMeshes: DynMesh[] = []
   private textureCache = new Map<string, GPUTexture>()
+  /** Every GPUBuffer this renderer created and has not yet destroyed. */
+  private ownedBuffers = new Set<GPUBuffer>()
 
   private frameData = new Float32Array(72)
   private postData = new Float32Array(16)
+  /** Last light view-proj written to shadowUB — skip the upload while unchanged. */
+  private lastLightVP: Float32Array | null = null
 
   private width = 0
   private height = 0
@@ -153,7 +219,11 @@ export class WebGPUModelRenderer {
   private fxCapacity = 0
   private fxData: Float32Array<ArrayBuffer> | null = null
   private fxCount = 0
-  private fxFrameData = new Float32Array(24)
+  private fxFrameData = new Float32Array(FX_FRAME_FLOATS)
+  // Soft-particle state: module built lazily on first activation; the flag
+  // mirrors look.softParticles > 0 so toggling rebuilds the FX pipeline once.
+  private fxSoftModule: GPUShaderModule | null = null
+  private appliedFxSoft = false
 
   look: LookParams
   colorA: Vec3 = [0.05, 0.3, 0.5]
@@ -194,6 +264,8 @@ export class WebGPUModelRenderer {
     this.context = context
     this.format = format
     this.look = look
+    this.appliedToneMapping = resolveToneMapping(look.toneMapping)
+    this.appliedBlendMode = resolveBlendMode(look.blendMode)
   }
 
   static async create(canvas: HTMLCanvasElement, device: GPUDevice, look: LookParams): Promise<WebGPUModelRenderer> {
@@ -216,7 +288,10 @@ export class WebGPUModelRenderer {
   private initPipelines(): void {
     const d = this.device
     const pbrModule = d.createShaderModule({ label: 'yura-pbr', code: PBR_WGSL })
-    const postModule = d.createShaderModule({ label: 'yura-model-post', code: POST_WGSL })
+    this.postModule = d.createShaderModule({
+      label: 'yura-model-post',
+      code: buildPostWgsl(this.appliedToneMapping),
+    })
 
     this.pbrPipeline = d.createRenderPipeline({
       label: 'yura-pbr',
@@ -294,17 +369,9 @@ export class WebGPUModelRenderer {
       depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
     })
 
-    const makePost = (entryPoint: string, format: GPUTextureFormat): GPURenderPipeline =>
-      d.createRenderPipeline({
-        label: `yura-model-${entryPoint}`,
-        layout: 'auto',
-        vertex: { module: postModule, entryPoint: 'fsVS' },
-        fragment: { module: postModule, entryPoint, targets: [{ format }] },
-        primitive: { topology: 'triangle-list' },
-      })
-    this.brightPipeline = makePost('brightFS', 'rgba16float')
-    this.blurPipeline = makePost('blurFS', 'rgba16float')
-    this.compositePipeline = makePost('compositeFS', this.format)
+    this.brightPipeline = this.makePostPipeline('brightFS', 'rgba16float')
+    this.blurPipeline = this.makePostPipeline('blurFS', 'rgba16float')
+    this.buildCompositePipeline()
 
     this.envSampler = d.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' })
     this.matSampler = d.createSampler({
@@ -317,7 +384,7 @@ export class WebGPUModelRenderer {
     })
 
     const uniform = (label: string, size: number) =>
-      d.createBuffer({ label, size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      this.makeBuffer({ label, size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     this.frameUB = uniform('yura-frame-ub', 288)
     this.shadowUB = uniform('yura-shadow-ub', 64)
     this.brightUB = uniform('yura-mbright-ub', 64)
@@ -326,20 +393,24 @@ export class WebGPUModelRenderer {
     this.streak1UB = uniform('yura-mstreak1-ub', 64)
     this.streak2UB = uniform('yura-mstreak2-ub', 64)
     this.compositeUB = uniform('yura-mcomposite-ub', 64)
-    this.fxUB = uniform('yura-fx-ub', 96)
+    this.fxUB = uniform('yura-fx-ub', FX_FRAME_FLOATS * 4)
 
-    // FX sprites: instanced camera-facing quads, additive HDR blending,
-    // depth-tested against the mesh scene without writing depth.
-    const additive: GPUBlendState = {
-      color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-      alpha: { srcFactor: 'zero', dstFactor: 'one', operation: 'add' },
-    }
-    const fxModule = d.createShaderModule({ label: 'yura-fx', code: FX_WGSL })
-    this.fxPipeline = d.createRenderPipeline({
+    // FX sprites: instanced camera-facing quads blended into the HDR target
+    // with the look's blend mode (additive by default), depth-tested against
+    // the mesh scene without writing depth.
+    this.fxModule = d.createShaderModule({ label: 'yura-fx', code: FX_WGSL })
+    this.buildFxPipeline()
+  }
+
+  private buildFxPipeline(): void {
+    // Pipeline selection keeps the default path byte-identical to the legacy
+    // descriptor: the soft variant only swaps in the depth-fade module.
+    const module = this.appliedFxSoft ? (this.fxSoftModule as GPUShaderModule) : this.fxModule
+    this.fxPipeline = this.device.createRenderPipeline({
       label: 'yura-fx',
       layout: 'auto',
       vertex: {
-        module: fxModule,
+        module,
         entryPoint: 'vs',
         buffers: [
           {
@@ -352,13 +423,72 @@ export class WebGPUModelRenderer {
           },
         ],
       },
-      fragment: { module: fxModule, entryPoint: 'fs', targets: [{ format: 'rgba16float', blend: additive }] },
+      fragment: {
+        module,
+        entryPoint: 'fs',
+        targets: [{ format: 'rgba16float', blend: gpuBlendState(this.appliedBlendMode) }],
+      },
       primitive: { topology: 'triangle-strip', cullMode: 'none' },
       depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
     })
   }
 
   /** Render the procedural studio HDRI into a mipped cubemap, once. */
+  private makePostPipeline(entryPoint: string, format: GPUTextureFormat): GPURenderPipeline {
+    return this.device.createRenderPipeline({
+      label: `yura-model-${entryPoint}`,
+      layout: 'auto',
+      vertex: { module: this.postModule, entryPoint: 'fsVS' },
+      fragment: { module: this.postModule, entryPoint, targets: [{ format }] },
+      primitive: { topology: 'triangle-list' },
+    })
+  }
+
+  private buildCompositePipeline(): void {
+    this.compositePipeline = this.makePostPipeline('compositeFS', this.format)
+  }
+
+  private rebuildCompositeBG(): void {
+    if (!this.hdrTex || !this.bloomA || !this.bloomC) return
+    this.compositeBG = this.device.createBindGroup({
+      layout: this.compositePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.postSampler },
+        { binding: 1, resource: this.viewCache.getView(this.hdrTex) },
+        { binding: 2, resource: { buffer: this.compositeUB } },
+        { binding: 3, resource: this.viewCache.getView(this.bloomA) },
+        { binding: 4, resource: this.viewCache.getView(this.bloomC) },
+      ],
+    })
+  }
+
+  /**
+   * Rebuild pipelines only when look.blendMode / look.toneMapping actually
+   * changed (same discipline as the particle renderer's syncLookModes).
+   */
+  private syncLookModes(): void {
+    const blend = resolveBlendMode(this.look.blendMode)
+    const soft = (this.look.softParticles ?? DEFAULT_SOFT_PARTICLES) > 0
+    if (blend !== this.appliedBlendMode || soft !== this.appliedFxSoft) {
+      this.appliedBlendMode = blend
+      this.appliedFxSoft = soft
+      if (soft && !this.fxSoftModule) {
+        this.fxSoftModule = this.device.createShaderModule({ label: 'yura-fx-soft', code: FX_SOFT_WGSL })
+      }
+      this.buildFxPipeline()
+      this.rebuildFxBG()
+    }
+    const tone = resolveToneMapping(this.look.toneMapping)
+    if (tone === this.appliedToneMapping) return
+    this.appliedToneMapping = tone
+    this.postModule = this.device.createShaderModule({
+      label: 'yura-model-post',
+      code: buildPostWgsl(tone),
+    })
+    this.buildCompositePipeline()
+    this.rebuildCompositeBG()
+  }
+
   private buildEnvironment(): void {
     const d = this.device
     const envModule = d.createShaderModule({ label: 'yura-env', code: ENV_WGSL })
@@ -388,7 +518,7 @@ export class WebGPUModelRenderer {
 
     const enc = d.createCommandEncoder({ label: 'yura-env-build' })
     for (let face = 0; face < 6; face++) {
-      const ub = d.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      const ub = this.makeBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
       const data = new Float32Array(16)
       data[0] = face
       d.queue.writeBuffer(ub, 0, data)
@@ -443,9 +573,20 @@ export class WebGPUModelRenderer {
       layout: this.unlitPipeline.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: { buffer: this.frameUB } }],
     })
-    this.fxBG = d.createBindGroup({
+    this.rebuildFxBG()
+  }
+
+  private rebuildFxBG(): void {
+    const entries: GPUBindGroupEntry[] = [{ binding: 0, resource: { buffer: this.fxUB } }]
+    if (this.appliedFxSoft) {
+      // The soft variant samples the scene depth buffer. Before the first
+      // resize() there is no depth target yet; resize() rebuilds this BG.
+      if (!this.depthTex) return
+      entries.push({ binding: 1, resource: this.viewCache.getView(this.depthTex) })
+    }
+    this.fxBG = this.device.createBindGroup({
       layout: this.fxPipeline.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: { buffer: this.fxUB } }],
+      entries,
     })
   }
 
@@ -496,14 +637,14 @@ export class WebGPUModelRenderer {
   addMesh(geo: MeshGeometry, mat: SceneMaterial, opts: { shadow?: boolean } = {}): MeshHandle {
     const d = this.device
     const upload = (data: Float32Array<ArrayBuffer> | Uint32Array<ArrayBuffer>, usage: number): GPUBuffer => {
-      const buf = d.createBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
+      const buf = this.makeBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
       d.queue.writeBuffer(buf, 0, data)
       return buf
     }
     const unlit = mat.unlit === true
     const pipeline = unlit ? this.unlitPipeline : this.pbrPipeline
 
-    const matUB = d.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    const matUB = this.makeBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     const matData = new Float32Array(12)
     matData.set(mat.color, 0)
     matData[4] = mat.metallic
@@ -540,7 +681,7 @@ export class WebGPUModelRenderer {
       })
     }
 
-    const objectUB = d.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+    const objectUB = this.makeBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
     const world = new Float32Array(16)
     world[0] = world[5] = world[10] = world[15] = 1
     d.queue.writeBuffer(objectUB, 0, world)
@@ -576,12 +717,12 @@ export class WebGPUModelRenderer {
       remove: () => {
         if (!mesh.alive) return
         mesh.alive = false
-        mesh.positions.destroy()
-        mesh.normals.destroy()
-        mesh.uvs.destroy()
-        mesh.indices.destroy()
-        mesh.objectUB.destroy()
-        matUB.destroy()
+        this.destroyBuffer(mesh.positions)
+        this.destroyBuffer(mesh.normals)
+        this.destroyBuffer(mesh.uvs)
+        this.destroyBuffer(mesh.indices)
+        this.destroyBuffer(mesh.objectUB)
+        this.destroyBuffer(matUB)
         this.dynMeshes = this.dynMeshes.filter((x) => x !== mesh)
       },
     }
@@ -667,7 +808,7 @@ export class WebGPUModelRenderer {
     fit[14] = -cz * s
 
     const materialBGs: GPUBindGroup[] = model.materials.map((m) => {
-      const ub = d.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      const ub = this.makeBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
       const data = new Float32Array(12)
       data.set(m.baseColorFactor, 0)
       data[4] = m.metallicFactor
@@ -692,14 +833,14 @@ export class WebGPUModelRenderer {
     })
 
     const upload = (data: Float32Array<ArrayBuffer> | Uint32Array<ArrayBuffer>, usage: number): GPUBuffer => {
-      const buf = d.createBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
+      const buf = this.makeBuffer({ size: Math.ceil(data.byteLength / 4) * 4, usage: usage | GPUBufferUsage.COPY_DST })
       d.queue.writeBuffer(buf, 0, data)
       return buf
     }
 
     this.primitives = model.primitives.map((p) => {
       const world = multiply(fit, p.world)
-      const ub = d.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
+      const ub = this.makeBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
       d.queue.writeBuffer(ub, 0, world)
       return {
         positions: upload(p.positions, GPUBufferUsage.VERTEX),
@@ -735,6 +876,7 @@ export class WebGPUModelRenderer {
     this.bloomA?.destroy()
     this.bloomB?.destroy()
     this.bloomC?.destroy()
+    this.viewCache.invalidate()
 
     const d = this.device
     const tex = (label: string, w: number, h: number, format: GPUTextureFormat) =>
@@ -754,7 +896,9 @@ export class WebGPUModelRenderer {
       label: 'yura-mdepth',
       size: { width, height },
       format: 'depth24plus',
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      // TEXTURE_BINDING lets the soft-particle FX pass read the scene depth
+      // while the same texture is attached read-only for the depth test.
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
     })
 
     const writeDir = (buffer: GPUBuffer, dx: number, dy: number) => {
@@ -768,10 +912,9 @@ export class WebGPUModelRenderer {
     writeDir(this.streak1UB, 3.5 / hw, 0)
     writeDir(this.streak2UB, 10 / hw, 0)
 
-    const hdrView = this.hdrTex.createView()
-    const bloomAView = this.bloomA.createView()
-    const bloomBView = this.bloomB.createView()
-    const bloomCView = this.bloomC.createView()
+    const hdrView = this.viewCache.getView(this.hdrTex)
+    const bloomAView = this.viewCache.getView(this.bloomA)
+    const bloomBView = this.viewCache.getView(this.bloomB)
 
     this.brightBG = d.createBindGroup({
       layout: this.brightPipeline.getBindGroupLayout(0),
@@ -794,16 +937,9 @@ export class WebGPUModelRenderer {
     this.blurVBG = blurBG(bloomBView, this.blurVUB)
     this.streak1BG = blurBG(bloomAView, this.streak1UB)
     this.streak2BG = blurBG(bloomBView, this.streak2UB)
-    this.compositeBG = d.createBindGroup({
-      layout: this.compositePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.postSampler },
-        { binding: 1, resource: hdrView },
-        { binding: 2, resource: { buffer: this.compositeUB } },
-        { binding: 3, resource: bloomAView },
-        { binding: 4, resource: bloomCView },
-      ],
-    })
+    this.rebuildCompositeBG()
+    // The soft FX bind group references the recreated depth texture.
+    if (this.appliedFxSoft) this.rebuildFxBG()
   }
 
   /**
@@ -876,6 +1012,7 @@ export class WebGPUModelRenderer {
   frame(dt: number, time: number): void {
     if (this.disposed || !this.hdrTex || !this.depthTex || !this.frameBG) return
     if (this.primitives.length === 0 && this.dynMeshes.length === 0 && this.fxCount === 0) return
+    this.syncLookModes()
     const d = this.device
 
     let target: Vec3 = [0, 0, 0]
@@ -933,7 +1070,7 @@ export class WebGPUModelRenderer {
     }
 
     const aspect = this.width / this.height
-    const proj = perspective((45 * Math.PI) / 180, aspect, 0.05, 200)
+    const proj = perspective((45 * Math.PI) / 180, aspect, MODEL_CAMERA_NEAR, MODEL_CAMERA_FAR)
     const view = lookAt(this.eye, target, [0, 1, 0])
     const viewProj = multiply(proj, view)
     const invVP = invert(viewProj) ?? identity()
@@ -948,12 +1085,18 @@ export class WebGPUModelRenderer {
     this.fxFrameData[21] = view[5]
     this.fxFrameData[22] = view[9]
     this.fxFrameData[23] = 0
+    // Soft-particle params (ignored by the legacy shader, which only reads
+    // the first 24 floats): fade distance + frustum planes for linearization.
+    this.fxFrameData[24] = this.look.softParticles ?? DEFAULT_SOFT_PARTICLES
+    this.fxFrameData[25] = MODEL_CAMERA_NEAR
+    this.fxFrameData[26] = MODEL_CAMERA_FAR
+    this.fxFrameData[27] = 0
     d.queue.writeBuffer(this.fxUB, 0, this.fxFrameData)
     if (this.fxCount > 0 && this.fxData) {
       if (!this.fxBuffer || this.fxCapacity < this.fxCount) {
-        this.fxBuffer?.destroy()
+        if (this.fxBuffer) this.destroyBuffer(this.fxBuffer)
         this.fxCapacity = Math.max(this.fxCount, this.fxCapacity * 2, 256)
-        this.fxBuffer = d.createBuffer({
+        this.fxBuffer = this.makeBuffer({
           label: 'yura-fx-instances',
           size: this.fxCapacity * 32,
           usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
@@ -979,21 +1122,15 @@ export class WebGPUModelRenderer {
     this.frameData[55] = 0.32 // sky dim
 
     // Key-light shadow camera: orthographic box over the play area.
-    const a = this.shadowArea
-    const lightDir: Vec3 = [-0.5, 0.5, -0.65]
-    const ll = Math.hypot(...lightDir)
-    const lightEye: Vec3 = [
-      (lightDir[0] / ll) * a * 2.4,
-      (lightDir[1] / ll) * a * 2.4,
-      (lightDir[2] / ll) * a * 2.4,
-    ]
-    const lightVP = multiply(
-      ortho(-a, a, -a, a, 0.1, a * 6),
-      lookAt(lightEye, [0, 0, 0], [0, 1, 0]),
-    )
+    // Memoized — same instance comes back until the light or area moves,
+    // so the shadow UBO upload can be skipped by identity comparison.
+    const lightVP = computeLightViewProj(this.shadowArea, MODEL_LIGHT_DIR)
     this.frameData.set(lightVP, 56)
     d.queue.writeBuffer(this.frameUB, 0, this.frameData)
-    d.queue.writeBuffer(this.shadowUB, 0, lightVP)
+    if (this.lastLightVP !== lightVP) {
+      this.lastLightVP = lightVP
+      d.queue.writeBuffer(this.shadowUB, 0, lightVP)
+    }
 
     this.postData.fill(0)
     this.postData[0] = this.look.bloomThreshold
@@ -1024,7 +1161,7 @@ export class WebGPUModelRenderer {
       label: 'yura-shadow',
       colorAttachments: [],
       depthStencilAttachment: {
-        view: this.shadowTex.createView(),
+        view: this.viewCache.getView(this.shadowTex),
         depthClearValue: 1,
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
@@ -1050,13 +1187,13 @@ export class WebGPUModelRenderer {
     const scene = enc.beginRenderPass({
       label: 'yura-model-scene',
       colorAttachments: [{
-        view: this.hdrTex.createView(),
+        view: this.viewCache.getView(this.hdrTex),
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
         loadOp: 'clear',
         storeOp: 'store',
       }],
       depthStencilAttachment: {
-        view: this.depthTex.createView(),
+        view: this.viewCache.getView(this.depthTex),
         depthClearValue: 1,
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
@@ -1106,14 +1243,39 @@ export class WebGPUModelRenderer {
       }
     }
     // FX sprites last: additive on top of opaques + translucents, still
-    // occluded by geometry via the depth test.
-    if (this.fxCount > 0 && this.fxBuffer) {
+    // occluded by geometry via the depth test. With soft particles enabled
+    // the draw moves to its own pass below (unchanged draw order) so the
+    // depth buffer can be bound for the fade.
+    if (this.fxCount > 0 && this.fxBuffer && !this.appliedFxSoft) {
       scene.setPipeline(this.fxPipeline)
       scene.setBindGroup(0, this.fxBG)
       scene.setVertexBuffer(0, this.fxBuffer)
       scene.draw(4, this.fxCount)
     }
     scene.end()
+
+    if (this.fxCount > 0 && this.fxBuffer && this.appliedFxSoft) {
+      // Soft-particle FX pass: same HDR target (loadOp 'load') and the same
+      // depth test, but the depth attachment is read-only so the very texture
+      // being tested against can legally be bound as texture_depth_2d.
+      const fx = enc.beginRenderPass({
+        label: 'yura-fx-soft',
+        colorAttachments: [{
+          view: this.viewCache.getView(this.hdrTex),
+          loadOp: 'load',
+          storeOp: 'store',
+        }],
+        depthStencilAttachment: {
+          view: this.viewCache.getView(this.depthTex),
+          depthReadOnly: true,
+        },
+      })
+      fx.setPipeline(this.fxPipeline)
+      fx.setBindGroup(0, this.fxBG)
+      fx.setVertexBuffer(0, this.fxBuffer)
+      fx.draw(4, this.fxCount)
+      fx.end()
+    }
 
     const fullscreen = (label: string, pipeline: GPURenderPipeline, bg: GPUBindGroup, view: GPUTextureView) => {
       const pass = enc.beginRenderPass({
@@ -1125,14 +1287,27 @@ export class WebGPUModelRenderer {
       pass.draw(3)
       pass.end()
     }
-    fullscreen('yura-mbright', this.brightPipeline, this.brightBG, this.bloomA!.createView())
-    fullscreen('yura-mblur-h', this.blurPipeline, this.blurHBG, this.bloomB!.createView())
-    fullscreen('yura-mblur-v', this.blurPipeline, this.blurVBG, this.bloomA!.createView())
-    fullscreen('yura-mstreak-1', this.blurPipeline, this.streak1BG, this.bloomB!.createView())
-    fullscreen('yura-mstreak-2', this.blurPipeline, this.streak2BG, this.bloomC!.createView())
+    fullscreen('yura-mbright', this.brightPipeline, this.brightBG, this.viewCache.getView(this.bloomA!))
+    fullscreen('yura-mblur-h', this.blurPipeline, this.blurHBG, this.viewCache.getView(this.bloomB!))
+    fullscreen('yura-mblur-v', this.blurPipeline, this.blurVBG, this.viewCache.getView(this.bloomA!))
+    fullscreen('yura-mstreak-1', this.blurPipeline, this.streak1BG, this.viewCache.getView(this.bloomB!))
+    fullscreen('yura-mstreak-2', this.blurPipeline, this.streak2BG, this.viewCache.getView(this.bloomC!))
     fullscreen('yura-mcomposite', this.compositePipeline, this.compositeBG, this.context.getCurrentTexture().createView())
 
     d.queue.submit([enc.finish()])
+  }
+
+  /** Create a GPUBuffer registered for destruction on dispose(). */
+  private makeBuffer(desc: GPUBufferDescriptor): GPUBuffer {
+    const buf = this.device.createBuffer(desc)
+    this.ownedBuffers.add(buf)
+    return buf
+  }
+
+  /** Destroy a tracked buffer now and drop it from the registry. */
+  private destroyBuffer(buf: GPUBuffer): void {
+    this.ownedBuffers.delete(buf)
+    buf.destroy()
   }
 
   dispose(): void {
@@ -1145,8 +1320,14 @@ export class WebGPUModelRenderer {
     this.bloomC?.destroy()
     this.envTex?.destroy()
     this.shadowTex?.destroy()
-    this.fxBuffer?.destroy()
+    this.viewCache.invalidate()
+    // Every buffer this renderer ever created (frame/shadow/post UBOs, env
+    // face UBOs, model primitive + dynamic mesh buffers, fx instances).
+    for (const b of this.ownedBuffers) b.destroy()
+    this.ownedBuffers.clear()
+    this.fxBuffer = null
     for (const t of this.textureCache.values()) t.destroy()
+    this.textureCache.clear()
     this.context.unconfigure()
     this.device.destroy()
   }

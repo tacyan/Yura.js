@@ -47,7 +47,11 @@ export class QualityGovernor {
   constructor(
     private readonly levels: QualityLevel[] = DEFAULT_LEVELS,
     private readonly budgetMs = 17.2,
-  ) {}
+  ) {
+    // An empty level list would make current() undefined and poison every
+    // consumer of res/frac; fall back to the defaults instead.
+    if (this.levels.length === 0) this.levels = DEFAULT_LEVELS
+  }
 
   current(): QualityLevel {
     return this.levels[this.level]
@@ -60,6 +64,8 @@ export class QualityGovernor {
   /** Feed one frame's duration in ms. Returns true when the level changed. */
   update(dtMs: number): boolean {
     if (!this.enabled) return false
+    // NaN/Infinity would pollute the EMA (and clock) forever; skip the frame.
+    if (!Number.isFinite(dtMs)) return false
     this.clockMs += dtMs
     // Cap one frame's contribution: a single 100+ ms hitch (GC, background
     // shape generation) must not read as sustained GPU load, while a real
@@ -101,6 +107,7 @@ export class QualityGovernor {
   }
 
   setLevel(level: number): void {
+    if (Number.isNaN(level)) level = 0
     this.level = Math.max(0, Math.min(this.levels.length - 1, level))
     this.framesSinceChange = 0
     this.goodFrames = 0

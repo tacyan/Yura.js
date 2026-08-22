@@ -3,15 +3,27 @@ import { YuraError, CODES } from '@yura/core'
 import { looks } from './looks'
 import { shapes, type ShapeSpec } from './shapes'
 
+/**
+ * Everything one preset configures at once — the bundle `.preset(name)`
+ * applies: particle count, gradient colors, look, motion physics, and the
+ * shape sequence the automatic cycle morphs through.
+ */
 export interface PresetConfig {
+  /** Requested particle count. */
   particles: number
+  /** Gradient start color (hex). */
   colorA: string
+  /** Gradient end color (hex). */
   colorB: string
+  /** Post/appearance settings. */
   look: LookParams
+  /** Simulation physics params. */
   motion: MotionParams
+  /** Shapes the automatic cycle morphs through, in order. */
   shapes: ShapeSpec[]
 }
 
+/** Baseline simulation physics every preset builds on. */
 export const DEFAULT_MOTION: MotionParams = {
   attraction: 4.0,
   damping: 2.6,
@@ -64,10 +76,24 @@ const REGISTRY: Record<string, () => PresetConfig> = {
   }),
 }
 
+/**
+ * Names of the built-in presets accepted by `.preset()` / `resolvePreset()`.
+ *
+ * @example
+ * presetNames() // ['neon-galaxy', 'aurora', 'cinematic', 'cyberpunk']
+ */
 export function presetNames(): string[] {
   return Object.keys(REGISTRY)
 }
 
+/**
+ * Looks up a preset by name and returns a fresh config (safe to mutate).
+ * Throws a YuraError (UNKNOWN_PRESET) listing the available names otherwise.
+ *
+ * @example
+ * const p = resolvePreset('aurora')
+ * console.log(p.particles) // 600000
+ */
 export function resolvePreset(name: string): PresetConfig {
   const factory = REGISTRY[name]
   if (!factory) {

@@ -1,6 +1,7 @@
-import { trsToMat4, eulerToQuat, type Vec3, type Vec4 } from '@yura/core'
+import { CODES, trsToMat4, eulerToQuat, warnCode, YuraError, type Vec3, type Vec4 } from '@yura/core'
 import {
   meshes,
+  MAX_ATTRACTORS,
   type MeshGeometry,
   type MeshHandle,
   type WebGPUModelRenderer,
@@ -10,6 +11,7 @@ import {
   FxPool,
   FxTrailEmitter,
   FX_FLOATS,
+  type AttractorParams,
   type BurstOptions,
   type TrailOptions,
   type CelebrateOptions,
@@ -21,7 +23,11 @@ import {
  * game fits in ~40 lines of user code.
  */
 
-export type ShapeName = 'sphere' | 'box' | 'torus' | 'knot' | 'cylinder' | 'plane' | 'disc'
+/** Every procedural mesh {@link YuraScene.add} can build — no assets needed. */
+export const SHAPE_NAMES = ['sphere', 'box', 'torus', 'knot', 'cylinder', 'plane', 'disc'] as const
+
+/** Name of a procedural scene mesh ('sphere', 'box', 'torus', 'knot', 'cylinder', 'plane', 'disc'). */
+export type ShapeName = (typeof SHAPE_NAMES)[number]
 
 /** Seconds a Space tap stays buffered waiting for a landing (jump buffer). */
 const JUMP_BUFFER = 0.15
@@ -207,6 +213,7 @@ export function sweptCylinderTOI(a: Vec3, b: Vec3, center: Vec3, radius: number,
   return -1
 }
 
+/** World setup for {@link YuraApp.scene} / {@link YuraApp.game}. */
 export interface SceneOptions {
   /** Y acceleration for dynamic bodies (e.g. -18). 0 disables gravity. */
   gravity?: number
@@ -216,21 +223,29 @@ export interface SceneOptions {
   keyboard?: boolean
 }
 
+/** Per-object options for {@link YuraScene.add}. */
 export interface AddOptions {
+  /** Radius for round shapes (sphere, torus, knot, disc). */
   radius?: number
+  /** Extent for box/plane/cylinder: uniform, or [width, height, depth]. */
   size?: number | [number, number, number]
+  /** Initial world position [x, y, z]. Default origin. */
   position?: [number, number, number]
+  /** Initial Euler rotation in radians. */
   rotation?: [number, number, number]
+  /** Material preset name, '#hex' color, or a full SceneMaterial. */
   material?: MaterialLike
   /** 'dynamic' bodies get gravity, ground bounce, and friction. */
   body?: 'static' | 'dynamic'
   /** Solid objects push dynamic bodies out on contact. */
   solid?: boolean
+  /** Free-form label for lookups: `each(tag)`, `count(tag)`, collision filters. */
   tag?: string
   /** Auto blob shadow that tracks the object on the ground plane. */
   shadow?: boolean
   /** Continuous rotation in rad/s. */
   spin?: [number, number, number]
+  /** Ground-bounce energy retention, 0..1. Default 0.35. */
   restitution?: number
   /**
    * Collision radius override (visuals unchanged). Give pickups a generous
@@ -353,30 +368,53 @@ export function easeOcclusion(current: number, target: number, dt: number, rateI
   return current + (target - current) * (1 - Math.exp(-rate * dt))
 }
 
+/** Handle to a HUD text element created by {@link YuraScene.text}. */
 export interface TextHandle {
+  /** Replace the displayed text. */
   set(text: string): void
+  /** Remove the element permanently. */
   remove(): void
 }
 
+/** Handle to a particle trail started by `obj.trail()` / `scene.trail()`. */
 export interface TrailHandle {
   /** Stops emitting; already-spawned particles fade out naturally. */
   stop(): void
 }
 
+/**
+ * One object living in a {@link YuraScene}: a procedural mesh plus its
+ * physics state. Mutate `position` / `velocity` / `spin` directly from
+ * `onUpdate` — the simulation and renderer read them every tick.
+ *
+ * @example
+ * const player = scene.add('sphere', { radius: 0.45, body: 'dynamic' })
+ * player.onCollide((other) => { if (other.tag === 'orb') other.remove() })
+ */
 export class SceneObject {
+  /** World position [x, y, z] — write to teleport. */
   position: [number, number, number]
+  /** Euler rotation in radians. */
   rotation: [number, number, number]
+  /** Per-axis scale multiplier. */
   scale: [number, number, number] = [1, 1, 1]
+  /** World velocity in units/s — the usual steering knob for dynamic bodies. */
   velocity: [number, number, number] = [0, 0, 0]
+  /** Continuous rotation in rad/s. */
   spin: [number, number, number]
+  /** Free-form label used by `each(tag)` / `count(tag)` and collision logic. */
   tag: string
+  /** 'dynamic' bodies get gravity, ground bounce, and friction. */
   body: 'static' | 'dynamic'
+  /** Solid objects push dynamic bodies out on contact. */
   solid: boolean
+  /** Ground-bounce energy retention, 0..1. */
   restitution: number
   /** Collision sphere radius (approximate for non-spheres). */
   radius: number
   /** Pair-collision radius — defaults to `radius`; override for generous pickups. */
   hitRadius: number
+  /** False once removed — dead objects skip simulation, rendering, and callbacks. */
   alive = true
 
   /** @internal collider kind — cylinders collide radially in XZ, not as spheres. */
@@ -434,6 +472,7 @@ export class SceneObject {
     this.spawn = { position: [...this.position], rotation: [...this.rotation] }
   }
 
+  /** Fires when this object touches another (both callbacks run, once per contact pair). */
   onCollide(cb: (other: SceneObject) => void): this {
     this.collideCbs.push(cb)
     return this
@@ -457,6 +496,7 @@ export class SceneObject {
     return this.scene.trail(this, opts)
   }
 
+  /** Remove from the scene (mesh, shadow, physics). `scene.reset()` restores it at spawn. */
   remove(): void {
     if (!this.alive) return
     this.alive = false
@@ -466,6 +506,17 @@ export class SceneObject {
   }
 }
 
+/**
+ * Unified game input — keyboard (WASD/arrows), touch (drag = virtual stick,
+ * quick tap = jump), and gamepad — merged so the largest magnitude wins.
+ * Read `x` / `y` / `jump` inside {@link YuraScene.onUpdate}; nothing to wire up.
+ *
+ * @example
+ * scene.onUpdate((dt, input) => {
+ *   player.velocity[0] += input.x * 26 * dt
+ *   if (input.jump && player.grounded) player.velocity[1] = 8.5
+ * })
+ */
 export class SceneInput {
   private keys = new Set<string>()
   private prevKeys = new Set<string>()
@@ -503,6 +554,7 @@ export class SceneInput {
     return combineAxes(kb, this.stickY, this.padY)
   }
 
+  /** True while the key with this KeyboardEvent.code (e.g. 'KeyW', 'Space') is held. */
   key(code: string): boolean {
     return this.keys.has(code)
   }
@@ -707,9 +759,24 @@ interface TextRecord {
   el: HTMLElement | null
 }
 
+/**
+ * The zero-asset 3D game kit behind `yura(sel).scene()` / `.game()`:
+ * procedural PBR primitives, physics-lite, unified input, follow camera,
+ * HUD text, and GPU particle FX — a playable game in ~40 lines.
+ *
+ * @example
+ * yura('#game').game({ gravity: -22, bounds: 12 }, (scene) => {
+ *   scene.add('plane', { size: 24, material: 'checker' })
+ *   const player = scene.add('sphere', { radius: 0.45, body: 'dynamic' })
+ *   scene.camera.follow(player)
+ * })
+ */
 export class YuraScene {
+  /** Unified keyboard/touch/gamepad input, also handed to every onUpdate callback. */
   readonly input = new SceneInput()
+  /** Y acceleration for dynamic bodies (from SceneOptions.gravity). */
   gravity: number
+  /** Half-size of the square play area; 0 = unbounded. */
   bounds: number
   private keyboard: boolean
   /** @internal sim clock (seconds) — drives coyote time; set each step. */
@@ -730,7 +797,14 @@ export class YuraScene {
   readonly fx = new FxPool(8192)
   private trails: Array<{ obj: SceneObject; emitter: FxTrailEmitter; active: boolean }> = []
   private fxInstances: Float32Array<ArrayBuffer> | null = null
+  /** Active gravity wells (insertion order) — mirrored into fx.attractors. */
+  private wells: AttractorParams[] = []
 
+  /**
+   * Camera control: `follow(obj)` tracks an object with exponential
+   * smoothing (plus landing dip and occlusion pull-in); `orbit()` hands
+   * control back to pointer orbiting.
+   */
   readonly camera = {
     follow: (obj: SceneObject, opts: { distance?: number; height?: number } = {}): void => {
       this.cam.mode = 'follow'
@@ -750,12 +824,27 @@ export class YuraScene {
     this.keyboard = opts.keyboard ?? true
   }
 
+  /**
+   * Add a procedural mesh to the scene. 'plane' becomes the ground; dynamic
+   * spheres roll on it automatically.
+   *
+   * @example
+   * scene.add('plane', { size: 24, material: 'checker' })
+   * const orb = scene.add('sphere', { radius: 0.26, material: materials.neon('#22d3ee'), tag: 'orb' })
+   */
   add(shape: ShapeName, opts: AddOptions = {}): SceneObject {
     const { geo, radius, collider, halfHeight } = buildShape(shape, opts)
     const obj = new SceneObject(this, geo, radius, opts)
     obj.collider = collider ?? 'sphere'
     obj.halfHeight = halfHeight ?? radius
     if (shape === 'plane') {
+      if (this.groundY !== null) {
+        warnCode(
+          CODES.GROUND_REPLACED,
+          `add('plane') called again: the ground height moves from y=${this.groundY} to y=${obj.position[1]}. ` +
+            `The earlier plane keeps rendering but no longer acts as the ground.`,
+        )
+      }
       this.groundY = obj.position[1]
       obj.radius = 0 // ground never sphere-collides
     }
@@ -765,6 +854,11 @@ export class YuraScene {
     return obj
   }
 
+  /**
+   * Game-logic callback run every fixed simulation tick (1/60 s) with the
+   * step dt, the merged input, and the sim clock — put steering, jumping,
+   * and scoring here.
+   */
   onUpdate(cb: (dt: number, input: SceneInput, time: number) => void): this {
     this.updateCbs.push(cb)
     return this
@@ -823,6 +917,7 @@ export class YuraScene {
     }
   }
 
+  /** Number of live objects in the scene. */
   get objectCount(): number {
     return this.objects.length
   }
@@ -873,6 +968,44 @@ export class YuraScene {
   celebrate(opts: CelebrateOptions = {}): this {
     this.fx.celebrate(opts)
     return this
+  }
+
+  /**
+   * Adds a gravity well that bends every scene particle (bursts, trails,
+   * celebrations) — the one-liner for a black-hole zone:
+   * `const release = scene.gravityWell([0, 1.5, 0], 12)`.
+   *
+   * Positive `strength` pulls particles in, negative pushes them away;
+   * `radius` softens the force near the center (defaults to the sims'
+   * DEFAULT_ATTRACTOR_RADIUS). Same {@link AttractorParams} vocabulary and
+   * force math as the GPU particle sims. Wells accumulate per call; only the
+   * first MAX_ATTRACTORS act at once — extra wells warn and stay queued until
+   * an earlier one is released. Returns a function that removes this well.
+   */
+  gravityWell(
+    position: readonly [number, number, number] | Vec3,
+    strength: number,
+    radius?: number,
+  ): () => void {
+    const well: AttractorParams = {
+      position: [position[0], position[1], position[2]],
+      strength,
+    }
+    if (radius !== undefined) well.radius = radius
+    this.wells.push(well)
+    if (this.wells.length > MAX_ATTRACTORS) {
+      warnCode(
+        CODES.GRAVITY_WELL_CLAMPED,
+        `gravityWell(): ${this.wells.length} wells requested but only ${MAX_ATTRACTORS} can act at once ` +
+          `(MAX_ATTRACTORS). This well stays queued and activates when an earlier one is released.`,
+      )
+    }
+    this.fx.attractors = this.wells
+    return () => {
+      const i = this.wells.indexOf(well)
+      if (i >= 0) this.wells.splice(i, 1)
+      this.fx.attractors = this.wells
+    }
   }
 
   /** @internal called by YuraApp once the GPU renderer exists. */
@@ -1221,5 +1354,13 @@ function buildShape(
       const r = opts.radius ?? 1
       return { geo: meshes.disc(r), radius: r }
     }
+    default:
+      // TS makes this unreachable, but plain-JS callers can pass any string
+      // and would otherwise die on `Cannot destructure` at the call site.
+      throw new YuraError(
+        CODES.UNKNOWN_SHAPE,
+        `Unknown shape "${String(shape)}". Available: ${SHAPE_NAMES.join(', ')}.`,
+        `scene.add('sphere', { radius: 0.5 })`,
+      )
   }
 }

@@ -4,8 +4,234 @@
  *   -> fade (trail decay on the HDR accumulation target)
  *   -> particles (additive quads into HDR)
  *   -> brightpass -> blur H/V (bloom) -> streak H x2 (anamorphic)
- *   -> composite (nebula + starfield + CA + ACES + vignette + grain)
+ *   -> composite (nebula + starfield + CA + tone map + vignette + grain)
  */
+
+import { toneMapFunctionName, toneMapSource } from './blend'
+
+// ---------------------------------------------------------------------------
+// Curl-noise turbulence: a divergence-free vector field built from the
+// ANALYTIC gradient of 3D value noise (no textures, pure function). The same
+// builder emits both WGSL and GLSL so the two backends can never drift apart;
+// every numeric constant lives here as a named export and reaches both
+// languages through this single source. Locked by turbulence.test.ts.
+// ---------------------------------------------------------------------------
+
+/** Domain-folding scale of the lattice-corner hash (Hoskins hash13 family). */
+export const CURL_HASH_SCALE = 0.1031
+/** Additive decorrelation shift inside the lattice-corner hash. */
+export const CURL_HASH_SHIFT = 31.32
+/** Noise-space offset decorrelating the potential's Y component from X. */
+export const CURL_OFFSET_Y = [31.341, 17.113, 47.529] as const
+/** Noise-space offset decorrelating the potential's Z component from X and Y. */
+export const CURL_OFFSET_Z = [12.972, 63.416, 88.513] as const
+/** Drift speed of the turbulence field through noise space (phase = time * this). */
+export const TURBULENCE_TIME_SCALE = 0.3
+/** Default turbulence strength. 0 = off: legacy trajectories stay bit-identical. */
+export const DEFAULT_TURBULENCE = 0
+/** Default noise-space frequency of the curl turbulence field. */
+export const DEFAULT_TURBULENCE_SCALE = 0.35
+
+// ---------------------------------------------------------------------------
+// Attractors: softened inverse-square gravity wells / repulsors. Same design
+// as the turbulence above: ONE builder emits both WGSL and GLSL
+// (attractorTermSource), and every constant below is the single source for
+// the shader text, the CPU uniform packing (packAttractors) and both
+// renderers. Locked by attractors.test.ts. The default — no attractors —
+// keeps legacy trajectories bit-identical: the guarded term is skipped.
+// ---------------------------------------------------------------------------
+
+/** Maximum simultaneous attractors both sims support (uniform array size). */
+export const MAX_ATTRACTORS = 4
+/** vec4 slots per attractor in the packed uniform array: [pos.xyz, strength] + [radius^2, 0, 0, 0]. */
+export const ATTRACTOR_VEC4S = 2
+/** Index of the radius^2 vec4 within an attractor's vec4-slot pair. */
+export const ATTRACTOR_RADIUS2_SLOT = 1
+/** Total vec4 count of the packed attractor uniform array. */
+export const ATTRACTOR_ARRAY_VEC4S = MAX_ATTRACTORS * ATTRACTOR_VEC4S
+/** Default softening radius r in force = strength * dir / (d^2 + r^2). */
+export const DEFAULT_ATTRACTOR_RADIUS = 0.35
+/** Keeps the direction normalization finite when a particle sits exactly on an attractor. */
+export const ATTRACTOR_DIST_EPSILON = 1e-6
+
+/** One gravity well (strength > 0) or repulsor (strength < 0). */
+export interface AttractorParams {
+  /** World-space center of the well. */
+  position: [number, number, number]
+  /** Force scale: positive pulls particles in, negative pushes them away. */
+  strength: number
+  /** Softening radius r (force = strength * dir / (d^2 + r^2)); defaults to DEFAULT_ATTRACTOR_RADIUS. */
+  radius?: number
+}
+
+/**
+ * Packs attractors into the flat vec4-pair layout both sim shaders read
+ * (see attractorTermSource): slot 0 = [pos.xyz, strength], slot
+ * ATTRACTOR_RADIUS2_SLOT = [radius^2, 0, 0, 0]. Zero-fills `out`, writes at
+ * most MAX_ATTRACTORS entries, and returns the active count (0 when the
+ * list is omitted or empty — the shaders then skip the term entirely).
+ */
+export function packAttractors(
+  attractors: readonly AttractorParams[] | undefined,
+  out: Float32Array,
+): number {
+  out.fill(0)
+  const list = attractors ?? []
+  const count = Math.min(list.length, MAX_ATTRACTORS)
+  for (let j = 0; j < count; j++) {
+    const a = list[j]
+    const base = j * ATTRACTOR_VEC4S * 4
+    out[base] = a.position[0]
+    out[base + 1] = a.position[1]
+    out[base + 2] = a.position[2]
+    out[base + 3] = a.strength
+    const radius = a.radius ?? DEFAULT_ATTRACTOR_RADIUS
+    out[base + ATTRACTOR_RADIUS2_SLOT * 4] = radius * radius
+  }
+  return count
+}
+
+// SimParams uniform layout (in 4-byte slots) — the single source for both
+// the WGSL struct text below and the WebGPU renderer's simF32/simU32 writes.
+// The field ORDER of the struct is locked by attractors.test.ts.
+/** Slot of attractorCount: u32 (immediately after turbulenceScale at slot 17). */
+export const SIM_ATTRACTOR_COUNT_INDEX = 18
+/** First slot of the attractors array: vec4 alignment rounds up to a multiple of 4 slots. */
+export const SIM_ATTRACTORS_INDEX = Math.ceil((SIM_ATTRACTOR_COUNT_INDEX + 1) / 4) * 4
+/** Total SimParams byte size (scalar header + attractor array; a multiple of the 16-byte struct alignment). */
+export const SIM_PARAMS_BYTES = (SIM_ATTRACTORS_INDEX + ATTRACTOR_ARRAY_VEC4S * 4) * 4
+
+export type ShaderLang = 'wgsl' | 'glsl'
+
+/** Formats a number as a float literal valid in both WGSL and GLSL ES 3.0. */
+export const shaderFloatLiteral = (n: number): string => {
+  const s = String(n)
+  return /[.eE]/.test(s) ? s : `${s}.0`
+}
+
+const lit = shaderFloatLiteral
+const vec3Type = (lang: ShaderLang): string => (lang === 'wgsl' ? 'vec3<f32>' : 'vec3')
+
+/**
+ * Gradient-based curl noise, emitted for either shader language:
+ *   curlHash      – lattice-corner hash (fract/dot folding, sin-free)
+ *   curlNoiseGrad – ANALYTIC gradient of trilinear value noise (iq's k0..k7
+ *                   polynomial form; cubic smoothstep fade, C1 continuous)
+ *   curlNoise     – curl of the potential (n(p), n(p+OY), n(p+OZ)), which is
+ *                   divergence-free by construction.
+ * The WGSL and GLSL outputs are token-for-token identical up to declaration
+ * syntax (asserted by test).
+ */
+export function curlNoiseSource(lang: ShaderLang): string {
+  const V = vec3Type(lang)
+  const head = (ret: 'float' | 'vec3', name: string): string =>
+    lang === 'wgsl'
+      ? `fn ${name}(p: ${V}) -> ${ret === 'vec3' ? V : 'f32'} {`
+      : `${ret} ${name}(vec3 p) {`
+  const decl = (type: 'float' | 'vec3', name: string, expr: string): string =>
+    lang === 'wgsl' ? `  let ${name} = ${expr};` : `  ${type} ${name} = ${expr};`
+  const off = (o: readonly [number, number, number]): string =>
+    `${V}(${lit(o[0])}, ${lit(o[1])}, ${lit(o[2])})`
+  return [
+    head('float', 'curlHash'),
+    decl('vec3', 'q', `fract(p * ${lit(CURL_HASH_SCALE)})`),
+    decl('vec3', 'r', `q + ${V}(dot(q, q.zyx + ${V}(${lit(CURL_HASH_SHIFT)})))`),
+    `  return fract((r.x + r.y) * r.z);`,
+    `}`,
+    head('vec3', 'curlNoiseGrad'),
+    decl('vec3', 'i', `floor(p)`),
+    decl('vec3', 'f', `fract(p)`),
+    decl('vec3', 'u', `f * f * (3.0 - 2.0 * f)`),
+    decl('vec3', 'du', `6.0 * f * (1.0 - f)`),
+    decl('float', 'n000', `curlHash(i)`),
+    decl('float', 'n100', `curlHash(i + ${V}(1.0, 0.0, 0.0))`),
+    decl('float', 'n010', `curlHash(i + ${V}(0.0, 1.0, 0.0))`),
+    decl('float', 'n110', `curlHash(i + ${V}(1.0, 1.0, 0.0))`),
+    decl('float', 'n001', `curlHash(i + ${V}(0.0, 0.0, 1.0))`),
+    decl('float', 'n101', `curlHash(i + ${V}(1.0, 0.0, 1.0))`),
+    decl('float', 'n011', `curlHash(i + ${V}(0.0, 1.0, 1.0))`),
+    decl('float', 'n111', `curlHash(i + ${V}(1.0, 1.0, 1.0))`),
+    decl('float', 'k1', `n100 - n000`),
+    decl('float', 'k2', `n010 - n000`),
+    decl('float', 'k3', `n001 - n000`),
+    decl('float', 'k4', `n000 - n100 - n010 + n110`),
+    decl('float', 'k5', `n000 - n010 - n001 + n011`),
+    decl('float', 'k6', `n000 - n100 - n001 + n101`),
+    decl('float', 'k7', `-n000 + n100 + n010 - n110 + n001 - n101 - n011 + n111`),
+    `  return du * ${V}(`,
+    `    k1 + k4 * u.y + k6 * u.z + k7 * u.y * u.z,`,
+    `    k2 + k4 * u.x + k5 * u.z + k7 * u.z * u.x,`,
+    `    k3 + k5 * u.y + k6 * u.x + k7 * u.x * u.y);`,
+    `}`,
+    head('vec3', 'curlNoise'),
+    decl('vec3', 'gx', `curlNoiseGrad(p)`),
+    decl('vec3', 'gy', `curlNoiseGrad(p + ${off(CURL_OFFSET_Y)})`),
+    decl('vec3', 'gz', `curlNoiseGrad(p + ${off(CURL_OFFSET_Z)})`),
+    `  return ${V}(gz.y - gy.z, gx.z - gz.x, gy.x - gx.y);`,
+    `}`,
+  ].join('\n')
+}
+
+/**
+ * The guarded velocity increment shared by both sims. The `!= 0.0` branch is
+ * uniform across the whole dispatch (no divergence cost) and guarantees the
+ * default turbulence = 0 adds nothing at all: legacy trajectories stay
+ * bit-identical and the noise evaluation is skipped entirely.
+ */
+export function turbulenceTermSource(lang: ShaderLang): string {
+  const V = vec3Type(lang)
+  const u =
+    lang === 'wgsl'
+      ? { strength: 'P.turbulence', scale: 'P.turbulenceScale', time: 'P.time' }
+      : { strength: 'uTurbulence', scale: 'uTurbulenceScale', time: 'uTime' }
+  return [
+    `  if (${u.strength} != 0.0) {`,
+    `    vel += curlNoise(pos * ${u.scale} + ${V}(${u.time} * ${lit(TURBULENCE_TIME_SCALE)})) * (${u.strength} * dt);`,
+    `  }`,
+  ].join('\n')
+}
+
+/**
+ * The guarded attractor velocity increment shared by both sims. Per active
+ * attractor j (vec4 pair, see packAttractors) the force is the softened
+ * inverse square
+ *
+ *   force = strength * dir / (d^2 + radius^2)
+ *
+ * with dir the unit vector from the particle toward the attractor (negative
+ * strength repels) and ATTRACTOR_DIST_EPSILON added inside BOTH denominator
+ * factors so a particle sitting exactly on a radius-0 attractor yields a
+ * zero force instead of 0 * inf = NaN. Like the turbulence term, the outer
+ * `!= 0` guard is
+ * uniform across the dispatch and guarantees the default — no attractors,
+ * count 0 — adds nothing at all: legacy trajectories stay bit-identical and
+ * the loop is skipped entirely.
+ */
+export function attractorTermSource(lang: ShaderLang): string {
+  const wgsl = lang === 'wgsl'
+  const u = wgsl
+    ? { count: 'P.attractorCount', data: 'P.attractors' }
+    : { count: 'uAttractorCount', data: 'uAttractors' }
+  // Integer literals differ per language: WGSL indexes/compares with u32.
+  const int = (n: number): string => (wgsl ? `${n}u` : `${n}`)
+  const decl = (type: 'float' | 'vec3' | 'vec4', name: string, expr: string): string =>
+    wgsl ? `      let ${name} = ${expr};` : `      ${type} ${name} = ${expr};`
+  const slot = (offset: number): string =>
+    `${u.data}[j * ${int(ATTRACTOR_VEC4S)}${offset === 0 ? '' : ` + ${int(offset)}`}]`
+  return [
+    `  if (${u.count} != ${int(0)}) {`,
+    wgsl
+      ? `    for (var j = ${int(0)}; j < ${u.count}; j = j + ${int(1)}) {`
+      : `    for (int j = 0; j < ${u.count}; j++) {`,
+    decl('vec4', 'att', slot(0)),
+    decl('float', 'soft2', `${slot(ATTRACTOR_RADIUS2_SLOT)}.x`),
+    decl('vec3', 'toAtt', `att.xyz - pos`),
+    decl('float', 'attD2', `dot(toAtt, toAtt)`),
+    `      vel += toAtt * (att.w / ((attD2 + soft2 + ${lit(ATTRACTOR_DIST_EPSILON)}) * sqrt(attD2 + ${lit(ATTRACTOR_DIST_EPSILON)})) * dt);`,
+    `    }`,
+    `  }`,
+  ].join('\n')
+}
 
 export const SIM_WGSL = /* wgsl */ `
 struct SimParams {
@@ -26,6 +252,11 @@ struct SimParams {
   // + reads targetB.w (morphT rising to 1), - reads 1-targetA.w (falling to 0),
   // so the first character always lands first in either direction.
   morphSpread: f32,
+  turbulence: f32,          // curl-noise strength (0 = off, bit-exact legacy)
+  turbulenceScale: f32,     // noise-space frequency of the curl field
+  attractorCount: u32,      // active gravity wells (0 = term skipped, bit-exact legacy)
+  // (implicit 4-byte pad here: the vec4 array below aligns to 16 bytes)
+  attractors: array<vec4<f32>, ${ATTRACTOR_ARRAY_VEC4S}>, // vec4 pairs: [pos.xyz, strength], [radius^2, 0, 0, 0]
 }
 
 @group(0) @binding(0) var<uniform> P: SimParams;
@@ -34,8 +265,8 @@ struct SimParams {
 @group(0) @binding(3) var<storage, read> targetA: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read> targetB: array<vec4<f32>>;
 
-// Cheap divergence-free-looking trig flow field. Good enough for v0.1;
-// swap for real curl noise when golden tests exist.
+// Cheap trig flow field driven by noiseStrength (legacy look, kept as-is).
+// Real divergence-free curl noise is the separate opt-in turbulence term below.
 fn flowField(p: vec3<f32>, t: f32) -> vec3<f32> {
   return vec3<f32>(
     sin(p.y * 1.7 + t) + cos(p.z * 1.3 - t * 0.7),
@@ -43,6 +274,8 @@ fn flowField(p: vec3<f32>, t: f32) -> vec3<f32> {
     sin(p.x * 1.3 - t * 0.9) + cos(p.y * 1.7 + t * 0.5),
   );
 }
+
+${curlNoiseSource('wgsl')}
 
 @compute @workgroup_size(256)
 fn sim(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -76,6 +309,8 @@ fn sim(@builtin(global_invocation_id) gid: vec3<u32>) {
   vel += (goal - pos) * attraction * dt;
   vel += flowField(pos * P.noiseScale, P.time * 0.4) * noise * dt;
   vel += vec3<f32>(-pos.z, 0.0, pos.x) * P.swirl * dt;
+${turbulenceTermSource('wgsl')}
+${attractorTermSource('wgsl')}
 
   if (P.pointer.w != 0.0) {
     let d = pos - P.pointer.xyz;
@@ -164,7 +399,11 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
 }
 `
 
-export const POST_WGSL = /* wgsl */ `
+/**
+ * Post-chain WGSL with a selectable tone-mapping curve. The default ('aces')
+ * composes to exactly the historic POST_WGSL text.
+ */
+export const buildPostWgsl = (toneMapping?: string): string => /* wgsl */ `
 struct PostParams {
   a: vec4<f32>,
   b: vec4<f32>,
@@ -223,12 +462,7 @@ fn blurFS(in: FSOut) -> @location(0) vec4<f32> {
   return vec4<f32>(acc, 1.0);
 }
 
-fn aces(x: vec3<f32>) -> vec3<f32> {
-  return clamp(
-    (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
-    vec3<f32>(0.0), vec3<f32>(1.0),
-  );
-}
+${toneMapSource(toneMapping, 'wgsl')}
 
 fn hash12(p: vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
@@ -301,7 +535,7 @@ fn compositeFS(in: FSOut) -> @location(0) vec4<f32> {
   c += textureSample(streakTex, samp, in.uv).rgb * U.b.z * vec3<f32>(0.75, 0.85, 1.0);
 
   c *= U.a.y;
-  c = aces(c);
+  c = ${toneMapFunctionName(toneMapping)}(c);
   let q = in.uv - vec2<f32>(0.5);
   c *= 1.0 - U.a.z * dot(q, q) * 2.0;
   c += (hash12(in.uv * 1024.0 + t) - 0.5) * U.a.w;
@@ -309,3 +543,6 @@ fn compositeFS(in: FSOut) -> @location(0) vec4<f32> {
   return vec4<f32>(c, 1.0);
 }
 `
+
+/** Historic default post chain (ACES); byte-identical to pre-toneMapping builds. */
+export const POST_WGSL = buildPostWgsl()

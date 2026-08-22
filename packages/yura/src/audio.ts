@@ -56,6 +56,62 @@ export const winTones = (): ToneSpec[] =>
     wave: 'triangle', freq, at: i * 0.09, dur: 0.16, attack: 0.008, peak: 0.5,
   }))
 
+/** Reference pitch: MIDI note number and frequency of A4 in equal temperament. */
+const A4_MIDI = 69
+const A4_HZ = 440
+/** Semitones per octave in 12-tone equal temperament. */
+const SEMITONES = 12
+/** Semitone offset of each natural note letter within an octave (C=0 … B=11). */
+const LETTER_SEMITONE: Readonly<Record<string, number>> = {
+  C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11,
+}
+/** Note name: letter, optional accidental (#/♯ or b/♭), octave number. */
+const NOTE_RE = /^([A-Ga-g])([#♯b♭]?)(-?\d{1,2})$/
+
+/**
+ * Convert a scientific-pitch note name ('C4', 'F#3', 'Bb5', …) to its
+ * frequency in Hz, derived from equal temperament around A4 = 440 Hz:
+ * `440 * 2^((midi - 69) / 12)`. Case-insensitive; supports `#`/`♯` and
+ * `b`/`♭`. Throws a RangeError for anything that is not a note name.
+ */
+export const noteToFreq = (name: string): number => {
+  const m = NOTE_RE.exec(name.trim())
+  if (!m) throw new RangeError(`not a note name: ${JSON.stringify(name)}`)
+  const accidental = m[2] === '#' || m[2] === '♯' ? 1 : m[2] === '' ? 0 : -1
+  const midi =
+    (Number(m[3]) + 1) * SEMITONES + LETTER_SEMITONE[m[1].toUpperCase()] + accidental
+  return A4_HZ * 2 ** ((midi - A4_MIDI) / SEMITONES)
+}
+
+/** Options for {@link GameAudio.loop}. */
+export interface LoopOpts {
+  /** Tempo in beats per minute; each pattern step lasts one beat. Default 120. */
+  bpm?: number
+  /** Oscillator waveform for every note. Default 'square' (chiptune). */
+  wave?: ToneWave
+  /** Per-note peak gain 0..1 (under the master volume/mute). Default 0.5. */
+  gain?: number
+}
+
+/** Handle returned by {@link GameAudio.loop}. */
+export interface LoopHandle {
+  /** Stop the loop: cancel future bars and release all live nodes. Idempotent. */
+  stop(): void
+  /** True until {@link LoopHandle.stop} is called (false from the start for an empty pattern). */
+  readonly playing: boolean
+}
+
+/** Loop sequencer defaults and envelope shape — one place, no magic numbers inline. */
+const LOOP_DEFAULT_BPM = 120
+const LOOP_DEFAULT_WAVE: ToneWave = 'square'
+const LOOP_DEFAULT_GAIN = 0.5
+/** Fraction of a step the note actually sounds (the rest is a gap between notes). */
+const LOOP_GATE = 0.9
+/** Envelope attack for loop notes, in seconds. */
+const LOOP_ATTACK = 0.005
+/** How far ahead of the next bar the scheduler timer fires, in seconds. */
+const LOOP_LEAD = 0.05
+
 /** One-liner game sound effects. Create with {@link gameAudio}. */
 export interface GameAudio {
   /** Short blip whose pitch rises with the combo count. */
@@ -66,10 +122,20 @@ export interface GameAudio {
   land(intensity?: number): void
   /** Small ascending arpeggio. */
   win(): void
-  /** Master volume, clamped to 0..1. */
+  /**
+   * Chiptune-style BGM: loop `pattern` — note names ('C4', 'F#3', …) or
+   * `null` rests, one beat per step — until the handle's `stop()` is called.
+   * Notes play through the master gain, so `volume` and `mute` apply.
+   * Throws a RangeError if a pattern entry is not a note name.
+   */
+  loop(pattern: (string | null)[], opts?: LoopOpts): LoopHandle
+  /** Master volume, clamped to 0..1. Non-finite assignments are ignored. */
   volume: number
-  /** Toggle mute. Returns the new muted state. */
-  mute(): boolean
+  /**
+   * Mute (`true`), unmute (`false`), or toggle when omitted. Silences output
+   * via the master gain while keeping `volume`. Returns the new muted state.
+   */
+  mute(on?: boolean): boolean
   /** Current muted state. */
   readonly muted: boolean
 }
@@ -107,9 +173,9 @@ export function gameAudio(): GameAudio {
     window.addEventListener('pointerdown', arm)
     window.addEventListener('keydown', arm)
   }
-  const play = (t: ToneSpec) => {
+  const play = (t: ToneSpec): { osc: OscillatorNode; gain: GainNode } | null => {
     const c = ensure()
-    if (!c || !master) return
+    if (!c || !master) return null
     const t0 = c.currentTime + t.at
     const osc = c.createOscillator()
     const gain = c.createGain()
@@ -123,15 +189,73 @@ export function gameAudio(): GameAudio {
     osc.onended = () => { osc.disconnect(); gain.disconnect() }
     osc.start(t0)
     osc.stop(t0 + t.dur)
+    return { osc, gain }
+  }
+  const loop = (pattern: (string | null)[], opts: LoopOpts = {}): LoopHandle => {
+    const freqs = pattern.map((n) => (n === null ? null : noteToFreq(n)))
+    const bpm = opts.bpm !== undefined && Number.isFinite(opts.bpm) && opts.bpm > 0
+      ? opts.bpm : LOOP_DEFAULT_BPM
+    const wave = opts.wave ?? LOOP_DEFAULT_WAVE
+    const peak = clamp01(opts.gain ?? LOOP_DEFAULT_GAIN)
+    const step = 60 / bpm
+    const barDur = freqs.length * step
+    let playing = freqs.length > 0
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let barStart: number | null = null
+    const live = new Set<{ osc: OscillatorNode; gain: GainNode }>()
+    const scheduleBar = () => {
+      if (!playing) return
+      let delay = barDur
+      const c = ensure()
+      if (c && master) {
+        if (barStart === null || barStart < c.currentTime) barStart = c.currentTime
+        for (let i = 0; i < freqs.length; i++) {
+          const freq = freqs[i]
+          if (freq === null) continue
+          const nodes = play({
+            wave, freq, at: barStart + i * step - c.currentTime,
+            dur: step * LOOP_GATE, attack: LOOP_ATTACK, peak,
+          })
+          if (nodes) {
+            live.add(nodes)
+            nodes.osc.onended = () => {
+              nodes.osc.disconnect()
+              nodes.gain.disconnect()
+              live.delete(nodes)
+            }
+          }
+        }
+        barStart += barDur
+        delay = Math.max(barStart - c.currentTime - LOOP_LEAD, 0)
+      }
+      timer = setTimeout(scheduleBar, delay * 1000)
+    }
+    scheduleBar()
+    return {
+      stop() {
+        if (!playing) return
+        playing = false
+        if (timer !== null) { clearTimeout(timer); timer = null }
+        for (const nodes of live) {
+          nodes.osc.onended = null
+          try { nodes.osc.stop() } catch { /* already stopped */ }
+          nodes.osc.disconnect()
+          nodes.gain.disconnect()
+        }
+        live.clear()
+      },
+      get playing() { return playing },
+    }
   }
   return {
     pickup(combo = 0) { play(pickupTone(combo)) },
     jump() { play(jumpTone()) },
     land(intensity = 1) { play(landTone(intensity)) },
     win() { for (const t of winTones()) play(t) },
+    loop,
     get volume() { return volume },
-    set volume(v: number) { volume = clamp01(v); apply() },
-    mute() { muted = !muted; apply(); return muted },
+    set volume(v: number) { if (Number.isFinite(v)) { volume = clamp01(v); apply() } },
+    mute(on = !muted) { muted = on; apply(); return muted },
     get muted() { return muted },
   }
 }

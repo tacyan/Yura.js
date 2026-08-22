@@ -9,6 +9,16 @@ import {
   type Vec3,
 } from '@yura/core'
 import type { LookParams, MotionParams, RendererOptions, ExternalCamera } from '@yura/renderer-webgpu'
+// Shared blend/tone-map mappers live in the WebGPU package (single source of
+// truth for both backends). Deep relative import because the package root
+// only re-exports renderer types.
+import {
+  GL_FUNC_ADD,
+  computeFrameComp,
+  glBlendSpec,
+  resolveToneMapping,
+  type ToneMapping,
+} from '@yura/renderer-webgpu'
 import {
   SIM_VS,
   RENDER_VS,
@@ -17,8 +27,57 @@ import {
   FADE_FS,
   BRIGHT_FS,
   BLUR_FS,
-  COMPOSITE_FS,
+  buildCompositeFs,
+  DEFAULT_TURBULENCE,
+  DEFAULT_TURBULENCE_SCALE,
+  ATTRACTOR_ARRAY_VEC4S,
+  packAttractors,
 } from './shaders'
+
+/**
+ * Tracks created GL objects (buffers, VAOs, transform feedbacks, programs)
+ * so dispose() can delete every one of them in reverse creation order.
+ * Exported for unit testing.
+ */
+export interface ResourceTracker {
+  /** Register a resource with its destroy function; returns the resource. */
+  track<T>(resource: T, destroy: (resource: T) => void): T
+  /** Number of live tracked resources. */
+  readonly size: number
+  /** Destroy every tracked resource (reverse creation order) and clear. */
+  disposeAll(): void
+}
+
+export function createResourceTracker(): ResourceTracker {
+  const entries: Array<() => void> = []
+  return {
+    track<T>(resource: T, destroy: (resource: T) => void): T {
+      entries.push(() => destroy(resource))
+      return resource
+    },
+    get size(): number {
+      return entries.length
+    },
+    disposeAll(): void {
+      for (let i = entries.length - 1; i >= 0; i--) entries[i]()
+      entries.length = 0
+    },
+  }
+}
+
+/**
+ * Shared zero-filled scratch for velocity resets (writePositions). Reused
+ * across calls so a 1M-particle scene doesn't allocate a fresh ~16MB array
+ * every call; regrown only when a larger length is requested. The renderer
+ * only uploads from it (never writes into it), so it stays all-zero — the
+ * test suite verifies that invariant. Exported for unit testing.
+ */
+let zeroScratch: Float32Array<ArrayBuffer> = new Float32Array(0)
+
+export function acquireZeroScratch(length: number): Float32Array<ArrayBuffer> {
+  if (zeroScratch.length < length) zeroScratch = new Float32Array(length)
+  return zeroScratch.length === length ? zeroScratch : zeroScratch.subarray(0, length)
+}
 
 /**
  * WebGL2 particle fallback (F-002): the same visual system as the WebGPU
@@ -81,6 +140,22 @@ export class WebGL2ParticleRenderer {
   private center: Vec3 = [0, 0, 0]
   private viewProj: Float32Array = new Float32Array(16)
   private uniforms = new Map<string, Record<string, WebGLUniformLocation | null>>()
+  /** Tone mode currently driving compositeProgram. */
+  private appliedToneMapping: ToneMapping
+  /** Compiled composite programs per tone mode (max 3; reused on switch-back). */
+  private compositePrograms = new Map<ToneMapping, WebGLProgram>()
+  /** GL blend equation currently set on the context (GL default: FUNC_ADD). */
+  private appliedBlendEq = GL_FUNC_ADD
+  /** Every created buffer/VAO/TF/program, so dispose() can delete them all. */
+  private resources = createResourceTracker()
+  /** Stored so dispose() can removeEventListener the contextlost handler. */
+  private contextLostHandler: ((e: Event) => void) | null = null
+  /** Upper gl_PointSize clamp (uMaxPointSize): the device's
+   * ALIASED_POINT_SIZE_RANGE[1], queried once at init; 64 (the historic
+   * hardcoded cap) if the query yields nothing usable. */
+  private maxPointSize: number
+  /** Scratch for the packed attractor uniform array (see packAttractors). */
+  private attractorData = new Float32Array(ATTRACTOR_ARRAY_VEC4S * 4)
 
   private constructor(canvas: HTMLCanvasElement, gl: WebGL2RenderingContext, opts: RendererOptions) {
     this.canvas = canvas
@@ -90,13 +165,24 @@ export class WebGL2ParticleRenderer {
     this.motion = opts.motion
     this.colorA = opts.colorA
     this.colorB = opts.colorB
-    this.posBuf = [gl.createBuffer()!, gl.createBuffer()!]
-    this.velBuf = [gl.createBuffer()!, gl.createBuffer()!]
-    this.targetABuf = gl.createBuffer()!
-    this.targetBBuf = gl.createBuffer()!
-    this.simVAO = [gl.createVertexArray()!, gl.createVertexArray()!]
-    this.renderVAO = [gl.createVertexArray()!, gl.createVertexArray()!]
-    this.tf = gl.createTransformFeedback()!
+    this.appliedToneMapping = resolveToneMapping(opts.look.toneMapping)
+    // One-time device query: the largest point size the hardware rasterizes
+    // (>= 1024 on most GPUs). Drives the uMaxPointSize clamp in RENDER_VS.
+    const sizeRange = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE) as
+      | Float32Array
+      | number[]
+      | null
+    const deviceMax = sizeRange?.[1]
+    this.maxPointSize = typeof deviceMax === 'number' && Number.isFinite(deviceMax) && deviceMax >= 1 ? deviceMax : 64
+    const buf = () => this.resources.track(gl.createBuffer()!, (b) => gl.deleteBuffer(b))
+    const vao = () => this.resources.track(gl.createVertexArray()!, (v) => gl.deleteVertexArray(v))
+    this.posBuf = [buf(), buf()]
+    this.velBuf = [buf(), buf()]
+    this.targetABuf = buf()
+    this.targetBBuf = buf()
+    this.simVAO = [vao(), vao()]
+    this.renderVAO = [vao(), vao()]
+    this.tf = this.resources.track(gl.createTransformFeedback()!, (t) => gl.deleteTransformFeedback(t))
   }
 
   static create(canvas: HTMLCanvasElement, opts: RendererOptions): WebGL2ParticleRenderer | null {
@@ -107,12 +193,18 @@ export class WebGL2ParticleRenderer {
       return null
     }
     const r = new WebGL2ParticleRenderer(canvas, gl, opts)
-    if (!r.initPrograms()) return null
+    if (!r.initPrograms()) {
+      // Shader failure: release the buffers/VAOs/TF made in the constructor
+      // (and any programs that did link) instead of leaking them.
+      r.resources.disposeAll()
+      return null
+    }
     r.initBuffers()
-    canvas.addEventListener('webglcontextlost', (e) => {
+    r.contextLostHandler = (e: Event) => {
       e.preventDefault()
       if (!r.disposed) r.onDeviceLost?.()
-    })
+    }
+    canvas.addEventListener('webglcontextlost', r.contextLostHandler)
     return r
   }
 
@@ -124,13 +216,18 @@ export class WebGL2ParticleRenderer {
       gl.compileShader(sh)
       if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
         warnCode(CODES.ADAPTER_FAILED, `WebGL2 shader compile failed: ${gl.getShaderInfoLog(sh)}`)
+        gl.deleteShader(sh)
         return null
       }
       return sh
     }
     const vs = make(gl.VERTEX_SHADER, vsSrc)
     const fs = make(gl.FRAGMENT_SHADER, fsSrc)
-    if (!vs || !fs) return null
+    if (!vs || !fs) {
+      if (vs) gl.deleteShader(vs)
+      if (fs) gl.deleteShader(fs)
+      return null
+    }
     const prog = gl.createProgram()!
     gl.attachShader(prog, vs)
     gl.attachShader(prog, fs)
@@ -138,9 +235,18 @@ export class WebGL2ParticleRenderer {
     gl.linkProgram(prog)
     if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
       warnCode(CODES.ADAPTER_FAILED, `WebGL2 program link failed: ${gl.getProgramInfoLog(prog)}`)
+      gl.deleteShader(vs)
+      gl.deleteShader(fs)
+      gl.deleteProgram(prog)
       return null
     }
-    return prog
+    // Shaders are baked into the linked program; drop them so the GL
+    // implementation can free them instead of keeping 12 shaders alive.
+    gl.detachShader(prog, vs)
+    gl.detachShader(prog, fs)
+    gl.deleteShader(vs)
+    gl.deleteShader(fs)
+    return this.resources.track(prog, (p) => gl.deleteProgram(p))
   }
 
   private u(programName: string, program: WebGLProgram, name: string): WebGLUniformLocation | null {
@@ -164,7 +270,7 @@ void main() { o = vec4(0.0); }
     const fade = this.compile(FS_TRIANGLE_VS, FADE_FS)
     const bright = this.compile(FS_TRIANGLE_VS, BRIGHT_FS)
     const blur = this.compile(FS_TRIANGLE_VS, BLUR_FS)
-    const composite = this.compile(FS_TRIANGLE_VS, COMPOSITE_FS)
+    const composite = this.compile(FS_TRIANGLE_VS, buildCompositeFs(this.appliedToneMapping))
     if (!sim || !render || !fade || !bright || !blur || !composite) return false
     this.simProgram = sim
     this.renderProgram = render
@@ -172,7 +278,27 @@ void main() { o = vec4(0.0); }
     this.brightProgram = bright
     this.blurProgram = blur
     this.compositeProgram = composite
+    this.compositePrograms.set(this.appliedToneMapping, composite)
     return true
+  }
+
+  /**
+   * Swap the composite program only when look.toneMapping actually changes
+   * (string compare otherwise — never per-frame recompilation). Programs are
+   * cached per mode, so toggling back reuses the earlier compile.
+   */
+  private syncToneMapping(): void {
+    const tone = resolveToneMapping(this.look.toneMapping)
+    if (tone === this.appliedToneMapping) return
+    let prog = this.compositePrograms.get(tone)
+    if (!prog) {
+      const compiled = this.compile(FS_TRIANGLE_VS, buildCompositeFs(tone))
+      if (!compiled) return // keep the current curve; compile() already warned
+      this.compositePrograms.set(tone, compiled)
+      prog = compiled
+    }
+    this.compositeProgram = prog
+    this.appliedToneMapping = tone
   }
 
   private initBuffers(): void {
@@ -236,7 +362,7 @@ void main() { o = vec4(0.0); }
    */
   writePositions(data: Float32Array<ArrayBuffer>): void {
     const gl = this.gl
-    const zero = new Float32Array(data.length)
+    const zero = acquireZeroScratch(data.length)
     for (const i of [0, 1] as const) {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf[i])
       gl.bufferSubData(gl.ARRAY_BUFFER, 0, data)
@@ -312,6 +438,7 @@ void main() { o = vec4(0.0); }
 
   frame(dt: number, time: number, activeCount: number): void {
     if (this.disposed || !this.hdrFBO) return
+    this.syncToneMapping()
     const gl = this.gl
     const n = Math.max(1, Math.min(this.count, Math.floor(activeCount)))
 
@@ -348,6 +475,12 @@ void main() { o = vec4(0.0); }
     gl.uniform1f(su('uMaxSpeed'), this.motion.maxSpeed)
     gl.uniform1f(su('uBoost'), this.morphBoost)
     gl.uniform1f(su('uMorphSpread'), this.morphSpread)
+    gl.uniform1f(su('uTurbulence'), this.motion.turbulence ?? DEFAULT_TURBULENCE)
+    gl.uniform1f(su('uTurbulenceScale'), this.motion.turbulenceScale ?? DEFAULT_TURBULENCE_SCALE)
+    // Attractors: packed by the same packAttractors the WGSL backend uses
+    // (simF32); count 0 — the default — skips the term in the shader.
+    gl.uniform1i(su('uAttractorCount'), packAttractors(this.motion.attractors, this.attractorData))
+    gl.uniform4fv(su('uAttractors'), this.attractorData)
     gl.uniform4f(su('uPointer'), this.pointerWorld[0], this.pointerWorld[1], this.pointerWorld[2], this.pointerStrength)
     gl.bindVertexArray(this.simVAO[this.cur])
     gl.enable(gl.RASTERIZER_DISCARD)
@@ -364,14 +497,16 @@ void main() { o = vec4(0.0); }
     this.cur = next
 
     // --- Trail fade + particles into the HDR accumulation buffer ---
-    const trail = Math.max(this.look.trail, 0)
-    const fadeAlpha = trail > 0.02 ? 1 - Math.exp(-dt / trail) : 1
-    const trailComp = trail > 0.02 ? Math.min(Math.max(fadeAlpha * 1.4, 0.06), 1) : 1
-    // Match the WebGPU renderer: brighten survivors when the governor sheds
-    // particles so low quality levels don't fade to black.
-    const countComp = Math.min(Math.pow(this.count / n, 0.7), 4)
-    // Text-readability damping (1 = bit-exact neutral, see field docs).
-    const damp = Math.min(Math.max(this.textDamp, 0), 1)
+    // Exposure/trail compensation — the exact same computeFrameComp the
+    // WebGPU backend calls (shared via @yura/renderer-webgpu look-math),
+    // so the two backends can never drift apart visually.
+    const { fadeAlpha, trailComp, countComp, damp } = computeFrameComp({
+      trail: this.look.trail,
+      dt,
+      count: this.count,
+      activeCount: n,
+      textDamp: this.textDamp,
+    })
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdrFBO)
     gl.viewport(0, 0, this.width, this.height)
@@ -388,7 +523,13 @@ void main() { o = vec4(0.0); }
     gl.bindVertexArray(null)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
 
-    gl.blendFunc(gl.ONE, gl.ONE)
+    // Particle blend mode (default 'additive' = ONE/ONE, the classic call).
+    const blend = glBlendSpec(this.look.blendMode)
+    if (blend.eq !== this.appliedBlendEq) {
+      gl.blendEquation(blend.eq)
+      this.appliedBlendEq = blend.eq
+    }
+    gl.blendFunc(blend.src, blend.dst)
     gl.useProgram(this.renderProgram)
     const ru = (name: string) => this.u('render', this.renderProgram, name)
     gl.uniformMatrix4fv(ru('uViewProj'), false, this.viewProj)
@@ -396,6 +537,7 @@ void main() { o = vec4(0.0); }
     const sizePx =
       ((this.look.particleSize * (ext?.sizeScale ?? 1)) * this.height) / (2 * Math.tan(fovY / 2))
     gl.uniform1f(ru('uSizePx'), sizePx)
+    gl.uniform1f(ru('uMaxPointSize'), this.maxPointSize)
     gl.uniform1f(ru('uIntensity'), this.look.intensity * trailComp * countComp * damp)
     gl.uniform1f(ru('uSpeedColorMix'), this.motion.speedColorMix)
     gl.uniform1f(ru('uTime'), time)
@@ -447,7 +589,10 @@ void main() { o = vec4(0.0); }
     blur(1, 2, 10 / hw, 0)
 
     fullscreen(this.compositeProgram, null, this.width, this.height, () => {
-      const cu = (name: string) => this.u('composite', this.compositeProgram, name)
+      // Uniform-location cache is keyed per tone mode: each mode is its own
+      // linked program with its own locations.
+      const cu = (name: string) =>
+        this.u(`composite:${this.appliedToneMapping}`, this.compositeProgram, name)
       bindTex(0, this.hdrTex)
       bindTex(1, this.bloomTex[0])
       bindTex(2, this.bloomTex[2])
@@ -478,12 +623,21 @@ void main() { o = vec4(0.0); }
     if (this.disposed) return
     this.disposed = true
     const gl = this.gl
-    for (const b of [...this.posBuf, ...this.velBuf, this.targetABuf, this.targetBBuf]) gl.deleteBuffer(b)
+    if (this.contextLostHandler) {
+      this.canvas.removeEventListener('webglcontextlost', this.contextLostHandler)
+      this.contextLostHandler = null
+    }
+    // Programs, transform feedback, VAOs, then buffers (reverse creation order).
+    this.resources.disposeAll()
     if (this.hdrTex) gl.deleteTexture(this.hdrTex)
     if (this.hdrFBO) gl.deleteFramebuffer(this.hdrFBO)
+    this.hdrTex = null
+    this.hdrFBO = null
     for (let i = 0; i < 3; i++) {
       if (this.bloomTex[i]) gl.deleteTexture(this.bloomTex[i])
       if (this.bloomFBO[i]) gl.deleteFramebuffer(this.bloomFBO[i])
+      this.bloomTex[i] = null
+      this.bloomFBO[i] = null
     }
     gl.getExtension('WEBGL_lose_context')?.loseContext()
   }

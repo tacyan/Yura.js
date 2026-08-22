@@ -1,8 +1,30 @@
 /**
  * GLSL ES 3.0 sources for the WebGL2 fallback (F-002):
  * transform-feedback particle sim + point sprites + the same HDR post chain
- * (fade trails, bloom, streaks, nebula, ACES) ported from WGSL.
+ * (fade trails, bloom, streaks, nebula, tone map) ported from WGSL.
  */
+
+import { toneMapFunctionName, toneMapSource } from '@yura/renderer-webgpu'
+// Deep relative import: the curl-noise builder and its named constants live in
+// the WebGPU package's shaders module (single source of truth for both
+// backends) but are not re-exported by that package's root index.
+import { curlNoiseSource, turbulenceTermSource } from '@yura/renderer-webgpu'
+// Shared attractor builder from the WebGPU package root (single source of truth).
+import { attractorTermSource, ATTRACTOR_ARRAY_VEC4S } from '@yura/renderer-webgpu'
+
+// Re-exported so renderer.ts (and tests) take the defaults from the same
+// single source the WGSL backend uses.
+export { DEFAULT_TURBULENCE, DEFAULT_TURBULENCE_SCALE } from '@yura/renderer-webgpu'
+export {
+  MAX_ATTRACTORS,
+  ATTRACTOR_VEC4S,
+  ATTRACTOR_RADIUS2_SLOT,
+  ATTRACTOR_ARRAY_VEC4S,
+  DEFAULT_ATTRACTOR_RADIUS,
+  ATTRACTOR_DIST_EPSILON,
+  packAttractors,
+} from '@yura/renderer-webgpu'
+export type { AttractorParams } from '@yura/renderer-webgpu'
 
 export const SIM_VS = /* glsl */ `#version 300 es
 precision highp float;
@@ -10,8 +32,10 @@ layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aVel;
 layout(location = 2) in vec4 aTA;
 layout(location = 3) in vec4 aTB;
-uniform float uDt, uTime, uMorphT, uAttraction, uDamping, uNoiseScale, uNoiseStrength, uSwirl, uMaxSpeed, uBoost, uMorphSpread;
+uniform float uDt, uTime, uMorphT, uAttraction, uDamping, uNoiseScale, uNoiseStrength, uSwirl, uMaxSpeed, uBoost, uMorphSpread, uTurbulence, uTurbulenceScale;
 uniform vec4 uPointer;
+uniform vec4 uAttractors[${ATTRACTOR_ARRAY_VEC4S}]; // vec4 pairs: [pos.xyz, strength], [radius^2, 0, 0, 0]
+uniform int uAttractorCount;
 out vec4 tfPos;
 out vec4 tfVel;
 
@@ -21,6 +45,8 @@ vec3 flowField(vec3 p, float t) {
     sin(p.z * 1.9 + t * 0.8) + cos(p.x * 1.1 + t * 0.6),
     sin(p.x * 1.3 - t * 0.9) + cos(p.y * 1.7 + t * 0.5));
 }
+
+${curlNoiseSource('glsl')}
 
 void main() {
   vec3 pos = aPos.xyz;
@@ -43,6 +69,8 @@ void main() {
   vel += (goal - pos) * attraction * dt;
   vel += flowField(pos * uNoiseScale, uTime * 0.4) * noiseS * dt;
   vel += vec3(-pos.z, 0.0, pos.x) * uSwirl * dt;
+${turbulenceTermSource('glsl')}
+${attractorTermSource('glsl')}
   if (uPointer.w != 0.0) {
     vec3 d0 = pos - uPointer.xyz;
     float r2 = max(dot(d0, d0), 0.35);
@@ -64,7 +92,7 @@ precision highp float;
 layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aVel;
 uniform mat4 uViewProj;
-uniform float uSizePx, uIntensity, uSpeedColorMix, uTime, uTwinkle;
+uniform float uSizePx, uIntensity, uSpeedColorMix, uTime, uTwinkle, uMaxPointSize;
 uniform vec3 uColorA, uColorB, uColorHot;
 out vec3 vCol;
 
@@ -79,7 +107,10 @@ void main() {
   col = mix(col, uColorHot, speedMix * 0.85);
   col *= 1.0 + uTwinkle * 0.45 * sin(uTime * (2.0 + 4.0 * h2) + h2 * 40.0);
   if (h2 > 0.995) { size *= 3.0; col *= 2.6; }
-  gl_PointSize = clamp(size / max(gl_Position.w, 0.1), 1.0, 64.0);
+  // Upper clamp is the device's ALIASED_POINT_SIZE_RANGE[1] (wired by the
+  // renderer as uMaxPointSize) so close-up particles keep growing like the
+  // WebGPU billboards. Lower bound stays 1px to avoid sub-pixel vanishing.
+  gl_PointSize = clamp(size / max(gl_Position.w, 0.1), 1.0, uMaxPointSize);
   vCol = col * uIntensity;
 }
 `
@@ -144,7 +175,11 @@ void main() {
 }
 `
 
-export const COMPOSITE_FS = /* glsl */ `#version 300 es
+/**
+ * Composite GLSL with a selectable tone-mapping curve. The default ('aces')
+ * composes to exactly the historic COMPOSITE_FS text.
+ */
+export const buildCompositeFs = (toneMapping?: string): string => /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uScene;
@@ -154,9 +189,7 @@ uniform float uBloomStrength, uExposure, uVignette, uGrain, uTime, uAberration, 
 uniform vec3 uTintA, uTintB;
 out vec4 outColor;
 
-vec3 aces(vec3 x) {
-  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
-}
+${toneMapSource(toneMapping, 'glsl')}
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -205,7 +238,7 @@ void main() {
   c += texture(uBloom, vUv).rgb * uBloomStrength;
   c += texture(uStreak, vUv).rgb * uStreakStrength * vec3(0.75, 0.85, 1.0);
   c *= uExposure;
-  c = aces(c);
+  c = ${toneMapFunctionName(toneMapping)}(c);
   vec2 q = vUv - 0.5;
   c *= 1.0 - uVignette * dot(q, q) * 2.0;
   c += (hash12(vUv * 1024.0 + t) - 0.5) * uGrain;
@@ -213,3 +246,6 @@ void main() {
   outColor = vec4(c, 1.0);
 }
 `
+
+/** Historic default composite (ACES); byte-identical to pre-toneMapping builds. */
+export const COMPOSITE_FS = buildCompositeFs()

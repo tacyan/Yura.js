@@ -18,6 +18,14 @@ function gauss(): number {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v)
 }
 
+/**
+ * Spiral galaxy: a dense hot bulge plus twisted arms, tilted toward the
+ * viewer. The default shape and the flagship first frame.
+ * `twist` is arm winding in rad per world unit; `tilt` leans the disc (rad).
+ *
+ * @example
+ * yura('#hero').shape(shapes.galaxy({ arms: 5 })).run()
+ */
 export function galaxy(options: { radius?: number; arms?: number; twist?: number; tilt?: number } = {}): ShapeSpec {
   // The camera sits near the horizon, so an untilted XZ disc reads as a thin
   // bar. The default tilt leans the disc toward the viewer.
@@ -58,6 +66,7 @@ export function galaxy(options: { radius?: number; arms?: number; twist?: number
   }
 }
 
+/** Hollow spherical shell with a pole-to-pole color gradient. */
 export function sphere(options: { radius?: number } = {}): ShapeSpec {
   const { radius = 8 } = options
   return {
@@ -79,6 +88,7 @@ export function sphere(options: { radius?: number } = {}): ShapeSpec {
   }
 }
 
+/** Torus (donut) ring; the gradient sweeps once around it. */
 export function ring(options: { radius?: number; thickness?: number } = {}): ShapeSpec {
   const { radius = 8, thickness = 1.2 } = options
   return {
@@ -141,10 +151,79 @@ export function flow(options: { width?: number } = {}): ShapeSpec {
   }
 }
 
+/** Solid box volume with a bottom-to-top gradient. `size` is [width, height, depth]. */
+export function box(options: { size?: [number, number, number] } = {}): ShapeSpec {
+  const { size = [12, 12, 12] } = options
+  const [w, h, d] = size
+  return {
+    kind: 'box',
+    generate(n) {
+      const out = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) {
+        const y = (Math.random() - 0.5) * h
+        out[i * 4] = (Math.random() - 0.5) * w
+        out[i * 4 + 1] = y
+        out[i * 4 + 2] = (Math.random() - 0.5) * d
+        out[i * 4 + 3] = y / h + 0.5
+      }
+      return out
+    },
+  }
+}
+
+/** Solid cone, apex up; the gradient runs apex-to-base. */
+export function cone(options: { radius?: number; height?: number } = {}): ShapeSpec {
+  const { radius = 8, height = 13 } = options
+  return {
+    kind: 'cone',
+    generate(n) {
+      const out = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) {
+        const t = Math.cbrt(Math.random())
+        const r = radius * t * Math.sqrt(Math.random())
+        const a = Math.random() * Math.PI * 2
+        out[i * 4] = Math.cos(a) * r
+        out[i * 4 + 1] = height / 2 - t * height
+        out[i * 4 + 2] = Math.sin(a) * r
+        out[i * 4 + 3] = t
+      }
+      return out
+    },
+  }
+}
+
+/**
+ * Corkscrew strand winding bottom to top (the gradient follows the winding).
+ *
+ * @example
+ * app.morphNow(shapes.helix({ turns: 5 }), { duration: 0.8, ease: 'back' })
+ */
+export function helix(options: { turns?: number; radius?: number; height?: number } = {}): ShapeSpec {
+  const { turns = 4, radius = 6, height = 13 } = options
+  return {
+    kind: 'helix',
+    generate(n) {
+      const out = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) {
+        const u = Math.random()
+        const a = u * turns * Math.PI * 2 + gauss() * 0.06
+        const r = radius + gauss() * 0.3
+        out[i * 4] = Math.cos(a) * r
+        out[i * 4 + 1] = (u - 0.5) * height + gauss() * 0.2
+        out[i * 4 + 2] = Math.sin(a) * r
+        out[i * 4 + 3] = u
+      }
+      return out
+    },
+  }
+}
+
 // ---- kinetic typography (text v2) ----
 
+/** Horizontal alignment of lines inside a text block (transposed for tategaki). */
 export type TextAlign = 'left' | 'center' | 'right'
 
+/** Layout options for {@link text} — font, sizing, tracking, alignment, tategaki. */
 export interface TextOptions {
   /** CSS font shorthand; weight rides inside it ('900 250px …'). px sizes auto-shrink to fit. */
   font?: string
@@ -156,6 +235,16 @@ export interface TextOptions {
   lineGap?: number
   /** Horizontal alignment of lines inside the text block. */
   align?: TextAlign
+  /**
+   * Tategaki (縦書き): graphemes run top→bottom and lines become columns laid
+   * right→left. A pure placement transposition — glyphs are not rotated —
+   * with the layout options transposed onto the new axes: `align` places each
+   * column along the vertical reading axis ('left' = top, 'right' = bottom),
+   * `letterSpacing` opens the gap between stacked graphemes, `lineGap` the
+   * gap between columns, and `worldWidth` maps the vertical canvas span.
+   * Default false: the horizontal layout, bit-identical to before.
+   */
+  vertical?: boolean
 }
 
 /**
@@ -185,6 +274,7 @@ export function charCoord(charIndex: number, intraX: number, charCount: number):
   return Math.min((charIndex + intra) / charCount, 1)
 }
 
+/** Where one laid-out text line sits inside its block (see {@link layoutLines}). */
 export interface LinePlacement {
   /** Left edge of the line inside a box of the given width. */
   x: number
@@ -211,12 +301,47 @@ export function layoutLines(
   }))
 }
 
+/** Where one tategaki column sits inside its block (see {@link layoutColumns}). */
+export interface ColumnPlacement {
+  /** Column center offset from the block's horizontal center (right = positive). */
+  x: number
+  /** Top edge of the column inside a box of the given height. */
+  y: number
+}
+
+/**
+ * Vertical (tategaki) layout: the transpose of layoutLines. Columns of the
+ * given heights stack around the horizontal center — the FIRST column sits
+ * rightmost, per vertical reading order — and `align` places each column
+ * along the vertical reading axis inside `boxHeight` ('left' = top,
+ * 'right' = bottom). (Pure; exported for tests.)
+ */
+export function layoutColumns(
+  columnHeights: number[],
+  columnWidth: number,
+  columnGap: number,
+  align: TextAlign,
+  boxHeight: number,
+): ColumnPlacement[] {
+  // A column is a line rotated onto the transposed axes: solve with the
+  // horizontal layout, then mirror the stacking axis so columns run
+  // right→left instead of top→bottom.
+  return layoutLines(columnHeights, columnWidth, columnGap, align, boxHeight).map((p) => ({
+    x: -p.y,
+    y: p.x,
+  }))
+}
+
 /**
  * Samples pixels from rasterized text. Browser-only (uses canvas 2D).
  *
  * v2: multi-line via '\n', per-grapheme segmentation (CJK first-class), and a
  * per-CHARACTER palette/delay coordinate in reading order — see charCoord().
  * Backward compatible with the v1 `{ font, worldWidth }` call sites.
+ *
+ * v3: `vertical: true` lays the same text out as tategaki — see
+ * TextOptions.vertical and layoutColumns(). The sweep coordinate follows the
+ * vertical reading order: rightmost column first, top to bottom.
  */
 export function text(str: string, options: TextOptions = {}): ShapeSpec {
   const {
@@ -225,26 +350,33 @@ export function text(str: string, options: TextOptions = {}): ShapeSpec {
     letterSpacing = 0,
     lineGap = 0.22,
     align = 'center',
+    vertical = false,
   } = options
   return {
     kind: 'text',
     generate(n) {
       const lines = str.split('\n').map((line) => segmentGraphemes(line))
       const charCount = lines.reduce((sum, gs) => sum + gs.length, 0)
-      const W = 1024
-      const H = Math.min(1600, 400 * Math.max(lines.length, 1))
-      // Glyph cells recorded during draw: which character owns which x-range.
+      // The reading axis gets the fixed 1024px span; the cross axis grows
+      // with the line/column count. Vertical is the exact transpose.
+      const span = 1024
+      const cross = Math.min(1600, 400 * Math.max(lines.length, 1))
+      const W = vertical ? cross : span
+      const H = vertical ? span : cross
+      // Glyph cells recorded during draw: which character owns which range
+      // of the reading axis (x for horizontal rows, y for vertical columns).
       interface Cell {
         index: number
         x0: number
         x1: number
       }
       const rows: Cell[][] = []
+      /** Cross-axis center of each drawn row (its y) or column (its x). */
       const rowY: number[] = []
 
       const candidates = rasterize((ctx, w, h) => {
         ctx.fillStyle = '#fff'
-        ctx.textAlign = 'left'
+        ctx.textAlign = vertical ? 'center' : 'left'
         ctx.textBaseline = 'middle'
         ctx.font = font
         // Long strings (CJK especially) overflow the fixed canvas at the
@@ -253,6 +385,52 @@ export function text(str: string, options: TextOptions = {}): ShapeSpec {
         // fall through unscaled.
         const pxMatch = /(\d+(?:\.\d+)?)px/.exec(font)
         let fontPx = pxMatch ? Number(pxMatch[1]) : 250
+        if (vertical) {
+          // Tategaki: every grapheme owns an em-tall cell (same 1.06 leading
+          // as the horizontal line height), a line becomes a column, and the
+          // fit/margin/layout math runs on transposed axes.
+          const cellH = (): number => fontPx * 1.06
+          const measureColumn = (gs: string[]): number =>
+            gs.length * cellH() + letterSpacing * fontPx * Math.max(gs.length - 1, 0)
+          let heights = lines.map(measureColumn)
+          const blockW = (): number =>
+            lines.length * cellH() + (lines.length - 1) * fontPx * lineGap
+          const fit = Math.min(
+            1,
+            (h * 0.94) / Math.max(1, ...heights),
+            (w * 0.9) / Math.max(blockW(), 1),
+          )
+          if (fit < 1 && pxMatch) {
+            fontPx = Math.max(8, Math.floor(fontPx * fit))
+            ctx.font = font.replace(/(\d+(?:\.\d+)?)px/, `${fontPx}px`)
+            heights = lines.map(measureColumn)
+          }
+
+          const margin = h * 0.03
+          const placed = layoutColumns(heights, cellH(), fontPx * lineGap, align, h - margin * 2)
+          let index = 0
+          lines.forEach((gs, ci) => {
+            const cells: Cell[] = []
+            const x = w / 2 + placed[ci].x
+            rows.push(cells)
+            rowY.push(x)
+            let y = margin + placed[ci].y
+            for (const g of gs) {
+              const adv = cellH()
+              if (g.trim() !== '') {
+                // textAlign 'center' + baseline 'middle': the glyph sits in
+                // the middle of its em cell, unrotated.
+                ctx.fillText(g, x, y + adv / 2)
+                cells.push({ index, x0: y, x1: y + adv })
+              }
+              // Whitespace advances the pen and keeps its char index, so the
+              // sweep breathes naturally at word gaps.
+              y += adv + letterSpacing * fontPx
+              index++
+            }
+          })
+          return
+        }
         const measureLine = (gs: string[]): number =>
           gs.reduce((sum, g) => sum + ctx.measureText(g).width, 0) +
           letterSpacing * fontPx * Math.max(gs.length - 1, 0)
@@ -299,16 +477,19 @@ export function text(str: string, options: TextOptions = {}): ShapeSpec {
         return sampleCandidates(candidates, W, H, n, worldWidth)
       }
 
-      // Per-candidate coordinate: nearest drawn row by y, then the owning
-      // glyph cell by x (overhang pixels clamp into the nearest band).
+      // Per-candidate coordinate: nearest drawn row/column by the cross
+      // axis, then the owning glyph cell by the reading axis (overhang
+      // pixels clamp into the nearest band).
       const coords = new Float32Array(pairCount)
       for (let i = 0; i < pairCount; i++) {
         const px = candidates[i * 2]
         const py = candidates[i * 2 + 1]
+        const crossPos = vertical ? px : py
+        const along = vertical ? py : px
         let row = 0
         let bestD = Infinity
         for (let r = 0; r < rowY.length; r++) {
-          const d = Math.abs(py - rowY[r])
+          const d = Math.abs(crossPos - rowY[r])
           if (rows[r].length > 0 && d < bestD) {
             bestD = d
             row = r
@@ -317,15 +498,17 @@ export function text(str: string, options: TextOptions = {}): ShapeSpec {
         const cells = rows[row]
         let cell = cells[0]
         for (const c of cells) {
-          if (px >= c.x0) cell = c
+          if (along >= c.x0) cell = c
           else break
         }
-        const intra = (px - cell.x0) / Math.max(cell.x1 - cell.x0, 1)
+        const intra = (along - cell.x0) / Math.max(cell.x1 - cell.x0, 1)
         coords[i] = charCoord(cell.index, intra, charCount)
       }
 
       const out = new Float32Array(n * 4)
-      const s = worldWidth / W
+      // worldWidth maps the fixed reading-axis span (W horizontally, H for
+      // tategaki), so glyph world size matches across both modes.
+      const s = worldWidth / (vertical ? H : W)
       for (let i = 0; i < n; i++) {
         const pick = (Math.random() * pairCount) | 0
         const px = candidates[pick * 2] + Math.random()
@@ -432,4 +615,11 @@ function sampleCandidates(candidates: number[], w: number, h: number, n: number,
   return out
 }
 
-export const shapes = { galaxy, sphere, ring, vortex, flow, text, image }
+/**
+ * Registry of every built-in shape generator — morph targets for `.shape()`,
+ * `.morphTo()`, `morphNow()`, and preset sequences.
+ *
+ * @example
+ * yura('#hero').morphTo([shapes.galaxy(), shapes.text('YURA'), shapes.vortex()]).run()
+ */
+export const shapes = { galaxy, sphere, ring, vortex, flow, box, cone, helix, text, image }

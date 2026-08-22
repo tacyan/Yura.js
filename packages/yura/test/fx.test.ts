@@ -1,6 +1,15 @@
 import { test, expect } from 'bun:test'
-import { FxPool, FxTrailEmitter, FX_FLOATS } from '../src/fx'
+import { FxPool, FxTrailEmitter, FX_FLOATS, type AttractorParams } from '../src/fx'
 import { YuraScene } from '../src/scene'
+import {
+  packAttractors,
+  MAX_ATTRACTORS,
+  ATTRACTOR_ARRAY_VEC4S,
+  ATTRACTOR_VEC4S,
+  ATTRACTOR_RADIUS2_SLOT,
+  ATTRACTOR_DIST_EPSILON,
+  DEFAULT_ATTRACTOR_RADIUS,
+} from '@yura/renderer-webgpu'
 
 // FX logic is pure (no DOM, no GPU): pools, emitters, and lifetimes step headless.
 
@@ -139,4 +148,360 @@ test('scene.celebrate feeds the shared pool', () => {
   scene.celebrate({ bursts: 2, interval: 0, count: 15, life: 10 })
   scene.step(1 / 60, 0)
   expect(scene.fx.alive).toBe(30)
+})
+
+test('spread=0 sends every particle exactly along direction', () => {
+  const pool = new FxPool(256, seeded(11))
+  pool.burst([0, 0, 0], { count: 32, direction: [1, 2, -0.5], spread: 0, gravity: 0, life: 10 })
+  pool.step(1 / 60)
+  const out = new Float32Array(256 * FX_FLOATS)
+  const n = pool.writeInstances(out)
+  expect(n).toBe(32)
+  const len = Math.hypot(1, 2, -0.5)
+  const ex = 1 / len
+  const ey = 2 / len
+  const ez = -0.5 / len
+  for (let i = 0; i < n; i++) {
+    const o = i * FX_FLOATS
+    const m = Math.hypot(out[o], out[o + 1], out[o + 2])
+    expect(m).toBeGreaterThan(0)
+    expect(out[o] / m).toBeCloseTo(ex, 5)
+    expect(out[o + 1] / m).toBeCloseTo(ey, 5)
+    expect(out[o + 2] / m).toBeCloseTo(ez, 5)
+  }
+})
+
+test('spread widens the cone but stays within its half-angle', () => {
+  const pool = new FxPool(256, seeded(21))
+  const spread = Math.PI / 4
+  pool.burst([0, 0, 0], { count: 64, direction: [0, 1, 0], spread, gravity: 0, life: 10 })
+  pool.step(1 / 60)
+  const out = new Float32Array(256 * FX_FLOATS)
+  const n = pool.writeInstances(out)
+  let minCos = 1
+  for (let i = 0; i < n; i++) {
+    const o = i * FX_FLOATS
+    const m = Math.hypot(out[o], out[o + 1], out[o + 2])
+    const cos = out[o + 1] / m
+    expect(cos).toBeGreaterThanOrEqual(Math.cos(spread) - 1e-4)
+    minCos = Math.min(minCos, cos)
+  }
+  expect(minCos).toBeLessThan(0.999)
+})
+
+test('colorEnd shifts particle color across the lifetime', () => {
+  const pool = new FxPool(16, seeded(12))
+  pool.burst([0, 0, 0], {
+    count: 4, color: '#ff0000', colorEnd: '#0000ff',
+    life: 1, speed: 0, gravity: 0, intensity: 1,
+  })
+  const out = new Float32Array(16 * FX_FLOATS)
+  pool.writeInstances(out)
+  const r0 = out[4]
+  const b0 = out[6]
+  expect(r0).toBeGreaterThan(0.9)
+  expect(b0).toBeLessThan(0.1)
+  for (let i = 0; i < 30; i++) pool.step(1 / 60)
+  expect(pool.alive).toBe(4)
+  pool.writeInstances(out)
+  expect(out[4]).toBeLessThan(r0)
+  expect(out[6]).toBeGreaterThan(b0)
+})
+
+test('drag decays velocity monotonically and faster than no drag', () => {
+  const make = (drag?: number): FxPool => {
+    const p = new FxPool(8, seeded(13))
+    p.burst([0, 0, 0], { count: 1, speed: 8, gravity: 0, life: 100, ...(drag === undefined ? {} : { drag }) })
+    return p
+  }
+  const dragged = make(3)
+  const free = make()
+  const out = new Float32Array(8 * FX_FLOATS)
+  const posOf = (p: FxPool): [number, number, number] => {
+    p.writeInstances(out)
+    return [out[0], out[1], out[2]]
+  }
+  let prev = posOf(dragged)
+  let prevStep = Number.POSITIVE_INFINITY
+  for (let k = 0; k < 60; k++) {
+    dragged.step(1 / 60)
+    free.step(1 / 60)
+    const cur = posOf(dragged)
+    const d = Math.hypot(cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2])
+    expect(d).toBeLessThan(prevStep)
+    prevStep = d
+    prev = cur
+  }
+  const df = posOf(free)
+  expect(Math.hypot(prev[0], prev[1], prev[2])).toBeLessThan(Math.hypot(df[0], df[1], df[2]))
+})
+
+test('shape controls the emission source volume', () => {
+  const pool = new FxPool(256, seeded(16))
+  pool.burst([5, 5, 5], { count: 40, shape: 'disc', radius: 2, speed: 0, gravity: 0, life: 10 })
+  const out = new Float32Array(256 * FX_FLOATS)
+  let n = pool.writeInstances(out)
+  let spreadOut = false
+  for (let i = 0; i < n; i++) {
+    const o = i * FX_FLOATS
+    expect(out[o + 1]).toBeCloseTo(5, 5)
+    const d = Math.hypot(out[o] - 5, out[o + 2] - 5)
+    expect(d).toBeLessThanOrEqual(2.000001)
+    if (d > 0.01) spreadOut = true
+  }
+  expect(spreadOut).toBe(true)
+
+  pool.clear()
+  pool.burst([0, 0, 0], { count: 40, shape: 'box', radius: 1.5, speed: 0, gravity: 0, life: 10 })
+  n = pool.writeInstances(out)
+  for (let i = 0; i < n; i++) {
+    const o = i * FX_FLOATS
+    for (let k = 0; k < 3; k++) expect(Math.abs(out[o + k])).toBeLessThanOrEqual(1.5000001)
+  }
+})
+
+test('neutral new options leave default bursts bit-identical', () => {
+  const run = (extra: Record<string, unknown>): Float32Array => {
+    const pool = new FxPool(256, seeded(42))
+    pool.burst([1, 2, 3], { count: 64, color: ['#ff0000', '#00ff00'], ...extra })
+    for (let i = 0; i < 20; i++) pool.step(1 / 60)
+    const out = new Float32Array(256 * FX_FLOATS)
+    const n = pool.writeInstances(out)
+    return out.slice(0, n * FX_FLOATS)
+  }
+  expect(run({ drag: 0 })).toEqual(run({}))
+})
+
+test('non-finite option values fall back to safe defaults', () => {
+  const pool = new FxPool(64, seeded(15))
+  pool.burst([0, 0, 0], {
+    count: 8,
+    speed: Number.NaN,
+    life: Number.POSITIVE_INFINITY,
+    gravity: Number.NaN,
+    drag: Number.NaN,
+    spread: Number.NaN,
+    direction: [Number.NaN, 0, 0],
+    shape: 'box',
+    radius: Number.NaN,
+    colorEnd: [Number.NaN, 1, 0],
+  })
+  expect(pool.alive).toBe(8)
+  for (let i = 0; i < 10; i++) pool.step(1 / 60)
+  const out = new Float32Array(64 * FX_FLOATS)
+  const n = pool.writeInstances(out)
+  expect(n).toBe(8)
+  for (let i = 0; i < n * FX_FLOATS; i++) expect(Number.isFinite(out[i])).toBe(true)
+})
+
+test('trail colorEnd fades spark color toward the tail', () => {
+  const pool = new FxPool(64, seeded(31))
+  const trail = new FxTrailEmitter(pool, {
+    color: '#ff0000', colorEnd: '#0000ff', intensity: 1, rate: 60, life: 1, jitter: 0,
+  })
+  trail.step(1 / 60, [0, 0, 0], [0, 0, 0])
+  expect(pool.alive).toBe(1)
+  const out = new Float32Array(64 * FX_FLOATS)
+  pool.writeInstances(out)
+  const r0 = out[4]
+  const b0 = out[6]
+  expect(r0).toBeGreaterThan(0.9)
+  expect(b0).toBeLessThan(0.1)
+  for (let i = 0; i < 30; i++) pool.step(1 / 60) // 0.5s < 0.7s minimum life
+  expect(pool.alive).toBe(1)
+  pool.writeInstances(out)
+  expect(out[4]).toBeLessThan(r0) // red drains away...
+  expect(out[6]).toBeGreaterThan(b0) // ...as blue blends in
+})
+
+test('trail width scales sprite size and nothing else', () => {
+  const run = (width?: number): { out: Float32Array; n: number } => {
+    const pool = new FxPool(256, seeded(32))
+    const trail = new FxTrailEmitter(pool, { rate: 600, life: 10, ...(width === undefined ? {} : { width }) })
+    trail.step(0.1, [1, 2, 3], [4, 0, 0])
+    const out = new Float32Array(256 * FX_FLOATS)
+    return { out, n: pool.writeInstances(out) }
+  }
+  const base = run()
+  const wide = run(2)
+  expect(base.n).toBeGreaterThan(0)
+  expect(wide.n).toBe(base.n)
+  for (let i = 0; i < base.n; i++) {
+    const o = i * FX_FLOATS
+    expect(wide.out[o]).toBe(base.out[o]) // position untouched
+    expect(wide.out[o + 3]).toBeCloseTo(base.out[o + 3] * 2, 6) // size doubled
+    expect(wide.out[o + 4]).toBe(base.out[o + 4]) // color untouched
+    expect(wide.out[o + 7]).toBe(base.out[o + 7]) // alpha untouched
+  }
+})
+
+test('trail fade reshapes the alpha decay curve (1 stays linear)', () => {
+  const run = (fade?: number): Float32Array => {
+    const pool = new FxPool(64, seeded(33))
+    const trail = new FxTrailEmitter(pool, { rate: 60, life: 1, ...(fade === undefined ? {} : { fade }) })
+    trail.step(1 / 60, [0, 0, 0], [0, 0, 0])
+    for (let i = 0; i < 24; i++) pool.step(1 / 60) // 0.4s into a >= 0.7s life
+    const out = new Float32Array(64 * FX_FLOATS)
+    const n = pool.writeInstances(out)
+    expect(n).toBe(1)
+    return out
+  }
+  const linear = run()
+  const sharp = run(2)
+  // fade = 2 squares the remaining-life fraction: alpha (1-t)^2 -> (1-t)^4.
+  expect(sharp[7]).toBeCloseTo(linear[7] * linear[7], 5)
+  expect(sharp[7]).toBeLessThan(linear[7]) // non-linear: dies out sooner
+  expect(sharp[3]).toBeLessThan(linear[3]) // size envelope shrinks with it
+})
+
+test('neutral new trail options leave default trails bit-identical', () => {
+  const run = (extra: Record<string, unknown>): Float32Array => {
+    const pool = new FxPool(256, seeded(42))
+    const trail = new FxTrailEmitter(pool, { rate: 120, color: '#ff8800', ...extra })
+    for (let i = 0; i < 12; i++) trail.step(1 / 60, [i * 0.05, 1, 0], [3, 0, 0])
+    for (let i = 0; i < 6; i++) pool.step(1 / 60)
+    const out = new Float32Array(256 * FX_FLOATS)
+    const n = pool.writeInstances(out)
+    return out.slice(0, n * FX_FLOATS)
+  }
+  expect(run({ width: 1, fade: 1 })).toEqual(run({}))
+  expect(run({ colorEnd: '#ff8800' })).toEqual(run({})) // end = start color
+})
+
+test('non-finite trail option values fall back to safe defaults', () => {
+  const pool = new FxPool(64, seeded(34))
+  const trail = new FxTrailEmitter(pool, {
+    rate: 60,
+    life: 10,
+    width: Number.NaN,
+    fade: Number.NaN,
+    colorEnd: [Number.NaN, 1, 0],
+  })
+  for (let i = 0; i < 8; i++) trail.step(1 / 60, [0, 0, 0], [0, 0, 0])
+  for (let i = 0; i < 10; i++) pool.step(1 / 60)
+  const out = new Float32Array(64 * FX_FLOATS)
+  const n = pool.writeInstances(out)
+  expect(n).toBe(8)
+  for (let i = 0; i < n * FX_FLOATS; i++) expect(Number.isFinite(out[i])).toBe(true)
+})
+
+// --- Attractors: the GPU sims' gravity-well vocabulary on the CPU pool ------
+// FxPool.attractors shares the AttractorParams type, the MAX_ATTRACTORS /
+// DEFAULT_ATTRACTOR_RADIUS / ATTRACTOR_DIST_EPSILON constants, the packed
+// packAttractors layout, and the exact softened inverse-square force with
+// @yura/renderer-webgpu (locked there by attractors.test.ts).
+
+type V3 = [number, number, number]
+
+/**
+ * CPU reference for one step's velocity increment — the same mirror of
+ * attractorTermSource that locks the GPU sims in renderer-webgpu's
+ * attractors.test.ts, reading the same packAttractors layout.
+ */
+function attractorVelDeltaRef(pos: V3, packed: Float32Array, count: number, dt: number): V3 {
+  const out: V3 = [0, 0, 0]
+  for (let j = 0; j < count; j++) {
+    const base = j * ATTRACTOR_VEC4S * 4
+    const toAtt: V3 = [packed[base] - pos[0], packed[base + 1] - pos[1], packed[base + 2] - pos[2]]
+    const attD2 = toAtt[0] * toAtt[0] + toAtt[1] * toAtt[1] + toAtt[2] * toAtt[2]
+    const soft2 = packed[base + ATTRACTOR_RADIUS2_SLOT * 4]
+    const s =
+      (packed[base + 3] /
+        ((attD2 + soft2 + ATTRACTOR_DIST_EPSILON) * Math.sqrt(attD2 + ATTRACTOR_DIST_EPSILON))) *
+      dt
+    out[0] += toAtt[0] * s
+    out[1] += toAtt[1] * s
+    out[2] += toAtt[2] * s
+  }
+  return out
+}
+
+/** Spawns one motionless, force-free particle at `pos`, steps, returns its packed instance. */
+function stepLone(pool: FxPool, pos: V3, steps: number, dt: number): Float32Array {
+  pool.spawn(pos[0], pos[1], pos[2], 0, 0, 0, 60, 0.1, 1, 1, 1, 0, 0)
+  for (let i = 0; i < steps; i++) pool.step(dt)
+  const out = new Float32Array(FX_FLOATS)
+  expect(pool.writeInstances(out)).toBe(1)
+  return out
+}
+
+test('a positive-strength attractor pulls particles toward the well', () => {
+  const pool = new FxPool(4, seeded(11))
+  pool.attractors = [{ position: [0, 0, 0], strength: 8 }]
+  const out = stepLone(pool, [2, 0, 0], 30, 1 / 60)
+  expect(out[0]).toBeLessThan(2) // moved toward the well on x
+  expect(out[1]).toBe(0) // no lateral force off the axis
+  expect(out[2]).toBe(0)
+})
+
+test('a negative-strength attractor pushes particles away', () => {
+  const pool = new FxPool(4, seeded(11))
+  pool.attractors = [{ position: [0, 0, 0], strength: -8 }]
+  const out = stepLone(pool, [2, 0, 0], 30, 1 / 60)
+  expect(out[0]).toBeGreaterThan(2)
+  expect(out[1]).toBe(0)
+  expect(out[2]).toBe(0)
+})
+
+test('unset and empty attractors keep stepping bit-identical to the legacy path', () => {
+  const run = (attractors?: readonly AttractorParams[]): Float32Array => {
+    const pool = new FxPool(256, seeded(21))
+    if (attractors) pool.attractors = attractors
+    pool.burst([0, 1, 0], { count: 96, speed: 5, gravity: -9, life: 2, drag: 0.5 })
+    for (let i = 0; i < 40; i++) pool.step(1 / 60)
+    const out = new Float32Array(256 * FX_FLOATS)
+    const n = pool.writeInstances(out)
+    expect(n).toBeGreaterThan(0)
+    return out.slice(0, n * FX_FLOATS)
+  }
+  const untouched = run() // property never assigned
+  const empty = run([]) // explicit empty array
+  expect(empty.length).toBe(untouched.length)
+  let mismatched = 0
+  for (let i = 0; i < untouched.length; i++) if (!Object.is(empty[i], untouched[i])) mismatched++
+  expect(mismatched).toBe(0)
+})
+
+test("one step applies exactly the GPU sims' reference impulse (same packed layout, same formula)", () => {
+  const dt = 0.0625 // exact binary float keeps the integration reproducible
+  const start: V3 = [Math.fround(1.2), Math.fround(0.4), Math.fround(-0.9)]
+  const wells: AttractorParams[] = [
+    { position: [5, 0, 0], strength: 1.5, radius: 0.2 },
+    { position: [-2, 3, 1], strength: -0.75 }, // omitted radius -> DEFAULT_ATTRACTOR_RADIUS
+  ]
+  const pool = new FxPool(4, seeded(31))
+  pool.attractors = wells
+  pool.spawn(start[0], start[1], start[2], 0, 0, 0, 10, 0.1, 1, 1, 1, 0, 0)
+  pool.step(dt)
+
+  const packed = new Float32Array(ATTRACTOR_ARRAY_VEC4S * 4)
+  const count = packAttractors(wells, packed)
+  expect(count).toBe(2)
+  // The omitted radius took the shared default (stored squared, as float32).
+  expect(packed[ATTRACTOR_VEC4S * 4 + ATTRACTOR_RADIUS2_SLOT * 4]).toBe(
+    Math.fround(DEFAULT_ATTRACTOR_RADIUS ** 2),
+  )
+  const d = attractorVelDeltaRef(start, packed, count, dt)
+
+  const out = new Float32Array(FX_FLOATS)
+  expect(pool.writeInstances(out)).toBe(1)
+  // v = fround(ref delta), p = fround(start + v * dt): identical to the
+  // reference math modulo the pool's float32 storage — compared exactly.
+  expect(out[0]).toBe(Math.fround(start[0] + Math.fround(d[0]) * dt))
+  expect(out[1]).toBe(Math.fround(start[1] + Math.fround(d[1]) * dt))
+  expect(out[2]).toBe(Math.fround(start[2] + Math.fround(d[2]) * dt))
+  expect(out[0]).not.toBe(start[0]) // the superposed pull really moved it
+})
+
+test('attractors beyond MAX_ATTRACTORS are ignored — the same clamp packAttractors applies', () => {
+  const wells: AttractorParams[] = Array.from({ length: MAX_ATTRACTORS + 3 }, (_, i) => ({
+    position: [i + 1, 0, 0] as V3,
+    strength: 2,
+  }))
+  const run = (list: AttractorParams[]): Float32Array => {
+    const pool = new FxPool(4, seeded(12))
+    pool.attractors = list
+    return stepLone(pool, [0, 0, 0], 20, 1 / 60)
+  }
+  expect(run(wells)).toEqual(run(wells.slice(0, MAX_ATTRACTORS)))
 })

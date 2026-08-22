@@ -36,51 +36,77 @@ setTimeout(() => app.morphNow(shapes.vortex()), 7500)
 `
 
 /** Curated example sketches — the playground's docs-by-example. */
-const RECIPES: Array<{ label: string; code: string }> = [
+export const RECIPES: Array<{ label: string; code: string }> = [
   { label: 'galaxy', code: DEFAULT_CODE },
   {
     label: 'word morph',
     code: `import { yura } from 'yura'
 
-const app = yura('#stage')
+// morphTo cycles the words forever; motion() sets the beat, and the
+// 'back' ease overshoots each arrival for a snappy design-reel feel.
+yura('#stage')
   .preset('cyberpunk')
   .particles(350_000)
-  .interactive()
-
-await app.run()
-
-const words = ['YURA', 'MAKE', 'THE WEB', 'MOVE']
-let i = 0
-setInterval(() => app.morphNow(words[i++ % words.length]), 3200)
+  .morphTo(['YURA', 'MAKE', 'THE WEB', 'MOVE'])
+  .motion({ hold: 1.4, morph: 1.8, ease: 'back' })
+  .run()
 `,
   },
   {
     label: 'lyric motion',
     code: `import { yura, lyrics } from 'yura'
 
-const app = yura('#stage')
-  .preset('aurora')
-  .particles(400_000)
-  .interactive()
-
+const app = yura('#stage').preset('aurora').particles(400_000)
 await app.run()
 
-// Kinetic typography: sweep 0.8 staggers the morph glyph by glyph,
-// so each line condenses char by char before dissolving into the next.
+// Kinetic typography: bare strings auto-time themselves \`every\` seconds;
+// sweep 0.8 condenses each line glyph by glyph before the next dissolve.
 lyrics(app, [
   { text: 'ゆらめく光', at: 0 },
-  { text: '波のように踊る', at: 3.4 },
-  { text: 'YURA', at: 6.8, direction: 'center' },
-], { sweep: 0.8, loop: true })
+  '波のように踊る',
+  { text: 'YURA', direction: 'center' },
+], { every: 3.4, sweep: 0.8, loop: true })
+`,
+  },
+  {
+    label: 'tategaki',
+    code: `import { yura, lyrics, looks } from 'yura'
+
+const app = yura('#stage').look(looks.sakura()).particles(400_000)
+await app.run()
+
+// 縦書き: vertical lays each line top-to-bottom, columns right to left —
+// classical Japanese verse, set in drifting sakura light.
+lyrics(app, [
+  { text: '春の夜に', at: 0 },
+  '花はこぼれて',
+  '光となりぬ',
+  'ゆらゆらと',
+], { every: 3.6, sweep: 0.8, vertical: true, loop: true })
 `,
   },
   {
     label: 'aurora',
     code: `import { yura } from 'yura'
 
+// One line — pointer reactivity is on by default, and turbulence blends in
+// divergence-free curl noise so the sheets ripple like a living fluid.
+yura('#stage').preset('aurora').motion({ turbulence: 0.8 }).run()
+`,
+  },
+  {
+    label: 'gravity wells',
+    code: `import { yura, shapes } from 'yura'
+
+// Gravity wells: up to 4 attractors bend the swarm — positive strength
+// pulls particles in, negative pushes them away, radius softens the core.
 yura('#stage')
-  .preset('aurora')
-  .interactive()
+  .preset('neon-galaxy')
+  .shape(shapes.sphere())
+  .motion({ attractors: [
+    { position: [6, 0, 0], strength: 40, radius: 2 },
+    { position: [-6, 0, 0], strength: -32, radius: 2.5 },
+  ] })
   .run()
 `,
   },
@@ -88,13 +114,14 @@ yura('#stage')
     label: 'custom look',
     code: `import { yura, shapes, looks } from 'yura'
 
+// sakura ships the whole pipeline curated — screen blend + reinhard tone
+// curve — and still accepts raw overrides, down to any knob you like.
 yura('#stage')
   .particles(400_000)
-  .gradient('#f472b6', '#22d3ee')
-  .look(looks.cinematic({ trail: 0.6, streak: 0.9, bloomStrength: 0.9 }))
-  .shape(shapes.ring({ radius: 9, thickness: 1.6 }))
-  .motion({ swirl: 0.35, noiseStrength: 1.1 })
-  .interactive()
+  .gradient('#f9a8d4', '#fde68a')
+  .look(looks.sakura({ trail: 0.45 }))
+  .shape(shapes.flow())
+  .motion({ turbulence: 0.5, swirl: 0.08 })
   .run()
 `,
   },
@@ -102,11 +129,12 @@ yura('#stage')
     label: 'shape tour',
     code: `import { yura, shapes } from 'yura'
 
+// Now with the box / cone / helix generators; expo easing rushes each morph.
 yura('#stage')
   .preset('cinematic')
   .particles(600_000)
-  .morphTo([shapes.sphere(), shapes.vortex(), shapes.ring(), shapes.galaxy()])
-  .interactive()
+  .morphTo([shapes.sphere(), shapes.helix(), shapes.cone(), shapes.box(), shapes.vortex(), shapes.ring(), shapes.galaxy()])
+  .motion({ hold: 1.8, morph: 1.4, ease: 'expo' })
   .run()
 `,
   },
@@ -115,59 +143,63 @@ yura('#stage')
     code: `import { yura } from 'yura'
 
 // PRISM RUSH — gather 8 pearls around the iridescent knot. WASD/drag rolls,
-// Space/tap jumps, R restarts. hitRadius makes pickups feel fair. (Needs WebGPU.)
-const app = yura('#stage')
-const scene = app.scene({ gravity: -22, bounds: 11 })
+// Space/tap jumps, R restarts. game() = scene + setup + run in one call. (Needs WebGPU.)
+yura('#stage').game({ gravity: -22, bounds: 11 }, (scene) => {
+  scene.add('plane', { size: 22, material: 'obsidian' })
+  scene.add('knot', { radius: 1.3, material: 'iridescent', position: [0, 1.8, 0], spin: [0, 0.5, 0.2], solid: true, shadow: true })
+  // Black-hole zone above the knot: pickup sparks, the trail, and the confetti
+  // all bend toward it — fx-only, so the ball's physics never feel it.
+  scene.gravityWell([0, 5, 0], 12, 1.5)
+  const ball = scene.add('sphere', { radius: 0.45, material: 'iridescent', position: [0, 3, 6], body: 'dynamic', shadow: true })
+  // Trail sugar: colorEnd fades the ribbon toward its tail, width/fade shape it.
+  ball.trail({ color: '#c4b5fd', colorEnd: '#312e81', width: 1.6, fade: 1.8 })
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2
+    scene.add('sphere', { radius: 0.26, hitRadius: 0.7, material: 'pearl', tag: 'pearl', shadow: true, position: [Math.cos(a) * 7, 1, Math.sin(a) * 7] })
+  }
 
-scene.add('plane', { size: 22, material: 'obsidian' })
-scene.add('knot', { radius: 1.3, material: 'iridescent', position: [0, 1.8, 0], spin: [0, 0.5, 0.2], solid: true, shadow: true })
-const ball = scene.add('sphere', { radius: 0.45, material: 'iridescent', position: [0, 3, 6], body: 'dynamic', shadow: true })
-ball.trail({ color: '#c4b5fd' })
-for (let i = 0; i < 8; i++) {
-  const a = (i / 8) * Math.PI * 2
-  scene.add('sphere', { radius: 0.26, hitRadius: 0.7, material: 'pearl', tag: 'pearl', shadow: true, position: [Math.cos(a) * 7, 1, Math.sin(a) * 7] })
-}
+  let score = 0
+  const hud = scene.text('PEARLS 0 / 8', { anchor: 'top' })
+  scene.camera.follow(ball, { distance: 8, height: 3.6 })
 
-let score = 0
-const hud = scene.text('PEARLS 0 / 8', { anchor: 'top' })
-scene.camera.follow(ball, { distance: 8, height: 3.6 })
-
-scene.onUpdate((dt, input) => {
-  ball.velocity[0] += input.x * 26 * dt
-  ball.velocity[2] -= input.y * 26 * dt
-  if (input.jump && ball.grounded) ball.velocity[1] = 8.5
-  if (input.pressed('KeyR')) { scene.reset(); score = 0; hud.set('PEARLS 0 / 8') }
+  scene.onUpdate((dt, input) => {
+    ball.velocity[0] += input.x * 26 * dt
+    ball.velocity[2] -= input.y * 26 * dt
+    if (input.jump && ball.grounded) ball.velocity[1] = 8.5
+    if (input.pressed('KeyR')) { scene.reset(); score = 0; hud.set('PEARLS 0 / 8') }
+  })
+  ball.onCollide((p) => {
+    if (p.tag !== 'pearl' || !p.alive) return
+    p.remove()
+    // Pickup spark: a pink-to-cyan fountain aimed straight up.
+    scene.burst(p.position, { color: '#f0abfc', colorEnd: '#22d3ee', direction: [0, 1, 0], spread: 0.7 })
+    hud.set(++score < 8 ? 'PEARLS ' + score + ' / 8' : 'ALL PEARLS — press R')
+    if (score === 8) scene.celebrate()
+  })
 })
-ball.onCollide((p) => {
-  if (p.tag !== 'pearl' || !p.alive) return
-  p.remove()
-  scene.burst(p.position, { color: '#f0abfc' })
-  hud.set(++score < 8 ? 'PEARLS ' + score + ' / 8' : 'ALL PEARLS — press R')
-  if (score === 8) scene.celebrate()
-})
-app.run()
 `,
   },
   {
     label: 'particle fx',
     code: `import { yura } from 'yura'
 
-// FX kit — arrows/WASD nudge, Space hops, B bursts, C celebrates. (Needs WebGPU.)
-const app = yura('#stage')
-const scene = app.scene({ gravity: -18, bounds: 8 })
+// FX kit — arrows/WASD nudge, Space hops, B bursts, F fountains, C celebrates. (Needs WebGPU.)
+yura('#stage').game({ gravity: -18, bounds: 8 }, (scene) => {
+  scene.add('plane', { size: 18, material: 'checker' })
+  const ball = scene.add('sphere', { radius: 0.5, material: 'chrome', position: [0, 2, 0], body: 'dynamic', shadow: true })
+  ball.trail({ color: '#67e8f9' })
 
-scene.add('plane', { size: 18, material: 'checker' })
-const ball = scene.add('sphere', { radius: 0.5, material: 'chrome', position: [0, 2, 0], body: 'dynamic', shadow: true })
-ball.trail({ color: '#67e8f9' })
-
-scene.onUpdate((dt, input) => {
-  ball.velocity[0] += input.x * 20 * dt
-  ball.velocity[2] -= input.y * 20 * dt
-  if (input.jump && ball.grounded) ball.velocity[1] = 7
-  if (input.pressed('KeyB')) scene.burst(ball.position, { color: '#f472b6' })
-  if (input.pressed('KeyC')) scene.celebrate()
+  scene.onUpdate((dt, input) => {
+    ball.velocity[0] += input.x * 20 * dt
+    ball.velocity[2] -= input.y * 20 * dt
+    if (input.jump && ball.grounded) ball.velocity[1] = 7
+    // burst() sugar: colorEnd fades each spark, drag slows it late in life,
+    // direction + spread + shape turn a point burst into a disc fountain.
+    if (input.pressed('KeyB')) scene.burst(ball.position, { color: '#f472b6', colorEnd: '#facc15', drag: 2 })
+    if (input.pressed('KeyF')) scene.burst(ball.position, { direction: [0, 1, 0], spread: 0.25, speed: 10, shape: 'disc', color: '#67e8f9', colorEnd: '#c4b5fd' })
+    if (input.pressed('KeyC')) scene.celebrate()
+  })
 })
-app.run()
 `,
   },
   {
