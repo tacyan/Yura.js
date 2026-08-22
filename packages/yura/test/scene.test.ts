@@ -12,6 +12,10 @@ import {
   clampToBounds,
   occludedEyeDistance,
   easeOcclusion,
+  segmentPointDistance,
+  segmentAxisDistanceXZ,
+  sweptSphereTOI,
+  sweptCylinderTOI,
 } from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
 
@@ -624,4 +628,101 @@ test('onLand does not fire while rolling on the ground, re-fires after a jump', 
   expect(fires).toBeGreaterThanOrEqual(2) // landing after the jump fires again
   expect(last).toBeGreaterThan(1) // with a real impact speed
   expect(ball.grounded).toBe(true)
+})
+
+// --- Swept-sphere CCD: fast bodies must not tunnel through colliders --------
+
+test('segmentPointDistance measures mid-segment and clamps to endpoints', () => {
+  const mid = segmentPointDistance([0, 0, 0], [10, 0, 0], [5, 3, 0])
+  expect(mid.distance).toBeCloseTo(3, 6)
+  expect(mid.t).toBeCloseTo(0.5, 6)
+  const before = segmentPointDistance([0, 0, 0], [10, 0, 0], [-4, 3, 0])
+  expect(before.distance).toBeCloseTo(5, 6) // clamped to the A endpoint
+  expect(before.t).toBe(0)
+  const degenerate = segmentPointDistance([2, 1, 2], [2, 1, 2], [2, 5, 2])
+  expect(degenerate.distance).toBeCloseTo(4, 6) // zero-length segment = point
+})
+
+test('segmentAxisDistanceXZ measures radial XZ distance, ignoring Y', () => {
+  const level = segmentAxisDistanceXZ([0, 100, 0], [10, -50, 0], [5, 0, 4])
+  expect(level.distance).toBeCloseTo(4, 6) // wild Y values never matter
+  expect(level.t).toBeCloseTo(0.5, 6)
+  const past = segmentAxisDistanceXZ([0, 0, 0], [0, 0, 10], [3, 99, 14])
+  expect(past.distance).toBeCloseTo(5, 6) // clamped to the B endpoint: hypot(3, 4)
+  expect(past.t).toBe(1)
+})
+
+test('sweptSphereTOI reports the first-touch time; clean misses stay -1', () => {
+  // Center at x=5, radius 1: a segment 0→10 first touches at x=4 → t=0.4.
+  expect(sweptSphereTOI([0, 0, 0], [10, 0, 0], [5, 0, 0], 1)).toBeCloseTo(0.4, 6)
+  expect(sweptSphereTOI([0, 0, 0], [10, 0, 0], [5, 3, 0], 1)).toBe(-1) // passes 3 above
+  expect(sweptSphereTOI([5, 0.5, 0], [6, 0.5, 0], [5, 0, 0], 1)).toBe(0) // starts inside
+  expect(sweptSphereTOI([7, 0, 0], [10, 0, 0], [5, 0, 0], 1)).toBe(-1) // moving away
+})
+
+test('sweptCylinderTOI honors the height band and cap entry', () => {
+  // Axis at x=5, radius 1, band 2: a level pass at y=0 touches at t=0.4.
+  expect(sweptCylinderTOI([0, 0, 0], [10, 0, 0], [5, 0, 0], 1, 2)).toBeCloseTo(0.4, 6)
+  // The same pass 5 units up crosses radially but never enters the band.
+  expect(sweptCylinderTOI([0, 5, 0], [10, 5, 0], [5, 0, 0], 1, 2)).toBe(-1)
+  // A straight fall onto the cap enters the band at y=+2 → t=0.6.
+  expect(sweptCylinderTOI([5, 8, 0], [5, -2, 0], [5, 0, 0], 1, 2)).toBeCloseTo(0.6, 6)
+})
+
+test('CCD: a fast body crossing an orb between ticks still fires onCollide', () => {
+  const scene = new YuraScene({ gravity: 0 })
+  const player = scene.add('sphere', { radius: 0.2, position: [0, 0, 0], body: 'dynamic' })
+  const orb = scene.add('sphere', { radius: 0.26, position: [1.5, 0, 0], tag: 'orb' })
+  let hits = 0
+  player.onCollide((o) => {
+    if (o.tag === 'orb') hits++
+  })
+  player.velocity[0] = 60 // 1 unit per 1/60 tick — far beyond the 0.46 contact range
+  const rr = 0.2 + 0.26
+  let discreteWouldHit = false
+  for (let i = 0; i < 4; i++) {
+    scene.step(1 / 60, i / 60)
+    const d = Math.hypot(player.position[0] - orb.position[0], player.position[1], player.position[2])
+    if (d <= rr) discreteWouldHit = true
+  }
+  expect(discreteWouldHit).toBe(false) // every end-of-tick position is outside contact range...
+  expect(hits).toBe(1) // ...yet the sweep caught the crossing, exactly once
+  expect(player.position[0]).toBeCloseTo(4, 5) // a pickup never deflects the body
+})
+
+test('CCD: a fast body stops at a solid it would have tunneled through', () => {
+  const scene = new YuraScene({ gravity: 0 })
+  const wall = scene.add('sphere', { radius: 1, position: [3.5, 0, 0], solid: true })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 0, 0], body: 'dynamic' })
+  ball.velocity[0] = 360 // 6 units per tick: the naive end position (x=6) is past the wall
+  scene.step(1 / 60, 0)
+  expect(ball.position[0]).toBeCloseTo(2, 5) // time-of-impact contact: 3.5 - (1 + 0.5)
+  expect(ball.velocity[0]).toBeLessThan(0) // the usual solid response bounced it back
+  expect(wall.position[0]).toBe(3.5) // static solid never moves
+})
+
+test('CCD: a fast body stops at a solid pillar (cylinder XZ sweep)', () => {
+  const scene = new YuraScene({ gravity: 0 })
+  scene.add('cylinder', { size: [2, 4, 2], position: [3.5, 0, 0], solid: true })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 0, 0], body: 'dynamic' })
+  ball.velocity[0] = 360
+  scene.step(1 / 60, 0)
+  expect(ball.position[0]).toBeCloseTo(2, 5) // radial contact: 3.5 - (1 + 0.5)
+  expect(ball.velocity[0]).toBeLessThan(0)
+})
+
+test('slow motion keeps the exact discrete collision outcome (fast path)', () => {
+  // Per-tick travel (0.05) is far below 0.5×minRadius (0.25): the sweep is
+  // skipped and first contact lands on the tick the discrete math predicts.
+  const scene = new YuraScene({ gravity: 0 })
+  const player = scene.add('sphere', { radius: 0.5, position: [0, 0, 0], body: 'dynamic' })
+  scene.add('sphere', { radius: 0.5, position: [1.99, 0, 0], tag: 'orb' })
+  let tick = 0
+  const hitTicks: number[] = []
+  player.onCollide(() => hitTicks.push(tick))
+  player.velocity[0] = 3
+  for (tick = 1; tick <= 25; tick++) scene.step(1 / 60, tick / 60)
+  // Discrete prediction: first tick where 1.99 - 0.05k <= 1.0 → k = 20.
+  expect(hitTicks[0]).toBe(20)
+  expect(player.position[0]).toBeCloseTo(1.25, 5) // non-solid contact never displaces
 })

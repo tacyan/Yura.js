@@ -116,6 +116,97 @@ export function clampToBounds(position: number, velocity: number, limit: number)
   return { position: side * limit, velocity: velocity * side > 0 ? 0 : velocity }
 }
 
+/**
+ * Closest distance from point `p` to the segment `a`→`b`, plus the segment
+ * parameter t (0..1) of that closest point. Pure math behind the CCD sweep.
+ */
+export function segmentPointDistance(a: Vec3, b: Vec3, p: Vec3): { distance: number; t: number } {
+  const dx = b[0] - a[0]
+  const dy = b[1] - a[1]
+  const dz = b[2] - a[2]
+  const len2 = dx * dx + dy * dy + dz * dz
+  const t =
+    len2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy + (p[2] - a[2]) * dz) / len2)) : 0
+  return { distance: Math.hypot(a[0] + dx * t - p[0], a[1] + dy * t - p[1], a[2] + dz * t - p[2]), t }
+}
+
+/**
+ * Distance in the XZ plane from segment `a`→`b` to the vertical axis through
+ * `p` (Y ignored), plus the parameter t of the closest approach — the swept
+ * counterpart of the cylinder collider's radial test.
+ */
+export function segmentAxisDistanceXZ(a: Vec3, b: Vec3, p: Vec3): { distance: number; t: number } {
+  const dx = b[0] - a[0]
+  const dz = b[2] - a[2]
+  const len2 = dx * dx + dz * dz
+  const t = len2 > 0 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[2] - a[2]) * dz) / len2)) : 0
+  return { distance: Math.hypot(a[0] + dx * t - p[0], a[2] + dz * t - p[2]), t }
+}
+
+/**
+ * Swept-sphere time of impact: earliest t (0..1) along `a`→`b` where the
+ * moving center first comes within `radius` of `center`, or -1 for a miss.
+ * Starting inside the radius reports t = 0 (the discrete-overlap case).
+ */
+export function sweptSphereTOI(a: Vec3, b: Vec3, center: Vec3, radius: number): number {
+  const fx = a[0] - center[0]
+  const fy = a[1] - center[1]
+  const fz = a[2] - center[2]
+  const c = fx * fx + fy * fy + fz * fz - radius * radius
+  if (c <= 0) return 0
+  const dx = b[0] - a[0]
+  const dy = b[1] - a[1]
+  const dz = b[2] - a[2]
+  const len2 = dx * dx + dy * dy + dz * dz
+  if (len2 === 0) return -1
+  const half = fx * dx + fy * dy + fz * dz
+  const disc = half * half - len2 * c
+  if (disc < 0) return -1
+  const t = (-half - Math.sqrt(disc)) / len2
+  return t >= 0 && t <= 1 ? t : -1
+}
+
+/**
+ * Time of impact against a vertical cylinder: earliest t (0..1) along
+ * `a`→`b` where the XZ distance to the axis through `center` first reaches
+ * `radius` while the Y offset is inside `band` (half-height + sphere radius).
+ * A radial touch above/below the band falls through to the first band-edge
+ * crossing that is still radially inside (entering through a cap). -1 = miss.
+ */
+export function sweptCylinderTOI(a: Vec3, b: Vec3, center: Vec3, radius: number, band: number): number {
+  const dx = b[0] - a[0]
+  const dz = b[2] - a[2]
+  const dy = b[1] - a[1]
+  const fx = a[0] - center[0]
+  const fz = a[2] - center[2]
+  const fy = a[1] - center[1]
+  const c = fx * fx + fz * fz - radius * radius
+  let t0 = -1
+  if (c <= 0) {
+    t0 = 0 // already radially inside at the start
+  } else {
+    const len2 = dx * dx + dz * dz
+    if (len2 > 0) {
+      const half = fx * dx + fz * dz
+      const disc = half * half - len2 * c
+      if (disc >= 0) {
+        const t = (-half - Math.sqrt(disc)) / len2
+        if (t >= 0 && t <= 1) t0 = t
+      }
+    }
+  }
+  if (t0 < 0) return -1
+  if (Math.abs(fy + dy * t0) <= band) return t0
+  if (dy !== 0) {
+    const edge = dy < 0 ? band : -band // the band edge the motion enters through
+    const t = (edge - fy) / dy
+    const x = fx + dx * t
+    const z = fz + dz * t
+    if (t >= t0 && t <= 1 && x * x + z * z <= radius * radius + 1e-9) return t
+  }
+  return -1
+}
+
 export interface SceneOptions {
   /** Y acceleration for dynamic bodies (e.g. -18). 0 disables gravity. */
   gravity?: number
@@ -285,6 +376,8 @@ export class SceneObject {
   collider: 'sphere' | 'cylinder' = 'sphere'
   /** @internal half-height of the cylinder collision band. */
   halfHeight = 0
+  /** @internal position at the start of this tick's integration — the CCD sweep origin. */
+  prevPosition: Vec3 | null = null
   /** @internal raw ground contact this frame (no coyote grace). */
   groundedNow = false
   /** @internal sim-time stamp of the most recent ground contact. */
@@ -849,6 +942,11 @@ export class YuraScene {
       obj.rotation[1] += obj.spin[1] * dt
       obj.rotation[2] += obj.spin[2] * dt
       if (obj.body === 'dynamic') {
+        // CCD sweep origin: where this body sat before this tick's motion.
+        const prev = (obj.prevPosition ??= [0, 0, 0])
+        prev[0] = obj.position[0]
+        prev[1] = obj.position[1]
+        prev[2] = obj.position[2]
         // Sleep threshold: a resting body stays at rest instead of re-gaining
         // gravity every frame and sinking/popping a few mm below the ground.
         if (obj.groundedNow && Math.abs(obj.velocity[1]) < SLEEP_VY) {
@@ -913,11 +1011,14 @@ export class YuraScene {
         let d2: number
         if (cyl) {
           const s = cyl === a ? b : a
-          if (Math.abs(s.position[1] - cyl.position[1]) > cyl.halfHeight + s.radius) continue
-          const dx = s.position[0] - cyl.position[0]
-          const dz = s.position[2] - cyl.position[2]
           rr = cyl.radius + s.radius
-          d2 = dx * dx + dz * dz
+          if (Math.abs(s.position[1] - cyl.position[1]) > cyl.halfHeight + s.radius) {
+            d2 = Infinity // outside the height band: no radial contact right now
+          } else {
+            const dx = s.position[0] - cyl.position[0]
+            const dz = s.position[2] - cyl.position[2]
+            d2 = dx * dx + dz * dz
+          }
         } else {
           const dx = a.position[0] - b.position[0]
           const dy = a.position[1] - b.position[1]
@@ -925,7 +1026,38 @@ export class YuraScene {
           rr = a.radius + b.radius
           d2 = dx * dx + dy * dy + dz * dz
         }
-        if (d2 > rr * rr) continue
+        if (d2 > rr * rr) {
+          // Discrete miss. Swept-sphere CCD: a fast dynamic body may have
+          // crossed the other collider entirely between ticks — test the
+          // capsule from its pre-integration position to where it is now.
+          const dyn0 = a.body === 'dynamic' ? a : b.body === 'dynamic' ? b : null
+          const prev = dyn0?.prevPosition
+          if (!dyn0 || !prev) continue
+          const mx = dyn0.position[0] - prev[0]
+          const my = dyn0.position[1] - prev[1]
+          const mz = dyn0.position[2] - prev[2]
+          const minR = Math.min(a.radius, b.radius)
+          // Fast path: small per-tick travel cannot tunnel — keep the discrete result.
+          if (mx * mx + my * my + mz * mz < 0.25 * minR * minR) continue
+          const target = dyn0 === a ? b : a
+          const toi = cyl
+            ? sweptCylinderTOI(prev, dyn0.position, target.position, rr, cyl.halfHeight + (cyl === a ? b : a).radius)
+            : sweptSphereTOI(prev, dyn0.position, target.position, rr)
+          if (toi < 0) continue
+          if (target.solid) {
+            // Rewind the body to the time-of-impact contact; the shared
+            // response below applies the normal push-out/bounce from there.
+            dyn0.position[0] = prev[0] + mx * toi
+            dyn0.position[1] = prev[1] + my * toi
+            dyn0.position[2] = prev[2] + mz * toi
+            const dx = dyn0.position[0] - target.position[0]
+            const dy = dyn0.position[1] - target.position[1]
+            const dz = dyn0.position[2] - target.position[2]
+            d2 = cyl ? dx * dx + dz * dz : dx * dx + dy * dy + dz * dz
+          }
+          // Non-solid sweep hits (orb pickups) fire callbacks below and keep
+          // the integrated position — the body passed through the trigger.
+        }
         for (const cb of a.collideCbs) cb(b)
         for (const cb of b.collideCbs) cb(a)
         const dyn = a.body === 'dynamic' ? a : b.body === 'dynamic' ? b : null
