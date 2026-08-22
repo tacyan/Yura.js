@@ -32,13 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Playground recipe regression tests: every recipe code string is transpiled at test time and its `yura` imports are cross-checked against the package's actual export surface (derived from the entry point, never hardcoded), so a renamed or removed API immediately flags the stale recipe.
 - JSDoc with `@example` blocks for roughly 60 public symbols across the packages — comment-only, with zero runtime changes.
 - New live demos and recipes: the ORB RUSH mini-game from the README (now with a chiptune background loop that starts on the first input), the Helix Storm showcase scene, a sakura showcase scene with a vertical lyric loop, a playground `tategaki` recipe, a binary pair of gravity wells slowly orbiting the Neon Galaxy showcase disc, and a playground `gravity wells` recipe.
+- Internal: deterministic seeded fuzz suites (~2,380 reproducible cases over GLB parsing, color/math edge values, note parsing, lyric timelines, and FX pool stepping) and regression nets that check every root export and the README API table against the actual implementation.
 
 ### Changed
 
 - Calling `scene()` while a scene is already active now runs the old scene's cleanups and emits warning `YURA-016` (`SCENE_REPLACED`) instead of leaving the old scene's resources behind.
 - `watchVisibility` emits the initial visibility state synchronously and guards non-DOM environments.
 - The npm build no longer depends on BSD `sed`, so it also runs on Linux, and CI now runs tests, type checks, and the npm build on both Ubuntu and macOS.
-- Internal: error codes are centralized in a `CODES` registry, demos and playground recipes were rewritten on the new helpers, deep relative imports were removed for single-package publish safety, and the test suite grew from 160 to 609 passing tests, bringing the core, WebGL renderer, glTF loader, model renderer, and app modules to 100% line coverage. The WebGPU-detection test now injects a stub `navigator` instead of assuming the ambient runtime lacks `navigator.gpu`, so CI passes on runtimes that ship it (such as Bun 1.4).
+- More of the public surface is exported from the package root: the `InteractiveOptions`, `LyricInput`, `BlendMode`, and `ToneMapping` types, the `CODES` error-code registry, and the `MAX_ATTRACTORS` / `DEFAULT_ATTRACTOR_RADIUS` attractor constants. The WebGL and WebGPU renderer packages also export their shared shader builders and constants symmetrically.
+- Internal: error codes are centralized in a `CODES` registry, demos and playground recipes were rewritten on the new helpers, deep relative imports were removed for single-package publish safety, and the test suite grew from 160 to 620 passing tests, bringing the core, WebGL renderer, glTF loader, model renderer, and app modules to 100% line coverage. The WebGPU-detection test now injects a stub `navigator` instead of assuming the ambient runtime lacks `navigator.gpu`, so CI passes on runtimes that ship it (such as Bun 1.4).
 
 ### Fixed
 
@@ -55,6 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.motion()` and `.look()` settings now survive a later `.preset()` call instead of being silently replaced by the preset's values; preset-to-preset swaps behave as before.
 - FX sprites honor `LookParams.blendMode` in scene (model) mode as well, so `screen` / `alpha` blending — as used by the sakura look — works alongside 3D models.
 - glTF loading: the GLB version header is validated (error `YURA-020`), truncated files fail with a descriptive error instead of a raw `RangeError`, indices are read through a `Uint32Array` so meshes with more than 2^24 vertices keep full index precision, and scene-graph pruning no longer visits child nodes twice.
+- The glTF parser no longer leaks raw exceptions on malformed files: a `SyntaxError` on a corrupt JSON chunk and `TypeError`s on dangling accessor, bufferView, and buffer references are all reported as descriptive `YURA-020` errors, and accessor spans are validated against their buffers before any data is read.
+- `trsToMat4` no longer overflows to `Infinity` on far-from-unit quaternions; near-unit inputs are left untouched, so existing output stays bit-identical.
+- `app.lyrics()` accepts the same bare-string input (a single string or an array of strings) as the standalone `lyrics()` helper, instead of only timed line objects.
 
 ### Performance
 
