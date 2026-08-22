@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/v/yurayura?color=c4b5fd&label=npm%20yurayura)](https://www.npmjs.com/package/yurayura)
 
 **Make the web move.** Two lines. One million particles.
-**[▶ Live demos](https://tacyan.github.io/Yura.js/)** — showcase, lyric motion, glTF viewer, all in your browser (WebGPU).
+**[▶ Live demos](https://tacyan.github.io/Yura.js/)** — showcase, lyric motion, ORB RUSH mini-game, glTF viewer, all in your browser (WebGPU).
 
 ```ts
 import { yura } from 'yura'
@@ -53,8 +53,9 @@ bun run typecheck
 
 `yura(sel).scene()` is a zero-asset game kit: procedural PBR primitives,
 physics, input, collisions, a follow camera, HUD text, and GPU particle FX —
-all from one chainable API. Try it live: `bun run play`, then hit the
-“mini game” recipe (PRISM RUSH). The essence:
+all from one chainable API. Try it live: **[ORB RUSH](https://tacyan.github.io/Yura.js/game/)**
+(this exact code, running in your browser — the source is `examples/game/`),
+or locally with `bun examples/game/index.html`. The essence:
 
 ```ts
 import { yura, materials } from 'yura'

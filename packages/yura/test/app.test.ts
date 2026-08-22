@@ -459,3 +459,204 @@ test('frames() is empty before any tick and its default window fits the ring', (
   expect(FRAME_RING_CAPACITY).toBeGreaterThanOrEqual(120) // default n always fits
   app.dispose()
 })
+
+// ── Morph choreography: eases registry + .motion timing + morphNow options ──
+
+import { eases, type EaseFn } from '../src/app'
+import type { ShapeSpec } from '../src/shapes'
+
+/** Typed window into YuraApp's private morph machinery for white-box checks. */
+interface MorphInternals {
+  renderer: {
+    morphT: number
+    morphBoost: number
+    morphSpread: number
+    writeTargetA(d: Float32Array): void
+    writeTargetB(d: Float32Array): void
+  } | null
+  shapeData: Float32Array[]
+  morph: { pos: 0 | 1; phase: 'hold' | 'move'; timer: number; nextShape: number }
+  morphPinned: boolean
+  holdSeconds: number
+  morphSeconds: number
+  morphEase: EaseFn
+  activeMorphSeconds: number
+  activeMorphEase: EaseFn
+  motionParams: Record<string, unknown>
+  updateMorph(dt: number): void
+}
+
+const internals = (app: YuraApp) => app as unknown as MorphInternals
+
+function fakeRenderer() {
+  const writes: string[] = []
+  return {
+    morphT: 0,
+    morphBoost: 0,
+    morphSpread: 0,
+    writes,
+    dispose() {},
+    writeTargetA(_d: Float32Array) {
+      writes.push('A')
+    },
+    writeTargetB(_d: Float32Array) {
+      writes.push('B')
+    },
+  }
+}
+
+const probeShape = (): ShapeSpec => ({
+  kind: 'probe',
+  generate: (n: number) => new Float32Array(n * 4),
+})
+
+test('eases: every registered curve starts at 0 and ends at 1', () => {
+  const names = Object.keys(eases).sort()
+  expect(names).toEqual(['back', 'cubic', 'expo', 'linear', 'smooth'])
+  for (const [, fn] of Object.entries(eases)) {
+    expect(fn(0)).toBeCloseTo(0, 9)
+    expect(fn(1)).toBeCloseTo(1, 9)
+  }
+})
+
+test('eases.cubic is byte-identical to the legacy easeInOutCubic curve', () => {
+  expect(eases.cubic(0.25)).toBeCloseTo(0.0625, 12) // 4t³
+  expect(eases.cubic(0.5)).toBeCloseTo(0.5, 12)
+  expect(eases.cubic(0.75)).toBeCloseTo(0.9375, 12) // 1 - (-2t+2)³/2
+})
+
+test('eases: cubic/expo/smooth/linear are monotone in [0,1]; back overshoots but stays bounded', () => {
+  const monotone: Array<keyof typeof eases> = ['cubic', 'expo', 'smooth', 'linear']
+  for (const name of monotone) {
+    const fn = eases[name]
+    let prev = fn(0)
+    for (let i = 1; i <= 100; i++) {
+      const v = fn(i / 100)
+      expect(v).toBeGreaterThanOrEqual(prev - 1e-9)
+      expect(v).toBeGreaterThanOrEqual(-1e-9)
+      expect(v).toBeLessThanOrEqual(1 + 1e-9)
+      prev = v
+    }
+  }
+  let peak = 0
+  for (let i = 0; i <= 100; i++) {
+    const v = eases.back(i / 100)
+    expect(v).toBeGreaterThanOrEqual(-1e-9) // ease-out back never undershoots
+    expect(v).toBeLessThanOrEqual(1.2) // bounded overshoot (~1.099 max)
+    peak = Math.max(peak, v)
+  }
+  expect(peak).toBeGreaterThan(1) // it genuinely overshoots — that's the point
+})
+
+test('morph timing defaults reproduce the legacy constants exactly', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  expect(i.holdSeconds).toBe(3.2)
+  expect(i.morphSeconds).toBe(2.6)
+  expect(i.morphEase).toBe(eases.cubic)
+  expect(i.activeMorphSeconds).toBe(2.6)
+  expect(i.activeMorphEase).toBe(eases.cubic)
+  app.dispose()
+})
+
+test('motion({ hold, morph, ease }) retunes timing without leaking into physics params', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  expect(app.motion({ hold: 1.5, morph: 0.5, ease: 'expo' })).toBe(app)
+  expect(i.holdSeconds).toBe(1.5)
+  expect(i.morphSeconds).toBe(0.5)
+  expect(i.morphEase).toBe(eases.expo)
+  expect('hold' in i.motionParams).toBe(false)
+  expect('morph' in i.motionParams).toBe(false)
+  expect('ease' in i.motionParams).toBe(false)
+
+  // physics-only calls leave timing untouched (and still merge as before)
+  app.motion({ damping: 9 })
+  expect(i.motionParams.damping).toBe(9)
+  expect(i.holdSeconds).toBe(1.5)
+  expect(i.morphEase).toBe(eases.expo)
+
+  // custom function eases are stored as-is
+  const f: EaseFn = (t) => t * t
+  app.motion({ ease: f })
+  expect(i.morphEase).toBe(f)
+  app.dispose()
+})
+
+test('motion rejects an unknown ease name with a YuraError', () => {
+  const app = headlessApp()
+  expect(() => app.motion({ ease: 'zigzag' as never })).toThrow(/Unknown ease "zigzag"/)
+  app.dispose()
+})
+
+test('the automatic cycle honours motion({ hold, morph, ease })', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  const r = fakeRenderer()
+  i.renderer = r
+  i.shapeData = [new Float32Array(8), new Float32Array(8)]
+  app.motion({ hold: 1, morph: 2, ease: 'linear' })
+
+  i.updateMorph(0.5) // 0.5 < hold(1): still holding
+  expect(i.morph.phase).toBe('hold')
+  i.updateMorph(0.6) // 1.1 ≥ hold(1): transition begins
+  expect(i.morph.phase).toBe('move')
+  i.updateMorph(0.5) // k = 0.5/2 = 0.25 → linear e = 0.25 (cubic would be 0.0625)
+  expect(r.morphT).toBeCloseTo(0.25, 9)
+  i.updateMorph(1.5) // k = 1: arrival preloads the next shape and re-holds
+  expect(i.morph.phase).toBe('hold')
+  expect(i.morph.pos).toBe(1)
+  expect(r.writes).toContain('A')
+  app.dispose()
+})
+
+test('with no motion() timing call the cycle still holds 3.2s and morphs 2.6s on the cubic curve', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  const r = fakeRenderer()
+  i.renderer = r
+  i.shapeData = [new Float32Array(8), new Float32Array(8)]
+
+  i.updateMorph(3.1) // < 3.2: still holding
+  expect(i.morph.phase).toBe('hold')
+  i.updateMorph(0.2) // 3.3 ≥ 3.2: moving
+  expect(i.morph.phase).toBe('move')
+  i.updateMorph(0.65) // k = 0.65/2.6 = 0.25 → cubic e = 4·0.25³ = 0.0625
+  expect(r.morphT).toBeCloseTo(0.0625, 9)
+  app.dispose()
+})
+
+test('morphNow({ duration, ease }) applies to that transition only', async () => {
+  const app = headlessApp().particles(8)
+  const i = internals(app)
+  const r = fakeRenderer()
+  i.renderer = r
+
+  await app.morphNow(probeShape(), { duration: 1, ease: 'linear' })
+  expect(i.morphPinned).toBe(true)
+  expect(i.morph.phase).toBe('move')
+  expect(i.activeMorphSeconds).toBe(1)
+  expect(i.activeMorphEase).toBe(eases.linear)
+  // the app-level choreography is untouched
+  expect(i.morphSeconds).toBe(2.6)
+  expect(i.morphEase).toBe(eases.cubic)
+
+  i.updateMorph(0.25) // k = 0.25/1 → linear e = 0.25
+  expect(r.morphT).toBeCloseTo(0.25, 9)
+
+  // a follow-up morphNow without options falls back to the app defaults
+  await app.morphNow(probeShape())
+  expect(i.activeMorphSeconds).toBe(2.6)
+  expect(i.activeMorphEase).toBe(eases.cubic)
+  app.dispose()
+})
+
+test('morphNow before run() still degrades to .shape() with options dropped', async () => {
+  const app = headlessApp().particles(8)
+  const i = internals(app)
+  await app.morphNow(probeShape(), { duration: 9, ease: 'back' })
+  expect(i.renderer).toBeNull()
+  expect(i.activeMorphSeconds).toBe(2.6) // untouched — no renderer, no transition
+  expect(i.activeMorphEase).toBe(eases.cubic)
+  app.dispose()
+})

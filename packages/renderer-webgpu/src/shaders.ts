@@ -4,8 +4,10 @@
  *   -> fade (trail decay on the HDR accumulation target)
  *   -> particles (additive quads into HDR)
  *   -> brightpass -> blur H/V (bloom) -> streak H x2 (anamorphic)
- *   -> composite (nebula + starfield + CA + ACES + vignette + grain)
+ *   -> composite (nebula + starfield + CA + tone map + vignette + grain)
  */
+
+import { toneMapFunctionName, toneMapSource } from './blend'
 
 export const SIM_WGSL = /* wgsl */ `
 struct SimParams {
@@ -164,7 +166,11 @@ fn fs(in: VOut) -> @location(0) vec4<f32> {
 }
 `
 
-export const POST_WGSL = /* wgsl */ `
+/**
+ * Post-chain WGSL with a selectable tone-mapping curve. The default ('aces')
+ * composes to exactly the historic POST_WGSL text.
+ */
+export const buildPostWgsl = (toneMapping?: string): string => /* wgsl */ `
 struct PostParams {
   a: vec4<f32>,
   b: vec4<f32>,
@@ -223,12 +229,7 @@ fn blurFS(in: FSOut) -> @location(0) vec4<f32> {
   return vec4<f32>(acc, 1.0);
 }
 
-fn aces(x: vec3<f32>) -> vec3<f32> {
-  return clamp(
-    (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14),
-    vec3<f32>(0.0), vec3<f32>(1.0),
-  );
-}
+${toneMapSource(toneMapping, 'wgsl')}
 
 fn hash12(p: vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
@@ -301,7 +302,7 @@ fn compositeFS(in: FSOut) -> @location(0) vec4<f32> {
   c += textureSample(streakTex, samp, in.uv).rgb * U.b.z * vec3<f32>(0.75, 0.85, 1.0);
 
   c *= U.a.y;
-  c = aces(c);
+  c = ${toneMapFunctionName(toneMapping)}(c);
   let q = in.uv - vec2<f32>(0.5);
   c *= 1.0 - U.a.z * dot(q, q) * 2.0;
   c += (hash12(in.uv * 1024.0 + t) - 0.5) * U.a.w;
@@ -309,3 +310,6 @@ fn compositeFS(in: FSOut) -> @location(0) vec4<f32> {
   return vec4<f32>(c, 1.0);
 }
 `
+
+/** Historic default post chain (ACES); byte-identical to pre-toneMapping builds. */
+export const POST_WGSL = buildPostWgsl()

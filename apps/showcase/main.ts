@@ -66,6 +66,13 @@ async function boot(): Promise<void> {
     .interactive()
   await app.run()
   ;(window as unknown as { __yura: unknown }).__yura = app
+  app.onStats((s) => {
+    fpsEl.textContent = String(s.fps)
+    particlesEl.textContent = s.particles.toLocaleString('en-US')
+    resEl.textContent = `×${s.resolutionScale.toFixed(2).replace(/0$/, '')}`
+    backendEl.textContent = s.backend.toUpperCase()
+    drawSpark()
+  }, 250)
   cover.classList.add('hidden')
   booting = false
   setLyricChipEnabled(true)
@@ -111,9 +118,9 @@ for (const m of MORPHS) {
  */
 const LYRIC_LINES = [
   { text: 'ゆらめく光', at: 0 },
-  { text: '百万の粒子が', at: 3.4 },
-  { text: '波のように踊る', at: 6.8 },
-  { text: 'YURA', at: 10.2, direction: 'center' as const },
+  '百万の粒子が',
+  '波のように踊る',
+  { text: 'YURA', direction: 'center' as const },
 ]
 
 let lyricRun: LyricsRun | null = null
@@ -145,7 +152,7 @@ lyricChip.addEventListener('click', () => {
   }
   promptEl.value = ''
   // sweep 0.8 → strong per-character stagger: each glyph condenses in turn.
-  lyricRun = lyrics(app, LYRIC_LINES, { sweep: 0.8, loop: true, loopTail: 3 })
+  lyricRun = lyrics(app, LYRIC_LINES, { every: 3.4, sweep: 0.8, loop: true, loopTail: 3 })
   lyricChip.classList.add('on')
 })
 lookRow.appendChild(Object.assign(document.createElement('div'), { className: 'sep' }))
@@ -190,42 +197,20 @@ window.addEventListener('keydown', (e) => {
 
 // ------------------------------------------------------------------ HUD
 
-const frameMs: number[] = []
-let fpsEma = 60
-let last = performance.now()
-function hudTick(now: number): void {
-  const dt = now - last
-  last = now
-  fpsEma = fpsEma * 0.92 + (1000 / Math.max(dt, 0.1)) * 0.08
-  frameMs.push(dt)
-  if (frameMs.length > 88) frameMs.shift()
-  requestAnimationFrame(hudTick)
-}
-requestAnimationFrame(hudTick)
-
 function drawSpark(): void {
   const w = spark.width
   const h = spark.height
   sparkCtx.clearRect(0, 0, w, h)
+  const frames = app?.frames(88) ?? []
   const bw = w / 88
-  for (let i = 0; i < frameMs.length; i++) {
-    const ms = frameMs[i]
+  for (let i = 0; i < frames.length; i++) {
+    const ms = frames[i]
     const t = Math.min(ms / 40, 1)
     const bh = Math.max(t * h, 2)
     sparkCtx.fillStyle = ms < 9 ? '#34d399' : ms < 17.5 ? '#67e8f9' : ms < 34 ? '#fbbf24' : '#fb7185'
     sparkCtx.fillRect(i * bw, h - bh, bw - 1.2, bh)
   }
 }
-
-setInterval(() => {
-  if (!app) return
-  const s = app.stats
-  fpsEl.textContent = String(Math.round(fpsEma))
-  particlesEl.textContent = s.particles.toLocaleString('en-US')
-  resEl.textContent = `×${s.resolutionScale.toFixed(2).replace(/0$/, '')}`
-  backendEl.textContent = s.backend.toUpperCase()
-  drawSpark()
-}, 250)
 
 // ------------------------------------------------------------------ calm mode
 

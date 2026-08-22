@@ -8,8 +8,17 @@ import {
   CODES,
   warnCode,
 } from '@yura/core'
-import { SIM_WGSL, RENDER_WGSL, POST_WGSL } from './shaders'
+import { SIM_WGSL, RENDER_WGSL, buildPostWgsl } from './shaders'
+import {
+  gpuBlendState,
+  resolveBlendMode,
+  resolveToneMapping,
+  type BlendMode,
+  type ToneMapping,
+} from './blend'
 import { ViewCache, getZeroScratch } from './view-cache'
+
+export type { BlendMode, ToneMapping } from './blend'
 
 export interface LookParams {
   exposure: number
@@ -35,6 +44,18 @@ export interface LookParams {
   nebula: number
   /** Procedural starfield amount. */
   stars: number
+  /**
+   * Particle blend mode. 'additive' (default) is the classic order-free HDR
+   * accumulation; 'alpha' is premultiplied over; 'screen' never clips.
+   * Unknown values fall back to 'additive'.
+   */
+  blendMode?: BlendMode
+  /**
+   * Tone-mapping curve for the final composite. 'aces' (default) matches the
+   * classic look; 'reinhard' is softer; 'linear' is a plain clamp.
+   * Unknown values fall back to 'aces'.
+   */
+  toneMapping?: ToneMapping
 }
 
 export interface MotionParams {
@@ -91,6 +112,12 @@ export class WebGPUParticleRenderer {
   private context: GPUCanvasContext
   private canvas: HTMLCanvasElement
   private format: GPUTextureFormat
+
+  private renderModule!: GPUShaderModule
+  private postModule!: GPUShaderModule
+  /** Modes currently baked into renderPipeline / compositePipeline. */
+  private appliedBlendMode: BlendMode
+  private appliedToneMapping: ToneMapping
 
   private simPipeline!: GPUComputePipeline
   private renderPipeline!: GPURenderPipeline
@@ -191,6 +218,8 @@ export class WebGPUParticleRenderer {
     this.motion = opts.motion
     this.colorA = opts.colorA
     this.colorB = opts.colorB
+    this.appliedBlendMode = resolveBlendMode(opts.look.blendMode)
+    this.appliedToneMapping = resolveToneMapping(opts.look.toneMapping)
   }
 
   static async create(
@@ -218,11 +247,41 @@ export class WebGPUParticleRenderer {
     })
   }
 
+  /** (Re)build the particle pipeline with the applied blend mode baked in. */
+  private buildRenderPipeline(): void {
+    this.renderPipeline = this.device.createRenderPipeline({
+      label: 'yura-particles',
+      layout: 'auto',
+      vertex: { module: this.renderModule, entryPoint: 'vs' },
+      fragment: {
+        module: this.renderModule,
+        entryPoint: 'fs',
+        targets: [{ format: 'rgba16float', blend: gpuBlendState(this.appliedBlendMode) }],
+      },
+      primitive: { topology: 'triangle-list' },
+    })
+  }
+
+  /** (Re)build the composite pipeline from the current post module. */
+  private buildCompositePipeline(): void {
+    this.compositePipeline = this.device.createRenderPipeline({
+      label: 'yura-compositeFS',
+      layout: 'auto',
+      vertex: { module: this.postModule, entryPoint: 'fsVS' },
+      fragment: { module: this.postModule, entryPoint: 'compositeFS', targets: [{ format: this.format }] },
+      primitive: { topology: 'triangle-list' },
+    })
+  }
+
   private initPipelines(): void {
     const d = this.device
     const simModule = d.createShaderModule({ label: 'yura-sim', code: SIM_WGSL })
-    const renderModule = d.createShaderModule({ label: 'yura-render', code: RENDER_WGSL })
-    const postModule = d.createShaderModule({ label: 'yura-post', code: POST_WGSL })
+    this.renderModule = d.createShaderModule({ label: 'yura-render', code: RENDER_WGSL })
+    this.postModule = d.createShaderModule({
+      label: 'yura-post',
+      code: buildPostWgsl(this.appliedToneMapping),
+    })
+    const postModule = this.postModule
 
     this.simPipeline = d.createComputePipeline({
       label: 'yura-sim',
@@ -230,21 +289,7 @@ export class WebGPUParticleRenderer {
       compute: { module: simModule, entryPoint: 'sim' },
     })
 
-    const additive: GPUBlendState = {
-      color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-      alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' },
-    }
-    this.renderPipeline = d.createRenderPipeline({
-      label: 'yura-particles',
-      layout: 'auto',
-      vertex: { module: renderModule, entryPoint: 'vs' },
-      fragment: {
-        module: renderModule,
-        entryPoint: 'fs',
-        targets: [{ format: 'rgba16float', blend: additive }],
-      },
-      primitive: { topology: 'triangle-list' },
-    })
+    this.buildRenderPipeline()
 
     // Trail decay: dst *= (1 - srcAlpha), src contributes nothing.
     const fadeBlend: GPUBlendState = {
@@ -273,7 +318,7 @@ export class WebGPUParticleRenderer {
       })
     this.brightPipeline = makePost('brightFS', 'rgba16float')
     this.blurPipeline = makePost('blurFS', 'rgba16float')
-    this.compositePipeline = makePost('compositeFS', this.format)
+    this.buildCompositePipeline()
 
     this.sampler = d.createSampler({
       magFilter: 'linear',
@@ -336,7 +381,21 @@ export class WebGPUParticleRenderer {
         { binding: 4, resource: { buffer: this.targetB } },
       ],
     })
-    this.renderBG = d.createBindGroup({
+    this.rebuildRenderBG()
+    this.fadeBG = d.createBindGroup({
+      label: 'yura-fade-bg',
+      layout: this.fadePipeline.getBindGroupLayout(0),
+      entries: [{ binding: 2, resource: { buffer: this.fadeUB } }],
+    })
+  }
+
+  /**
+   * (Re)build the particle bind group against the current renderPipeline
+   * ('auto' layouts are pipeline-specific, so a rebuilt pipeline needs a
+   * fresh bind group).
+   */
+  private rebuildRenderBG(): void {
+    this.renderBG = this.device.createBindGroup({
       label: 'yura-render-bg',
       layout: this.renderPipeline.getBindGroupLayout(0),
       entries: [
@@ -345,10 +404,24 @@ export class WebGPUParticleRenderer {
         { binding: 2, resource: { buffer: this.velocities } },
       ],
     })
-    this.fadeBG = d.createBindGroup({
-      label: 'yura-fade-bg',
-      layout: this.fadePipeline.getBindGroupLayout(0),
-      entries: [{ binding: 2, resource: { buffer: this.fadeUB } }],
+  }
+
+  /**
+   * (Re)build the composite bind group against the current compositePipeline.
+   * No-op until resize() has created the offscreen targets; views come from
+   * the view cache so no duplicate GPU views are created.
+   */
+  private rebuildCompositeBG(): void {
+    if (!this.hdrTex || !this.bloomA || !this.bloomC) return
+    this.compositeBG = this.device.createBindGroup({
+      layout: this.compositePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.sampler },
+        { binding: 1, resource: this.viewCache.getView(this.hdrTex) },
+        { binding: 2, resource: { buffer: this.compositeUB } },
+        { binding: 3, resource: this.viewCache.getView(this.bloomA) },
+        { binding: 4, resource: this.viewCache.getView(this.bloomC) },
+      ],
     })
   }
 
@@ -434,7 +507,6 @@ export class WebGPUParticleRenderer {
     const hdrView = this.viewCache.getView(this.hdrTex)
     const bloomAView = this.viewCache.getView(this.bloomA)
     const bloomBView = this.viewCache.getView(this.bloomB)
-    const bloomCView = this.viewCache.getView(this.bloomC)
 
     this.brightBG = d.createBindGroup({
       layout: this.brightPipeline.getBindGroupLayout(0),
@@ -457,16 +529,33 @@ export class WebGPUParticleRenderer {
     this.blurVBG = blurBG(bloomBView, this.blurVUB)
     this.streak1BG = blurBG(bloomAView, this.streak1UB)
     this.streak2BG = blurBG(bloomBView, this.streak2UB)
-    this.compositeBG = d.createBindGroup({
-      layout: this.compositePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sampler },
-        { binding: 1, resource: hdrView },
-        { binding: 2, resource: { buffer: this.compositeUB } },
-        { binding: 3, resource: bloomAView },
-        { binding: 4, resource: bloomCView },
-      ],
-    })
+    this.rebuildCompositeBG()
+  }
+
+  /**
+   * Rebuild pipelines only when look.blendMode / look.toneMapping actually
+   * changed (string compares otherwise — never per-frame regeneration).
+   * With the defaults this never runs, so GPU work is bit-identical.
+   */
+  private syncLookModes(): void {
+    const blend = resolveBlendMode(this.look.blendMode)
+    if (blend !== this.appliedBlendMode) {
+      this.appliedBlendMode = blend
+      this.buildRenderPipeline()
+      this.rebuildRenderBG()
+    }
+    const tone = resolveToneMapping(this.look.toneMapping)
+    if (tone !== this.appliedToneMapping) {
+      this.appliedToneMapping = tone
+      this.postModule = this.device.createShaderModule({
+        label: 'yura-post',
+        code: buildPostWgsl(tone),
+      })
+      // Only the composite entry point depends on the tone map; the fade/
+      // bright/blur pipelines keep their previous (identical) module.
+      this.buildCompositePipeline()
+      this.rebuildCompositeBG()
+    }
   }
 
   /** Unproject canvas NDC to the world plane through origin facing the camera. */
@@ -494,6 +583,7 @@ export class WebGPUParticleRenderer {
   /** Simulate + render one frame. `activeCount` is the governed particle count. */
   frame(dt: number, time: number, activeCount: number): void {
     if (this.disposed || !this.hdrTex || !this.bloomA || !this.bloomB || !this.bloomC) return
+    this.syncLookModes()
     const d = this.device
     const n = Math.max(1, Math.min(this.count, Math.floor(activeCount)))
 

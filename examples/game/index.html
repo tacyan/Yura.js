@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ORB RUSH — a Yura.js mini-game</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; background: #04050c; color: #e2e8f0; }
+      body { font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; overflow: hidden; }
+      #game { position: fixed; inset: 0; touch-action: none; }
+      .overlay {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: flex-end; padding-bottom: 5vh;
+        pointer-events: none; text-align: center;
+      }
+      h1 {
+        font-size: clamp(1.4rem, 4vw, 2.4rem); font-weight: 800; letter-spacing: 0.18em;
+        background: linear-gradient(90deg, #67e8f9, #c4b5fd);
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      p.hint { margin-top: 0.5rem; font-size: clamp(0.75rem, 1.8vw, 0.9rem); color: #94a3b8; }
+      code.snippet {
+        margin-top: 1rem; display: inline-block; padding: 0.55rem 0.9rem;
+        background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.78rem; color: #7dd3fc; backdrop-filter: blur(8px);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <div class="overlay">
+      <h1>ORB RUSH</h1>
+      <p class="hint">WASD / arrows / drag to roll · Space / tap to jump · collect all 10 orbs</p>
+      <code class="snippet">yura('#game').scene({ gravity: -22, bounds: 12 })</code>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

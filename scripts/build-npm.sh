@@ -5,7 +5,7 @@
 #   cd dist-npm && npm publish --access public
 #
 # The workspace keeps its internal name `yura`; only the published package
-# is named `yurajs`. All @yura/* workspace deps are bundled into one ESM
+# is named `yurayura`. All @yura/* workspace deps are bundled into one ESM
 # file, and TypeScript declarations ship as a self-contained tree with
 # workspace imports rewritten to relative paths.
 set -euo pipefail
@@ -37,18 +37,10 @@ cp -R "$OUT/.types-tmp/packages/renderer-webgpu" "$OUT/types/renderer-webgpu"
 cp -R "$OUT/.types-tmp/packages/renderer-webgl" "$OUT/types/renderer-webgl"
 cp -R "$OUT/.types-tmp/packages/yura" "$OUT/types/yura"
 rm -rf "$OUT/.types-tmp"
-find "$OUT/types" -name '*.d.ts' -exec sed -i '' \
-  -e "s|from '@yura/core'|from '../../core/src/index'|g" \
-  -e "s|from '@yura/renderer-webgpu'|from '../../renderer-webgpu/src/index'|g" \
-  -e "s|from '@yura/renderer-webgl'|from '../../renderer-webgl/src/index'|g" \
-  -e 's|Float32Array<[A-Za-z]*>|Float32Array|g' \
-  -e 's|Uint32Array<[A-Za-z]*>|Uint32Array|g' \
-  -e 's|Uint8Array<[A-Za-z]*>|Uint8Array|g' {} +
-# ^ generic TypedArray<ArrayBuffer> needs TS >= 5.7 in consumers; the plain
-#   form types identically for practical use and works on older compilers.
-# WebGPU ambient types for consumers.
-sed -i '' '1s|^|/// <reference types="@webgpu/types" />\n|' \
-  "$OUT/types/yura/src/index.d.ts"
+# Portable rewrite (Linux/macOS): @yura/* -> relative paths, TypedArray
+# generics stripped, and the @webgpu/types reference prepended to every
+# yura/src entry d.ts (index, three, ...) so subpath imports compile too.
+bun scripts/rewrite-dts.ts "$OUT/types"
 cat > "$OUT/dist/three.d.ts" <<'EOF'
 export * from '../types/yura/src/three'
 EOF

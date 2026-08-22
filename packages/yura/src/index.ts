@@ -1,4 +1,5 @@
-export { yura, YuraApp, formatStats, FrameRing } from './app'
+export { yura, YuraApp, formatStats, FrameRing, eases } from './app'
+export type { EaseFn, EaseName, Ease, MotionTimingOptions } from './app'
 export type { YuraOptions, YuraStats } from './app'
 export { shapes, galaxy, sphere, ring, vortex, flow, box, cone, helix, text, image } from './shapes'
 export type { ShapeSpec } from './shapes'

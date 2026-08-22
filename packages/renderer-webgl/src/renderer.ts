@@ -9,6 +9,15 @@ import {
   type Vec3,
 } from '@yura/core'
 import type { LookParams, MotionParams, RendererOptions, ExternalCamera } from '@yura/renderer-webgpu'
+// Shared blend/tone-map mappers live in the WebGPU package (single source of
+// truth for both backends). Deep relative import because the package root
+// only re-exports renderer types.
+import {
+  GL_FUNC_ADD,
+  glBlendSpec,
+  resolveToneMapping,
+  type ToneMapping,
+} from '@yura/renderer-webgpu'
 import {
   SIM_VS,
   RENDER_VS,
@@ -17,7 +26,7 @@ import {
   FADE_FS,
   BRIGHT_FS,
   BLUR_FS,
-  COMPOSITE_FS,
+  buildCompositeFs,
 } from './shaders'
 
 /**
@@ -126,6 +135,12 @@ export class WebGL2ParticleRenderer {
   private center: Vec3 = [0, 0, 0]
   private viewProj: Float32Array = new Float32Array(16)
   private uniforms = new Map<string, Record<string, WebGLUniformLocation | null>>()
+  /** Tone mode currently driving compositeProgram. */
+  private appliedToneMapping: ToneMapping
+  /** Compiled composite programs per tone mode (max 3; reused on switch-back). */
+  private compositePrograms = new Map<ToneMapping, WebGLProgram>()
+  /** GL blend equation currently set on the context (GL default: FUNC_ADD). */
+  private appliedBlendEq = GL_FUNC_ADD
   /** Every created buffer/VAO/TF/program, so dispose() can delete them all. */
   private resources = createResourceTracker()
   /** Stored so dispose() can removeEventListener the contextlost handler. */
@@ -139,6 +154,7 @@ export class WebGL2ParticleRenderer {
     this.motion = opts.motion
     this.colorA = opts.colorA
     this.colorB = opts.colorB
+    this.appliedToneMapping = resolveToneMapping(opts.look.toneMapping)
     const buf = () => this.resources.track(gl.createBuffer()!, (b) => gl.deleteBuffer(b))
     const vao = () => this.resources.track(gl.createVertexArray()!, (v) => gl.deleteVertexArray(v))
     this.posBuf = [buf(), buf()]
@@ -235,7 +251,7 @@ void main() { o = vec4(0.0); }
     const fade = this.compile(FS_TRIANGLE_VS, FADE_FS)
     const bright = this.compile(FS_TRIANGLE_VS, BRIGHT_FS)
     const blur = this.compile(FS_TRIANGLE_VS, BLUR_FS)
-    const composite = this.compile(FS_TRIANGLE_VS, COMPOSITE_FS)
+    const composite = this.compile(FS_TRIANGLE_VS, buildCompositeFs(this.appliedToneMapping))
     if (!sim || !render || !fade || !bright || !blur || !composite) return false
     this.simProgram = sim
     this.renderProgram = render
@@ -243,7 +259,27 @@ void main() { o = vec4(0.0); }
     this.brightProgram = bright
     this.blurProgram = blur
     this.compositeProgram = composite
+    this.compositePrograms.set(this.appliedToneMapping, composite)
     return true
+  }
+
+  /**
+   * Swap the composite program only when look.toneMapping actually changes
+   * (string compare otherwise — never per-frame recompilation). Programs are
+   * cached per mode, so toggling back reuses the earlier compile.
+   */
+  private syncToneMapping(): void {
+    const tone = resolveToneMapping(this.look.toneMapping)
+    if (tone === this.appliedToneMapping) return
+    let prog = this.compositePrograms.get(tone)
+    if (!prog) {
+      const compiled = this.compile(FS_TRIANGLE_VS, buildCompositeFs(tone))
+      if (!compiled) return // keep the current curve; compile() already warned
+      this.compositePrograms.set(tone, compiled)
+      prog = compiled
+    }
+    this.compositeProgram = prog
+    this.appliedToneMapping = tone
   }
 
   private initBuffers(): void {
@@ -383,6 +419,7 @@ void main() { o = vec4(0.0); }
 
   frame(dt: number, time: number, activeCount: number): void {
     if (this.disposed || !this.hdrFBO) return
+    this.syncToneMapping()
     const gl = this.gl
     const n = Math.max(1, Math.min(this.count, Math.floor(activeCount)))
 
@@ -459,7 +496,13 @@ void main() { o = vec4(0.0); }
     gl.bindVertexArray(null)
     gl.drawArrays(gl.TRIANGLES, 0, 3)
 
-    gl.blendFunc(gl.ONE, gl.ONE)
+    // Particle blend mode (default 'additive' = ONE/ONE, the classic call).
+    const blend = glBlendSpec(this.look.blendMode)
+    if (blend.eq !== this.appliedBlendEq) {
+      gl.blendEquation(blend.eq)
+      this.appliedBlendEq = blend.eq
+    }
+    gl.blendFunc(blend.src, blend.dst)
     gl.useProgram(this.renderProgram)
     const ru = (name: string) => this.u('render', this.renderProgram, name)
     gl.uniformMatrix4fv(ru('uViewProj'), false, this.viewProj)
@@ -518,7 +561,10 @@ void main() { o = vec4(0.0); }
     blur(1, 2, 10 / hw, 0)
 
     fullscreen(this.compositeProgram, null, this.width, this.height, () => {
-      const cu = (name: string) => this.u('composite', this.compositeProgram, name)
+      // Uniform-location cache is keyed per tone mode: each mode is its own
+      // linked program with its own locations.
+      const cu = (name: string) =>
+        this.u(`composite:${this.appliedToneMapping}`, this.compositeProgram, name)
       bindTex(0, this.hdrTex)
       bindTex(1, this.bloomTex[0])
       bindTex(2, this.bloomTex[2])

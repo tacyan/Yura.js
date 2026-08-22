@@ -43,8 +43,72 @@ const HOLD_SECONDS = 3.2
 const MORPH_SECONDS = 2.6
 const MAX_DT = 1 / 30
 
+/** Floor for morph durations — keeps `timer / duration` finite (≈ instant). */
+const MIN_MORPH_SECONDS = 1e-4
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+}
+
+/** An easing curve: f(0) = 0 and f(1) = 1 (values may overshoot in between). */
+export type EaseFn = (t: number) => number
+
+/**
+ * Named easing curves for morph choreography. Every curve satisfies
+ * f(0) = 0 and f(1) = 1; all but `back` stay monotone inside [0, 1]
+ * (`back` overshoots past 1 and springs back — that is its point).
+ */
+export const eases = {
+  /** The classic smooth in-out — the default, identical to the legacy curve. */
+  cubic: easeInOutCubic as EaseFn,
+  /** Dramatic in-out: near-still at both ends, a rush through the middle. */
+  expo: ((t) =>
+    t <= 0 ? 0 : t >= 1 ? 1 : t < 0.5 ? Math.pow(2, 20 * t - 10) / 2 : (2 - Math.pow(2, -20 * t + 10)) / 2) as EaseFn,
+  /** Overshoots the target and springs back — snappy design-reel arrivals. */
+  back: ((t) => {
+    const c1 = 1.70158
+    const c3 = c1 + 1
+    const u = t - 1
+    return 1 + c3 * u * u * u + c1 * u * u
+  }) as EaseFn,
+  /** Hermite smoothstep — gentler shoulders than cubic, a GPU classic. */
+  smooth: ((t) => t * t * (3 - 2 * t)) as EaseFn,
+  /** No easing — constant speed. */
+  linear: ((t) => t) as EaseFn,
+} satisfies Record<string, EaseFn>
+
+/** A key of the `eases` registry. */
+export type EaseName = keyof typeof eases
+
+/** An easing, referenced by registry name or supplied as a custom curve. */
+export type Ease = EaseName | EaseFn
+
+function resolveEase(e: Ease): EaseFn {
+  if (typeof e === 'function') return e
+  const fn = (eases as Record<string, EaseFn | undefined>)[e]
+  if (!fn) {
+    throw new YuraError(
+      'YURA-015',
+      `Unknown ease "${String(e)}". Available: ${Object.keys(eases).join(', ')}.`,
+      `app.motion({ ease: 'expo' })  // or pass any f(0)=0, f(1)=1 function`,
+    )
+  }
+  return fn
+}
+
+/**
+ * Timing knobs for the morph choreography, accepted by `.motion()` alongside
+ * the physics params. Omitted fields keep their current values; the defaults
+ * reproduce the historical fixed constants exactly (hold 3.2s, morph 2.6s,
+ * cubic easing).
+ */
+export interface MotionTimingOptions {
+  /** Seconds a shape holds before the automatic cycle morphs on. Default 3.2. */
+  hold?: number
+  /** Seconds a morph transition takes. Default 2.6. */
+  morph?: number
+  /** Easing for morph transitions: an `eases` name or a custom curve. Default 'cubic'. */
+  ease?: Ease
 }
 
 /** Travel direction of a morph sweep across the target's coordinate ordering. */
@@ -61,6 +125,13 @@ export interface MorphNowOptions {
   direction?: SweepDirection
   /** Reserved for lyric scheduling; unused by morphNow itself. */
   hold?: number
+  /**
+   * Seconds THIS transition takes. Default: the app-level morph duration
+   * (2.6s, or whatever `.motion({ morph })` set).
+   */
+  duration?: number
+  /** Easing for THIS transition (an `eases` name or a custom curve). Default: the app-level ease. */
+  ease?: Ease
 }
 
 /**
@@ -451,6 +522,13 @@ export class YuraApp {
 
   private shapeData: Float32Array<ArrayBuffer>[] = []
   private morph = { pos: 0 as 0 | 1, phase: 'hold' as 'hold' | 'move', timer: 0, nextShape: 2 }
+  /** App-level morph choreography — `.motion({ hold, morph, ease })` retunes these. */
+  private holdSeconds = HOLD_SECONDS
+  private morphSeconds = MORPH_SECONDS
+  private morphEase: EaseFn = eases.cubic
+  /** Timing of the transition currently in flight (morphNow can override per call). */
+  private activeMorphSeconds = MORPH_SECONDS
+  private activeMorphEase: EaseFn = eases.cubic
   /** Set by morphNow(): halts the automatic shape cycle on arrival. */
   private morphPinned = false
   /** ShapeSpec.kind currently living in [targetA, targetB] — mirrors every
@@ -546,8 +624,18 @@ export class YuraApp {
     return this
   }
 
-  motion(m: Partial<MotionParams>): this {
-    this.motionParams = { ...this.motionParams, ...m }
+  /**
+   * Motion physics plus morph choreography in one call. The physics fields
+   * merge into the simulation params exactly as before; `hold`, `morph`
+   * and `ease` retune the shape-cycle timing at runtime. All optional —
+   * omitted knobs keep their current values.
+   */
+  motion(m: Partial<MotionParams> & MotionTimingOptions): this {
+    const { hold, morph, ease, ...physics } = m
+    if (hold !== undefined) this.holdSeconds = Math.max(hold, 0)
+    if (morph !== undefined) this.morphSeconds = Math.max(morph, MIN_MORPH_SECONDS)
+    if (ease !== undefined) this.morphEase = resolveEase(ease)
+    this.motionParams = { ...this.motionParams, ...physics }
     return this
   }
 
@@ -618,8 +706,8 @@ export class YuraApp {
     // Mid-flight: adopt the nearer endpoint as the new origin so the goal
     // interpolation barely snaps (the swarm itself always moves smoothly).
     if (m.phase === 'move') {
-      const k = Math.min(m.timer / MORPH_SECONDS, 1)
-      const e = easeInOutCubic(k)
+      const k = Math.min(m.timer / this.activeMorphSeconds, 1)
+      const e = this.activeMorphEase(k)
       const t = m.pos === 0 ? e : 1 - e
       m.pos = t > 0.5 ? (m.pos === 0 ? 1 : 0) : m.pos
     }
@@ -631,6 +719,11 @@ export class YuraApp {
     const spread = Math.min(Math.max(opts.sweep ?? 0, 0), 1)
     this.renderer.morphSpread = m.pos === 0 ? spread : -spread
     this.renderer.morphT = m.pos
+    // Per-call duration/ease apply to THIS transition only; the app-level
+    // choreography (.motion) is untouched and defaults are exactly it.
+    this.activeMorphSeconds =
+      opts.duration !== undefined ? Math.max(opts.duration, MIN_MORPH_SECONDS) : this.morphSeconds
+    this.activeMorphEase = opts.ease !== undefined ? resolveEase(opts.ease) : this.morphEase
     m.phase = 'move'
     m.timer = 0
     this.morphPinned = true
@@ -1072,17 +1165,19 @@ export class YuraApp {
     if (m.phase === 'hold') {
       this.renderer.morphBoost = 0
       // Pinned by morphNow(): hold the shape until the next explicit morph.
-      if (!this.morphPinned && m.timer >= HOLD_SECONDS) {
+      if (!this.morphPinned && m.timer >= this.holdSeconds) {
         // The automatic cycle always morphs uniformly (legacy behavior);
         // only explicit morphNow({ sweep }) staggers particles.
         this.renderer.morphSpread = 0
+        this.activeMorphSeconds = this.morphSeconds
+        this.activeMorphEase = this.morphEase
         m.phase = 'move'
         m.timer = 0
       }
       return
     }
-    const k = Math.min(m.timer / MORPH_SECONDS, 1)
-    const e = easeInOutCubic(k)
+    const k = Math.min(m.timer / this.activeMorphSeconds, 1)
+    const e = this.activeMorphEase(k)
     this.renderer.morphT = m.pos === 0 ? e : 1 - e
     // Extra turbulence mid-flight turns transitions into comet swarms.
     this.renderer.morphBoost = Math.sin(Math.PI * k) ** 2

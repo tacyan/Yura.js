@@ -29,6 +29,7 @@ jobs:
           bun build examples/lyrics/index.html --outdir=_site/lyrics   --minify
           bun build examples/hello/index.html  --outdir=_site/hello    --minify
           bun build examples/model/index.html  --outdir=_site/model    --minify
+          bun build examples/game/index.html   --outdir=_site/game     --minify
           cp apps/site/index.html _site/index.html
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -1,8 +1,10 @@
 /**
  * GLSL ES 3.0 sources for the WebGL2 fallback (F-002):
  * transform-feedback particle sim + point sprites + the same HDR post chain
- * (fade trails, bloom, streaks, nebula, ACES) ported from WGSL.
+ * (fade trails, bloom, streaks, nebula, tone map) ported from WGSL.
  */
+
+import { toneMapFunctionName, toneMapSource } from '@yura/renderer-webgpu'
 
 export const SIM_VS = /* glsl */ `#version 300 es
 precision highp float;
@@ -144,7 +146,11 @@ void main() {
 }
 `
 
-export const COMPOSITE_FS = /* glsl */ `#version 300 es
+/**
+ * Composite GLSL with a selectable tone-mapping curve. The default ('aces')
+ * composes to exactly the historic COMPOSITE_FS text.
+ */
+export const buildCompositeFs = (toneMapping?: string): string => /* glsl */ `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uScene;
@@ -154,9 +160,7 @@ uniform float uBloomStrength, uExposure, uVignette, uGrain, uTime, uAberration, 
 uniform vec3 uTintA, uTintB;
 out vec4 outColor;
 
-vec3 aces(vec3 x) {
-  return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);
-}
+${toneMapSource(toneMapping, 'glsl')}
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -205,7 +209,7 @@ void main() {
   c += texture(uBloom, vUv).rgb * uBloomStrength;
   c += texture(uStreak, vUv).rgb * uStreakStrength * vec3(0.75, 0.85, 1.0);
   c *= uExposure;
-  c = aces(c);
+  c = ${toneMapFunctionName(toneMapping)}(c);
   vec2 q = vUv - 0.5;
   c *= 1.0 - uVignette * dot(q, q) * 2.0;
   c += (hash12(vUv * 1024.0 + t) - 0.5) * uGrain;
@@ -213,3 +217,6 @@ void main() {
   outColor = vec4(c, 1.0);
 }
 `
+
+/** Historic default composite (ACES); byte-identical to pre-toneMapping builds. */
+export const COMPOSITE_FS = buildCompositeFs()
