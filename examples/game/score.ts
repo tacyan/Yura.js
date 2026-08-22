@@ -17,7 +17,7 @@ export function isWin(score: number, goal = ORB_GOAL): boolean {
 
 /**
  * Ring the arena with orbs: `count` positions on a circle of `radius` at
- * height `y`. The first position is the README's sample orb, `[3, 1, 0]`.
+ * height `y`. The first position lands at `[3, 1, 0]` with the defaults.
  */
 export function orbRing(count = ORB_GOAL, radius = 3, y = 1): [number, number, number][] {
   return Array.from({ length: count }, (_, i) => {

@@ -5,6 +5,14 @@
  */
 
 import { toneMapFunctionName, toneMapSource } from '@yura/renderer-webgpu'
+// Deep relative import: the curl-noise builder and its named constants live in
+// the WebGPU package's shaders module (single source of truth for both
+// backends) but are not re-exported by that package's root index.
+import { curlNoiseSource, turbulenceTermSource } from '@yura/renderer-webgpu'
+
+// Re-exported so renderer.ts (and tests) take the defaults from the same
+// single source the WGSL backend uses.
+export { DEFAULT_TURBULENCE, DEFAULT_TURBULENCE_SCALE } from '@yura/renderer-webgpu'
 
 export const SIM_VS = /* glsl */ `#version 300 es
 precision highp float;
@@ -12,7 +20,7 @@ layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aVel;
 layout(location = 2) in vec4 aTA;
 layout(location = 3) in vec4 aTB;
-uniform float uDt, uTime, uMorphT, uAttraction, uDamping, uNoiseScale, uNoiseStrength, uSwirl, uMaxSpeed, uBoost, uMorphSpread;
+uniform float uDt, uTime, uMorphT, uAttraction, uDamping, uNoiseScale, uNoiseStrength, uSwirl, uMaxSpeed, uBoost, uMorphSpread, uTurbulence, uTurbulenceScale;
 uniform vec4 uPointer;
 out vec4 tfPos;
 out vec4 tfVel;
@@ -23,6 +31,8 @@ vec3 flowField(vec3 p, float t) {
     sin(p.z * 1.9 + t * 0.8) + cos(p.x * 1.1 + t * 0.6),
     sin(p.x * 1.3 - t * 0.9) + cos(p.y * 1.7 + t * 0.5));
 }
+
+${curlNoiseSource('glsl')}
 
 void main() {
   vec3 pos = aPos.xyz;
@@ -45,6 +55,7 @@ void main() {
   vel += (goal - pos) * attraction * dt;
   vel += flowField(pos * uNoiseScale, uTime * 0.4) * noiseS * dt;
   vel += vec3(-pos.z, 0.0, pos.x) * uSwirl * dt;
+${turbulenceTermSource('glsl')}
   if (uPointer.w != 0.0) {
     vec3 d0 = pos - uPointer.xyz;
     float r2 = max(dot(d0, d0), 0.35);

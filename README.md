@@ -53,42 +53,48 @@ bun run typecheck
 
 `yura(sel).scene()` is a zero-asset game kit: procedural PBR primitives,
 physics, input, collisions, a follow camera, HUD text, and GPU particle FX —
-all from one chainable API. Try it live: **[ORB RUSH](https://tacyan.github.io/Yura.js/game/)**
-(this exact code, running in your browser — the source is `examples/game/`),
-or locally with `bun examples/game/index.html`. The essence:
+all from one chainable API — and `app.game(opts, setup)` collapses the whole
+ritual (create the scene, run your setup, start the loop) into a single call.
+Try it live: **[ORB RUSH](https://tacyan.github.io/Yura.js/game/)**
+(this exact code, running in your browser), or locally with
+`bun examples/game/index.html`. The whole game — `examples/game/main.ts`,
+verbatim (the scoring helpers live next door in `score.ts`):
 
 ```ts
+/**
+ * ORB RUSH — the README mini-game, verbatim. Roll with WASD/arrows/drag,
+ * jump with Space/tap, collect all 10 orbs. Needs WebGPU.
+ */
 import { yura, materials } from 'yura'
+import { isWin, orbLabel, orbRing } from './score'
 
-const app = yura('#game')
-const scene = app.scene({ gravity: -22, bounds: 12 })
-
-scene.add('plane', { size: 24, material: 'checker' })
-const player = scene.add('sphere', { radius: 0.45, material: 'chrome', body: 'dynamic', shadow: true })
-scene.add('sphere', { radius: 0.26, material: materials.neon('#22d3ee'), tag: 'orb', position: [3, 1, 0] })
-// ...loop this line to ring the arena with 10 orbs
-
-const hud = scene.text('ORBS 0', { anchor: 'top' })
-scene.camera.follow(player, { distance: 8, height: 3.6 })
-player.trail()                                  // comet trail, one line
-
-scene.onUpdate((dt, input) => {
-  player.velocity[0] += input.x * 26 * dt
-  player.velocity[2] -= input.y * 26 * dt
-  if (input.jump && player.grounded) player.velocity[1] = 8.5
-})
-
-let score = 0
-player.onCollide((other) => {
-  if (other.tag === 'orb' && other.alive) {
-    other.remove()
-    scene.burst(other.position)                 // particle pop, one line
-    hud.set(`ORBS ${++score}`)
-    if (score === 10) scene.celebrate()         // confetti finale, one line
+yura('#game').game({ gravity: -22, bounds: 12 }, (scene) => {
+  scene.add('plane', { size: 24, material: 'checker' })
+  const player = scene.add('sphere', { radius: 0.45, material: 'chrome', body: 'dynamic', shadow: true })
+  for (const position of orbRing()) {
+    scene.add('sphere', { radius: 0.26, material: materials.neon('#22d3ee'), tag: 'orb', position })
   }
-})
 
-app.run()
+  const hud = scene.text(orbLabel(0), { anchor: 'top' })
+  scene.camera.follow(player, { distance: 8, height: 3.6 })
+  player.trail()                                // comet trail, one line
+
+  scene.onUpdate((dt, input) => {
+    player.velocity[0] += input.x * 26 * dt
+    player.velocity[2] -= input.y * 26 * dt
+    if (input.jump && player.grounded) player.velocity[1] = 8.5
+  })
+
+  let score = 0
+  player.onCollide((other) => {
+    if (other.tag === 'orb' && other.alive) {
+      other.remove()
+      scene.burst(other.position)               // particle pop, one line
+      hud.set(orbLabel(++score))
+      if (isWin(score)) scene.celebrate()       // confetti finale, one line
+    }
+  })
+})
 ```
 
 What you get for free:

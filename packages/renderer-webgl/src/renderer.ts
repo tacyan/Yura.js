@@ -28,6 +28,8 @@ import {
   BRIGHT_FS,
   BLUR_FS,
   buildCompositeFs,
+  DEFAULT_TURBULENCE,
+  DEFAULT_TURBULENCE_SCALE,
 } from './shaders'
 
 /**
@@ -469,6 +471,8 @@ void main() { o = vec4(0.0); }
     gl.uniform1f(su('uMaxSpeed'), this.motion.maxSpeed)
     gl.uniform1f(su('uBoost'), this.morphBoost)
     gl.uniform1f(su('uMorphSpread'), this.morphSpread)
+    gl.uniform1f(su('uTurbulence'), this.motion.turbulence ?? DEFAULT_TURBULENCE)
+    gl.uniform1f(su('uTurbulenceScale'), this.motion.turbulenceScale ?? DEFAULT_TURBULENCE_SCALE)
     gl.uniform4f(su('uPointer'), this.pointerWorld[0], this.pointerWorld[1], this.pointerWorld[2], this.pointerStrength)
     gl.bindVertexArray(this.simVAO[this.cur])
     gl.enable(gl.RASTERIZER_DISCARD)

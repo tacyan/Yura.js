@@ -8,7 +8,13 @@ import {
   CODES,
   warnCode,
 } from '@yura/core'
-import { SIM_WGSL, RENDER_WGSL, buildPostWgsl } from './shaders'
+import {
+  SIM_WGSL,
+  RENDER_WGSL,
+  buildPostWgsl,
+  DEFAULT_TURBULENCE,
+  DEFAULT_TURBULENCE_SCALE,
+} from './shaders'
 import {
   gpuBlendState,
   resolveBlendMode,
@@ -67,6 +73,18 @@ export interface MotionParams {
   swirl: number
   maxSpeed: number
   speedColorMix: number
+  /**
+   * Strength of the curl-noise turbulence force: divergence-free "fluid"
+   * swirls layered on top of the legacy trig flow field. Optional; defaults
+   * to DEFAULT_TURBULENCE (0). At 0 the shader skips the term entirely, so
+   * legacy trajectories stay bit-identical.
+   */
+  turbulence?: number
+  /**
+   * Spatial frequency of the curl-noise field (particle position is scaled
+   * by this before sampling). Optional; defaults to DEFAULT_TURBULENCE_SCALE.
+   */
+  turbulenceScale?: number
 }
 
 export interface RendererOptions {
@@ -159,7 +177,9 @@ export class WebGPUParticleRenderer {
   /** Cached views for the offscreen targets above (not the swapchain). */
   private readonly viewCache = new ViewCache<GPUTextureView>()
 
-  private simData = new ArrayBuffer(64)
+  // SimParams WGSL struct: 72 bytes of fields, rounded up to the struct's
+  // 16-byte alignment (the vec4 pointer member) = 80.
+  private simData = new ArrayBuffer(80)
   private simF32 = new Float32Array(this.simData)
   private simU32 = new Uint32Array(this.simData)
   private renderData = new Float32Array(40)
@@ -347,7 +367,7 @@ export class WebGPUParticleRenderer {
 
     const uniform = (label: string, size: number) =>
       d.createBuffer({ label, size, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST })
-    this.simUB = uniform('yura-sim-ub', 64)
+    this.simUB = uniform('yura-sim-ub', 80)
     this.renderUB = uniform('yura-render-ub', 160)
     this.fadeUB = uniform('yura-fade-ub', 64)
     this.brightUB = uniform('yura-bright-ub', 64)
@@ -632,6 +652,8 @@ export class WebGPUParticleRenderer {
     this.simF32[13] = this.motion.maxSpeed
     this.simF32[14] = this.morphBoost
     this.simF32[15] = this.morphSpread
+    this.simF32[16] = this.motion.turbulence ?? DEFAULT_TURBULENCE
+    this.simF32[17] = this.motion.turbulenceScale ?? DEFAULT_TURBULENCE_SCALE
     d.queue.writeBuffer(this.simUB, 0, this.simData)
 
     // Exposure/trail compensation — shared with the WebGL backend via
