@@ -2,8 +2,15 @@
  * ORB RUSH — the README mini-game, verbatim. Roll with WASD/arrows/drag,
  * jump with Space/tap, collect all 10 orbs. Needs WebGPU.
  */
-import { yura, materials } from 'yura'
+import { yura, materials, gameAudio, type LoopHandle } from 'yura'
 import { isWin, orbLabel, orbRing } from './score'
+
+const audio = gameAudio()
+const riff = ['C3', 'C4', 'G3', 'C4', 'A2', 'A3', 'E3', 'A3', 'F2', 'F3', 'C3', 'F3', 'G2', 'G3', 'D3', 'G3']
+let bgm: LoopHandle | null = null
+const startBgm = () => { bgm ??= audio.loop(riff, { bpm: 300, wave: 'square', gain: 0.18 }) }
+window.addEventListener('pointerdown', startBgm, { once: true })
+window.addEventListener('keydown', startBgm, { once: true })
 
 yura('#game').game({ gravity: -22, bounds: 12 }, (scene) => {
   scene.add('plane', { size: 24, material: 'checker' })
@@ -28,7 +35,7 @@ yura('#game').game({ gravity: -22, bounds: 12 }, (scene) => {
       other.remove()
       scene.burst(other.position)               // particle pop, one line
       hud.set(orbLabel(++score))
-      if (isWin(score)) scene.celebrate()       // confetti finale, one line
+      if (isWin(score)) { bgm?.stop(); audio.win(); scene.celebrate() }  // fanfare + confetti
     }
   })
 })

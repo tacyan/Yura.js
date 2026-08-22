@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test'
-import type { RendererOptions } from '@yura/renderer-webgpu'
+import { identity, lookAt, multiply, perspective, transform4, type Vec3 } from '@yura/core'
+import type { ExternalCamera, RendererOptions } from '@yura/renderer-webgpu'
 import {
   WebGL2ParticleRenderer,
   createResourceTracker,
@@ -384,4 +385,88 @@ test('frame() allocates no GL resources once the renderer is initialized', () =>
   r.frame(0.016, 0.048, OPTS.count)
   const createsAfter = fake.calls.filter((c) => c.name.startsWith('create')).length
   expect(createsAfter).toBe(createsBefore)
+})
+
+// ---------------------------------------------------------------------------
+// 7. webglcontextlost handler: preventDefault + onDeviceLost, muted by dispose
+// ---------------------------------------------------------------------------
+
+test('webglcontextlost preventDefaults and fires onDeviceLost, but not after dispose', () => {
+  const { r, fakeCanvas } = makeRenderer()
+  let lost = 0
+  r.onDeviceLost = () => {
+    lost++
+  }
+  const handler = fakeCanvas.listeners.get('webglcontextlost')![0]
+  let prevented = 0
+  const event = { preventDefault: () => prevented++ } as unknown as Event
+  handler(event)
+  // preventDefault keeps the context restorable; the app is told to fall back.
+  expect(prevented).toBe(1)
+  expect(lost).toBe(1)
+
+  r.dispose()
+  // dispose() unregistered the listener, but even a stale queued delivery to
+  // the same function must not resurrect callbacks on a disposed renderer.
+  handler(event)
+  expect(prevented).toBe(2)
+  expect(lost).toBe(1)
+})
+
+// ---------------------------------------------------------------------------
+// 8. pointerToWorld: ray/plane intersection against the camera
+// ---------------------------------------------------------------------------
+
+test('pointerToWorld returns null before any frame (singular view-projection)', () => {
+  const { r } = makeRenderer()
+  // viewProj is still the zero matrix: determinant 0, invert() yields null.
+  expect(r.pointerToWorld(0, 0)).toBeNull()
+})
+
+test('pointerToWorld hits the view-perpendicular plane through the swarm center', () => {
+  const { r } = makeRenderer()
+  r.resize(64, 32)
+  // Drive the camera through the public externalCamera hook so eye/viewProj
+  // are known values built from core's own math (no private state, no magic).
+  const eye: Vec3 = [4, 2, 8]
+  const viewProj = multiply(
+    perspective(Math.PI / 3, 64 / 32, 0.1, 100),
+    lookAt(eye, [0, 0, 0], [0, 1, 0]),
+  )
+  const camera: ExternalCamera = { viewProj, right: [1, 0, 0], up: [0, 1, 0], eye }
+  r.externalCamera = camera
+  r.frame(0.016, 0.016, OPTS.count)
+
+  const [ndcX, ndcY] = [0.3, -0.4]
+  const p = r.pointerToWorld(ndcX, ndcY)
+  expect(p).not.toBeNull()
+  const [wx, wy, wz] = p!
+
+  // (1) The point lies on the plane through the origin (the default swarm
+  // center) whose normal is the view direction eye - center = eye.
+  const planeDist = (wx * eye[0] + wy * eye[1] + wz * eye[2]) / Math.hypot(...eye)
+  expect(Math.abs(planeDist)).toBeLessThan(1e-3)
+
+  // (2) The point lies on the picked ray: reprojecting it through the same
+  // view-projection restores the input NDC coordinates.
+  const h = transform4(viewProj, [wx, wy, wz, 1])
+  expect(h[0] / h[3]).toBeCloseTo(ndcX, 3)
+  expect(h[1] / h[3]).toBeCloseTo(ndcY, 3)
+})
+
+test('pointerToWorld returns null when the pick ray is parallel to the plane', () => {
+  const { r } = makeRenderer()
+  r.resize(64, 32)
+  // Identity view-projection: every pick ray travels along +z. Putting the
+  // eye on the x axis makes the plane normal (eye - center) perpendicular to
+  // all rays, so no intersection exists.
+  const camera: ExternalCamera = {
+    viewProj: identity(),
+    right: [1, 0, 0],
+    up: [0, 1, 0],
+    eye: [3, 0, 0],
+  }
+  r.externalCamera = camera
+  r.frame(0.016, 0.016, OPTS.count)
+  expect(r.pointerToWorld(0.25, 0.5)).toBeNull()
 })

@@ -65,8 +65,15 @@ verbatim (the scoring helpers live next door in `score.ts`):
  * ORB RUSH — the README mini-game, verbatim. Roll with WASD/arrows/drag,
  * jump with Space/tap, collect all 10 orbs. Needs WebGPU.
  */
-import { yura, materials } from 'yura'
+import { yura, materials, gameAudio, type LoopHandle } from 'yura'
 import { isWin, orbLabel, orbRing } from './score'
+
+const audio = gameAudio()
+const riff = ['C3', 'C4', 'G3', 'C4', 'A2', 'A3', 'E3', 'A3', 'F2', 'F3', 'C3', 'F3', 'G2', 'G3', 'D3', 'G3']
+let bgm: LoopHandle | null = null
+const startBgm = () => { bgm ??= audio.loop(riff, { bpm: 300, wave: 'square', gain: 0.18 }) }
+window.addEventListener('pointerdown', startBgm, { once: true })
+window.addEventListener('keydown', startBgm, { once: true })
 
 yura('#game').game({ gravity: -22, bounds: 12 }, (scene) => {
   scene.add('plane', { size: 24, material: 'checker' })
@@ -91,7 +98,7 @@ yura('#game').game({ gravity: -22, bounds: 12 }, (scene) => {
       other.remove()
       scene.burst(other.position)               // particle pop, one line
       hud.set(orbLabel(++score))
-      if (isWin(score)) scene.celebrate()       // confetti finale, one line
+      if (isWin(score)) { bgm?.stop(); audio.win(); scene.celebrate() }  // fanfare + confetti
     }
   })
 })
@@ -109,6 +116,13 @@ What you get for free:
 - **Sound one-liners** — `gameAudio()` gives zero-asset WebAudio effects:
   `pickup(combo)`, `jump()`, `land(intensity)`, `win()`, with `volume` and
   `mute()`; the AudioContext is created lazily on the first user gesture.
+  There's chiptune BGM too — `loop()` plays note names one beat per step
+  (`null` = rest) until you call `stop()` on the handle it returns:
+
+  ```ts
+  const audio = gameAudio()
+  audio.loop(['C4', 'E4', null, 'G4'], { bpm: 140 })   // wave: 'square' by default
+  ```
 - **Follow camera** — `scene.camera.follow(obj)` with exponential smoothing;
   `scene.camera.orbit()` to hand control back.
 - **Shadows** — shadow-mapped meshes plus automatic ground blob shadows.
@@ -196,6 +210,14 @@ themselves, one line every `every` seconds:
 
 ```ts
 lyrics(app, ['君の声が', '粒子のなかで', 'また君に出会う'], { every: 3.4 })
+```
+
+Vertical Japanese? `vertical: true` lays every line out as tategaki — this
+is how the showcase's sakura look runs its verses:
+
+```ts
+// glyphs sweep top to bottom; a \n inside a line adds columns, read right to left
+lyrics(app, ['桜ひらひら', '春の宵に\n舞い散る'], { every: 3, vertical: true })
 ```
 
 How the char-by-char sweep works: text shapes assign each grapheme a

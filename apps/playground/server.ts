@@ -69,6 +69,23 @@ lyrics(app, [
 `,
   },
   {
+    label: 'tategaki',
+    code: `import { yura, lyrics, looks } from 'yura'
+
+const app = yura('#stage').look(looks.sakura()).particles(400_000)
+await app.run()
+
+// 縦書き: vertical lays each line top-to-bottom, columns right to left —
+// classical Japanese verse, set in drifting sakura light.
+lyrics(app, [
+  { text: '春の夜に', at: 0 },
+  '花はこぼれて',
+  '光となりぬ',
+  'ゆらゆらと',
+], { every: 3.6, sweep: 0.8, vertical: true, loop: true })
+`,
+  },
+  {
     label: 'aurora',
     code: `import { yura } from 'yura'
 

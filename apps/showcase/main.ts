@@ -180,11 +180,16 @@ const LYRIC_LINES = [
   { text: 'YURA', direction: 'center' as const },
 ]
 
-/** Sakura's own verses — spring dusk in three lines, swept petal by petal. */
+/**
+ * Sakura's own verses — spring dusk swept petal by petal, laid out as
+ * tategaki (vertical writing): each verse is a column read top to bottom,
+ * and the two-part line becomes a pair of columns read right to left.
+ * Short, even lines (4-6 glyphs) keep the columns balanced on screen.
+ */
 const SAKURA_LINES = [
   { text: '桜ひらひら', at: 0 },
   '花びらの渦',
-  '春の宵に舞う',
+  '春の宵に\n舞い散る',
   { text: 'YURA', direction: 'center' as const },
 ]
 
@@ -194,9 +199,14 @@ const lyricChip = chip('lyric motion', 'ghost')
 /** Start the loop with the verse set that fits the active look. */
 function startLyrics(): void {
   if (!app) return
-  const lines = currentLook === 'sakura' ? SAKURA_LINES : LYRIC_LINES
+  const sakura = currentLook === 'sakura'
   // sweep 0.8 → strong per-character stagger: each glyph condenses in turn.
-  lyricRun = lyrics(app, lines, { every: 3.4, sweep: 0.8, loop: true, loopTail: 3 })
+  // Sakura runs as tategaki (vertical: true): columns read right to left,
+  // glyphs sweeping top to bottom like falling petals — a longer sweep and
+  // a slower cadence give the vertical reading order room to breathe.
+  lyricRun = sakura
+    ? lyrics(app, SAKURA_LINES, { every: 3.6, sweep: 0.85, loop: true, loopTail: 3, vertical: true })
+    : lyrics(app, LYRIC_LINES, { every: 3.4, sweep: 0.8, loop: true, loopTail: 3 })
   lyricChip.classList.add('on')
 }
 
