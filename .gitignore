@@ -107,3 +107,6 @@ golden-diff/
 
 # --- Playground snippet store ---
 apps/playground/.data/
+
+# --- npm publish staging ---
+dist-npm/

@@ -15,6 +15,7 @@
     "dev:lyrics": "bun ./examples/lyrics/index.html",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "build:npm": "bash scripts/build-npm.sh",
     "play": "bun run apps/playground/server.ts"
   },
   "devDependencies": {
