@@ -1,3 +1,5 @@
+import { warnCode } from './errors'
+
 export type Vec3 = [number, number, number]
 export type Vec4 = [number, number, number, number]
 
@@ -176,10 +178,31 @@ export function transformPoint(m: Float32Array, p: Vec3): Vec3 {
   ]
 }
 
-/** sRGB hex ("#8b5cf6") to linear RGB, for HDR-correct colors. */
+// Local to math.ts: errors.ts owns CODES, but color parsing warns from here.
+const INVALID_COLOR = 'YURA-012'
+
+/**
+ * sRGB hex ("#8b5cf6") to linear RGB, for HDR-correct colors.
+ *
+ * Accepts "#rgb", "#rrggbb", and "#rrggbbaa" (alpha ignored), with or without
+ * the leading "#". Anything else (named colors, wrong lengths, non-hex
+ * digits) warns once per call and falls back to white so NaN never reaches a
+ * color buffer. The result is always three finite components.
+ */
 export function hexToLinear(hex: string): Vec3 {
-  const h = hex.replace('#', '')
-  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h
+  const h = typeof hex === 'string' ? hex.replace('#', '') : ''
+  let full: string
+  if (/^[0-9a-fA-F]{3}$/.test(h)) {
+    full = h.split('').map((c) => c + c).join('')
+  } else if (/^[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$/.test(h)) {
+    full = h.slice(0, 6)
+  } else {
+    warnCode(
+      INVALID_COLOR,
+      `Unsupported color "${hex}". Use "#rgb", "#rrggbb", or "#rrggbbaa". Falling back to white.`,
+    )
+    return [1, 1, 1]
+  }
   const r = parseInt(full.slice(0, 2), 16) / 255
   const g = parseInt(full.slice(2, 4), 16) / 255
   const b = parseInt(full.slice(4, 6), 16) / 255

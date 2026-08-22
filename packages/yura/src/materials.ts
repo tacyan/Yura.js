@@ -17,7 +17,7 @@ function solid(
   return { color, metallic, roughness, emissive }
 }
 
-export const materialPresets: Record<string, SceneMaterial> = {
+export const materialPresets = {
   chrome: solid([0.85, 0.87, 0.9, 1], 1, 0.07),
   gold: solid([1.0, 0.56, 0.09, 1], 1, 0.16),
   copper: solid([0.9, 0.28, 0.13, 1], 1, 0.24),
@@ -28,7 +28,7 @@ export const materialPresets: Record<string, SceneMaterial> = {
   grid: { color: [1, 1, 1, 1], metallic: 0.1, roughness: 0.4, emissive: BLACK, pattern: 'grid' },
   // Lightless pastel rainbow shaded from surface normals — the flagship look.
   iridescent: { color: [1, 1, 1, 1], metallic: 0, roughness: 0.5, emissive: BLACK, iridescent: true },
-}
+} satisfies Record<string, SceneMaterial>
 
 /** Matte diffuse surface in any color. */
 export function matte(hex: string): SceneMaterial {
@@ -61,7 +61,7 @@ export type MaterialLike = SceneMaterial | keyof typeof materialPresets | (strin
 export function resolveMaterial(m: MaterialLike | undefined): SceneMaterial {
   if (!m) return materialPresets.pearl
   if (typeof m === 'string') {
-    const preset = materialPresets[m]
+    const preset = (materialPresets as Record<string, SceneMaterial | undefined>)[m]
     if (preset) return { ...preset }
     if (m.startsWith('#')) return plastic(m)
     return materialPresets.pearl

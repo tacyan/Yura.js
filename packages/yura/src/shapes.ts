@@ -141,6 +141,65 @@ export function flow(options: { width?: number } = {}): ShapeSpec {
   }
 }
 
+export function box(options: { size?: [number, number, number] } = {}): ShapeSpec {
+  const { size = [12, 12, 12] } = options
+  const [w, h, d] = size
+  return {
+    kind: 'box',
+    generate(n) {
+      const out = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) {
+        const y = (Math.random() - 0.5) * h
+        out[i * 4] = (Math.random() - 0.5) * w
+        out[i * 4 + 1] = y
+        out[i * 4 + 2] = (Math.random() - 0.5) * d
+        out[i * 4 + 3] = y / h + 0.5
+      }
+      return out
+    },
+  }
+}
+
+export function cone(options: { radius?: number; height?: number } = {}): ShapeSpec {
+  const { radius = 8, height = 13 } = options
+  return {
+    kind: 'cone',
+    generate(n) {
+      const out = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) {
+        const t = Math.cbrt(Math.random())
+        const r = radius * t * Math.sqrt(Math.random())
+        const a = Math.random() * Math.PI * 2
+        out[i * 4] = Math.cos(a) * r
+        out[i * 4 + 1] = height / 2 - t * height
+        out[i * 4 + 2] = Math.sin(a) * r
+        out[i * 4 + 3] = t
+      }
+      return out
+    },
+  }
+}
+
+export function helix(options: { turns?: number; radius?: number; height?: number } = {}): ShapeSpec {
+  const { turns = 4, radius = 6, height = 13 } = options
+  return {
+    kind: 'helix',
+    generate(n) {
+      const out = new Float32Array(n * 4)
+      for (let i = 0; i < n; i++) {
+        const u = Math.random()
+        const a = u * turns * Math.PI * 2 + gauss() * 0.06
+        const r = radius + gauss() * 0.3
+        out[i * 4] = Math.cos(a) * r
+        out[i * 4 + 1] = (u - 0.5) * height + gauss() * 0.2
+        out[i * 4 + 2] = Math.sin(a) * r
+        out[i * 4 + 3] = u
+      }
+      return out
+    },
+  }
+}
+
 // ---- kinetic typography (text v2) ----
 
 export type TextAlign = 'left' | 'center' | 'right'
@@ -432,4 +491,4 @@ function sampleCandidates(candidates: number[], w: number, h: number, n: number,
   return out
 }
 
-export const shapes = { galaxy, sphere, ring, vortex, flow, text, image }
+export const shapes = { galaxy, sphere, ring, vortex, flow, box, cone, helix, text, image }

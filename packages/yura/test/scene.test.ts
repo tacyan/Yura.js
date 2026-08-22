@@ -1,6 +1,9 @@
-import { test, expect } from 'bun:test'
+import { test, expect, spyOn } from 'bun:test'
+import { YuraError } from '@yura/core'
 import {
   YuraScene,
+  SHAPE_NAMES,
+  type ShapeName,
   SceneInput,
   rollDelta,
   cameraFollowGoal,
@@ -750,4 +753,40 @@ test('hitRadius defaults to radius — behavior identical when unset', () => {
   const b = scene.add('sphere', { radius: 0.3, position: [5, 0, 0] })
   expect(a.hitRadius).toBe(0.5)
   expect(b.hitRadius).toBe(0.3)
+})
+
+// --- Edge cases: unknown shape names, duplicate ground planes ---------------
+
+test('an unknown shape name throws YURA-013 listing the available shapes', () => {
+  const scene = new YuraScene({})
+  let err: unknown = null
+  try {
+    scene.add('cube' as ShapeName) // what a plain-JS caller can pass
+  } catch (e) {
+    err = e
+  }
+  expect(err).toBeInstanceOf(YuraError)
+  const yerr = err as YuraError
+  expect(yerr.code).toBe('YURA-013')
+  expect(yerr.message).toContain('cube')
+  expect(yerr.message).toContain(SHAPE_NAMES.join(', ')) // full available list
+  expect(yerr.hint).toContain("scene.add('sphere'") // fix example
+})
+
+test("a second add('plane') warns with YURA-014 but still moves the ground", () => {
+  const scene = new YuraScene({ gravity: -20 })
+  const info = spyOn(console, 'info').mockImplementation(() => {})
+  try {
+    scene.add('plane', { size: 10 })
+    expect(info).not.toHaveBeenCalled() // first plane is silent
+    scene.add('plane', { size: 10, position: [0, 2, 0] })
+    expect(info).toHaveBeenCalledTimes(1)
+    expect(String(info.mock.calls[0][0])).toContain('YURA-014')
+  } finally {
+    info.mockRestore()
+  }
+  // Behavior unchanged: the newest plane owns the ground height.
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 6, 0], body: 'dynamic' })
+  for (let i = 0; i < 600; i++) scene.step(1 / 60, i / 60)
+  expect(ball.position[1]).toBeCloseTo(2.5, 1)
 })
