@@ -95,6 +95,22 @@ yura('#stage').preset('aurora').motion({ turbulence: 0.8 }).run()
 `,
   },
   {
+    label: 'gravity wells',
+    code: `import { yura, shapes } from 'yura'
+
+// Gravity wells: up to 4 attractors bend the swarm — positive strength
+// pulls particles in, negative pushes them away, radius softens the core.
+yura('#stage')
+  .preset('neon-galaxy')
+  .shape(shapes.sphere())
+  .motion({ attractors: [
+    { position: [6, 0, 0], strength: 40, radius: 2 },
+    { position: [-6, 0, 0], strength: -32, radius: 2.5 },
+  ] })
+  .run()
+`,
+  },
+  {
     label: 'custom look',
     code: `import { yura, shapes, looks } from 'yura'
 

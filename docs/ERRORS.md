@@ -40,6 +40,7 @@ lowercased.
 | [YURA-014](#yura-014) | `GROUND_REPLACED` | warn | `scene.add('plane')` called a second time — the ground height moved |
 | [YURA-015](#yura-015) | `UNKNOWN_EASE` | throw | An ease name that is not registered (and not a function) |
 | [YURA-016](#yura-016) | `SCENE_REPLACED` | warn | `app.scene()` called again — the previous scene was detached |
+| [YURA-017](#yura-017) | `GRAVITY_WELL_CLAMPED` | warn | `scene.gravityWell()` calls exceed the shared attractor budget |
 | [YURA-020](#yura-020) | `ASSET_LOAD_FAILED` | throw | A `.glb` model or `shapes.image()` URL could not be fetched or parsed |
 | [YURA-050](#yura-050) | `DEVICE_LOST` | warn | The GPU device was lost at runtime; Yura attempts recovery |
 
@@ -254,6 +255,27 @@ one and tells you.
 
 ```js
 const scene = app.scene({ gravity: -9.8 }) // once — reuse this reference
+```
+
+## YURA-017
+
+**`GRAVITY_WELL_CLAMPED` — warn (console.info)**
+
+**When:** `scene.gravityWell(position, strength, radius?)` is called while the
+shared attractor budget (`MAX_ATTRACTORS`, currently 4, shared with
+`motion({ attractors })`) is already full.
+
+**Why:** Both simulation backends pack attractors into a fixed-size uniform
+block, so wells beyond the budget cannot take effect immediately. The extra
+well is queued and promoted automatically when an active well is released.
+
+**Fix:** Release a well you no longer need — `gravityWell()` returns a
+disposer:
+
+```ts
+const release = scene.gravityWell([0, 1.5, 0], 12)
+// later, before adding another:
+release()
 ```
 
 ## YURA-020

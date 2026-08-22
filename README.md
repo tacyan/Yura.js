@@ -239,11 +239,16 @@ custom `f(0)=0, f(1)=1` function:
 app.motion({ hold: 2.2, morph: 1.4, ease: 'expo' })   // automatic shape cycle
 app.morphNow(shapes.helix({ turns: 5 }), { duration: 0.8, ease: 'back' })
 app.motion({ turbulence: 0.8, turbulenceScale: 0.35 }) // organic fluid drift
+app.motion({ attractors: [{ position: [4, 0, 0], strength: 30 },    // gravity well
+                          { position: [-4, 0, 0], strength: -20 }] }) // repulsor
 ```
 
 The same call tunes the physics: `turbulence` adds divergence-free curl
 noise — fluid-like swirls with zero clumping — and at the default `0` the
 term vanishes from the shader math, so it costs nothing until you turn it on.
+`attractors` pins up to 4 softened inverse-square gravity wells on the swarm
+(`radius` widens the calm core, negative `strength` repels), and the empty
+default skips that term the same way — free until you place one.
 
 Physics keys you set through `.motion()` are sticky: a later `.preset()`
 still swaps in its own motion defaults, but every key you set explicitly

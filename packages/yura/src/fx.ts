@@ -1,8 +1,26 @@
 import { hexToLinear, type Vec3 } from '@yura/core'
+import {
+  packAttractors,
+  ATTRACTOR_ARRAY_VEC4S,
+  ATTRACTOR_VEC4S,
+  ATTRACTOR_RADIUS2_SLOT,
+  ATTRACTOR_DIST_EPSILON,
+  type AttractorParams,
+} from '@yura/renderer-webgpu'
 
 // Pure particle-FX logic: emitter math, pooled stepping, lifetimes.
 // No DOM, no GPU — fully unit-testable. The scene packs the pool into
 // camera-facing sprite instances each frame and hands them to the renderer.
+
+// Attractors reuse the GPU sims' vocabulary wholesale: the AttractorParams
+// type, MAX_ATTRACTORS / DEFAULT_ATTRACTOR_RADIUS / ATTRACTOR_DIST_EPSILON
+// constants, and the packAttractors layout all come from
+// @yura/renderer-webgpu (single source of truth), and step() evaluates the
+// exact softened inverse-square term attractorTermSource emits:
+//   vel += toAtt * strength / ((d² + r² + ε) * sqrt(d² + ε)) * dt
+
+/** Gravity well / repulsor shared with the GPU sims. Re-exported for scene FX. */
+export type { AttractorParams }
 
 /** Floats per packed FX sprite instance: x, y, z, size, r, g, b, alpha. */
 export const FX_FLOATS = 8
@@ -158,10 +176,22 @@ export class FxPool {
   private eb: Float32Array
   private fpow: Float32Array
 
+  /**
+   * Gravity wells / repulsors applied to every particle each step — the same
+   * {@link AttractorParams} vocabulary and force math as the GPU particle
+   * sims. Unset/empty keeps stepping bit-identical to a pool without
+   * attractors (the term is skipped entirely, exactly like the shaders'
+   * count-0 guard); entries beyond MAX_ATTRACTORS are ignored via the same
+   * packAttractors clamp the GPU upload path uses.
+   */
+  attractors: readonly AttractorParams[] = []
+
   private count = 0
   private cursor = 0
   private pending: PendingBurst[] = []
   private rng: FxRandom
+  /** Scratch buffer for packAttractors — the same packed layout the shaders read. */
+  private attractorData: Float32Array | null = null
 
   constructor(capacity = 8192, rng: FxRandom = Math.random) {
     this.capacity = Math.max(1, Math.floor(capacity))
@@ -346,6 +376,15 @@ export class FxPool {
       }
       this.pending = keep
     }
+    // Pack the wells once per step through the GPU sims' own packAttractors
+    // (clamps to MAX_ATTRACTORS, squares/defaults the radius). Count 0 skips
+    // the term entirely — legacy trajectories stay bit-identical.
+    let attData: Float32Array | null = null
+    let attCount = 0
+    if (this.attractors.length) {
+      attData = this.attractorData ??= new Float32Array(ATTRACTOR_ARRAY_VEC4S * 4)
+      attCount = packAttractors(this.attractors, attData)
+    }
     const damp = (d: number) => Math.exp(-d * dt)
     for (let i = this.count - 1; i >= 0; i--) {
       this.age[i] += dt
@@ -354,6 +393,35 @@ export class FxPool {
         continue
       }
       this.vy[i] += this.grav[i] * dt
+      if (attData !== null && attCount > 0) {
+        // Same math as attractorTermSource (@yura/renderer-webgpu), reading
+        // the same packed [pos.xyz, strength] + [radius², …] vec4 pairs:
+        // vel += toAtt * strength / ((d² + r² + ε) * sqrt(d² + ε)) * dt.
+        const ax = this.px[i]
+        const ay = this.py[i]
+        const az = this.pz[i]
+        let dvx = 0
+        let dvy = 0
+        let dvz = 0
+        for (let j = 0; j < attCount; j++) {
+          const base = j * ATTRACTOR_VEC4S * 4
+          const tx = attData[base] - ax
+          const ty = attData[base + 1] - ay
+          const tz = attData[base + 2] - az
+          const d2 = tx * tx + ty * ty + tz * tz
+          const soft2 = attData[base + ATTRACTOR_RADIUS2_SLOT * 4]
+          const s =
+            (attData[base + 3] /
+              ((d2 + soft2 + ATTRACTOR_DIST_EPSILON) * Math.sqrt(d2 + ATTRACTOR_DIST_EPSILON))) *
+            dt
+          dvx += tx * s
+          dvy += ty * s
+          dvz += tz * s
+        }
+        this.vx[i] += dvx
+        this.vy[i] += dvy
+        this.vz[i] += dvz
+      }
       const f = damp(this.drag[i])
       this.vx[i] *= f
       this.vy[i] *= f

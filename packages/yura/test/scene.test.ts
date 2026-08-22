@@ -3,6 +3,7 @@ import { YuraError } from '@yura/core'
 import {
   YuraScene,
   SHAPE_NAMES,
+  GRAVITY_WELL_CLAMPED_CODE,
   type ShapeName,
   type AddOptions,
   SceneInput,
@@ -23,6 +24,7 @@ import {
 } from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
 import { FX_FLOATS } from '../src/fx'
+import { MAX_ATTRACTORS } from '@yura/renderer-webgpu'
 
 // Scenes run headless before attach(): physics and collisions are pure JS.
 
@@ -1144,4 +1146,66 @@ test('resolveMaterial falls back to pearl for unknown non-hex names', () => {
   expect(resolveMaterial('#ff8800')).toEqual(materials.plastic('#ff8800'))
   const custom = materials.metal('#4cc9f0')
   expect(resolveMaterial(custom)).toBe(custom)
+})
+
+// --- gravityWell: black-hole zones for scene particles ----------------------
+// scene.gravityWell feeds FxPool.attractors with the GPU sims' shared
+// AttractorParams vocabulary; each call returns a release function, wells
+// accumulate, and calls past MAX_ATTRACTORS warn (YURA-017) and queue.
+
+test('gravityWell pulls scene particles toward the well; the release function removes it', () => {
+  const scene = new YuraScene({})
+  scene.fx.spawn(3, 0, 0, 0, 0, 0, 60, 0.1, 1, 1, 1, 0, 0)
+  const release = scene.gravityWell([0, 0, 0], 10)
+  expect(scene.fx.attractors).toHaveLength(1)
+  for (let i = 0; i < 30; i++) scene.step(1 / 60, i / 60)
+  const out = new Float32Array(FX_FLOATS)
+  expect(scene.fx.writeInstances(out)).toBe(1)
+  expect(out[0]).toBeLessThan(3) // pulled toward the origin well
+  release()
+  expect(scene.fx.attractors).toHaveLength(0)
+})
+
+test('a negative-strength gravityWell repels scene particles', () => {
+  const scene = new YuraScene({})
+  scene.fx.spawn(3, 0, 0, 0, 0, 0, 60, 0.1, 1, 1, 1, 0, 0)
+  scene.gravityWell([0, 0, 0], -10)
+  for (let i = 0; i < 30; i++) scene.step(1 / 60, i / 60)
+  const out = new Float32Array(FX_FLOATS)
+  expect(scene.fx.writeInstances(out)).toBe(1)
+  expect(out[0]).toBeGreaterThan(3) // pushed away from the origin well
+})
+
+test('gravityWell accumulates per call, warns past MAX_ATTRACTORS, and releasing frees the slot', () => {
+  const scene = new YuraScene({})
+  const info = spyOn(console, 'info').mockImplementation(() => {})
+  try {
+    const releases = Array.from({ length: MAX_ATTRACTORS }, (_, i) =>
+      scene.gravityWell([i, 0, 0], 1),
+    )
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS)
+    expect(info).not.toHaveBeenCalled() // within budget: silent
+    expect('radius' in scene.fx.attractors[0]).toBe(false) // omitted -> sims' default applies
+
+    const releaseExtra = scene.gravityWell([9, 9, 9], 2, 0.5)
+    expect(info).toHaveBeenCalledTimes(1)
+    expect(String(info.mock.calls[0][0])).toContain(GRAVITY_WELL_CLAMPED_CODE)
+    // The extra well is queued (the pool clamps to the first MAX_ATTRACTORS)…
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS + 1)
+    expect(scene.fx.attractors[MAX_ATTRACTORS]).toEqual({
+      position: [9, 9, 9],
+      strength: 2,
+      radius: 0.5,
+    })
+    // …and releasing an active well promotes it into the acting set.
+    releases[0]()
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS)
+    expect(scene.fx.attractors[MAX_ATTRACTORS - 1].position).toEqual([9, 9, 9])
+    releaseExtra()
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS - 1)
+    releaseExtra() // release is idempotent
+    expect(scene.fx.attractors).toHaveLength(MAX_ATTRACTORS - 1)
+  } finally {
+    info.mockRestore()
+  }
 })

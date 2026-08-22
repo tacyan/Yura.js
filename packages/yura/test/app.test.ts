@@ -1146,6 +1146,9 @@ function fakeParticleRenderer() {
     morphBoost: 0,
     morphSpread: 0,
     textDamp: 1,
+    // null until the app hands over a motion snapshot — only cursor-gravity
+    // mode ever assigns it, so plain runs must leave this untouched.
+    motion: null as MotionParams | null,
     pointerWorld: [0, 0, 0] as [number, number, number],
     pointerStrength: 0,
     parallax: [0, 0] as [number, number],
@@ -1250,6 +1253,8 @@ interface FullInternals {
   colorB: string
   modelUrl: string | null
   pointerEnabled: boolean
+  pointerGravity: number | null
+  motionParams: MotionParams
   shapeSeq: ShapeSpec[]
   shapeData: Float32Array[]
   targetKinds: [string, string]
@@ -1695,6 +1700,122 @@ test('tick drives pointer forces: hover repels, click detonates, leave releases'
     i.pointerNdc = null
     i.tick(64)
     expect(r.pointerStrength).toBe(0)
+    app.dispose()
+  })
+})
+
+// ---- cursor gravity: .interactive({ gravity }) ----
+
+import { withPointerAttractor } from '../src/app'
+import { MAX_ATTRACTORS, type AttractorParams, type MotionParams } from '@yura/renderer-webgpu'
+
+test('withPointerAttractor leads with the cursor well, copies the position, and clamps to MAX_ATTRACTORS', () => {
+  const base: AttractorParams[] = Array.from({ length: MAX_ATTRACTORS }, (_, k) => ({
+    position: [k, 0, 0] as [number, number, number],
+    strength: k + 1,
+  }))
+  const pos: [number, number, number] = [7, 8, 9]
+  const out = withPointerAttractor(base, pos, -3)
+  expect(out).toHaveLength(MAX_ATTRACTORS) // never over the sims' uniform capacity
+  expect(out[0]).toEqual({ position: [7, 8, 9], strength: -3 })
+  expect(out[0].position).not.toBe(pos) // defensive copy — live pointer state is never aliased
+  expect(out.slice(1)).toEqual(base.slice(0, MAX_ATTRACTORS - 1))
+  expect(base).toHaveLength(MAX_ATTRACTORS) // pure: base list untouched
+
+  // No user attractors: the pointer well is the whole list.
+  expect(withPointerAttractor(undefined, pos, 5)).toEqual([{ position: [7, 8, 9], strength: 5 }])
+})
+
+test('interactive({ gravity }) injects the pointer world position as a per-frame motion attractor', async () => {
+  const app = headlessApp().particles(8).interactive({ gravity: 80 })
+  const i = full(app)
+  const r = fakeParticleRenderer()
+  i.renderer = r
+  i.running = true
+  i.visible = true
+  i.lastTime = 0
+  const raf = rafKit()
+  await withGlobals({ requestAnimationFrame: raf.raf, cancelAnimationFrame: raf.caf }, () => {
+    expect(i.pointerGravity).toBe(80)
+    i.pointerNdc = [0.5, -0.25]
+    i.tick(16)
+    // The renderer got a fresh motion snapshot with the fake's pointer world [1,2,3].
+    expect(r.motion?.attractors).toEqual([{ position: [1, 2, 3], strength: 80 }])
+    // Per-frame only: the app's own params never see the injected well.
+    expect(i.motionParams.attractors).toBeUndefined()
+    // The classic hover force field still runs alongside.
+    expect(r.pointerStrength).toBeCloseTo(60, 6)
+
+    // Pointer leaves: the well disappears with the cursor.
+    i.pointerNdc = null
+    i.tick(32)
+    expect(r.motion).toBe(i.motionParams)
+    expect(r.motion?.attractors).toBeUndefined()
+    app.dispose()
+  })
+})
+
+test('cursor gravity coexists with .motion({ attractors }) and never goes sticky across presets', async () => {
+  const wells: AttractorParams[] = Array.from({ length: MAX_ATTRACTORS }, (_, k) => ({
+    position: [k + 10, 0, 0] as [number, number, number],
+    strength: 1,
+  }))
+  const app = headlessApp().particles(8).interactive({ gravity: -40 }).motion({ attractors: wells })
+  const i = full(app)
+  const r = fakeParticleRenderer()
+  i.renderer = r
+  i.running = true
+  i.visible = true
+  i.lastTime = 0
+  const raf = rafKit()
+  await withGlobals({ requestAnimationFrame: raf.raf, cancelAnimationFrame: raf.caf }, () => {
+    i.pointerNdc = [0, 0]
+    i.tick(16)
+    const injected = r.motion?.attractors
+    expect(injected).toHaveLength(MAX_ATTRACTORS) // pointer + full user list, clamped
+    expect(injected?.[0]).toEqual({ position: [1, 2, 3], strength: -40 }) // repulsor leads
+    expect(injected?.slice(1)).toEqual(wells.slice(0, MAX_ATTRACTORS - 1))
+    // The user's own list is untouched by the injection…
+    expect(i.motionParams.attractors).toEqual(wells)
+    // …and preset() sticky-keeps ONLY the user's attractors (userMotion),
+    // never the dynamic pointer well — which keeps flowing afterwards.
+    app.preset('aurora')
+    expect(i.motionParams.attractors).toEqual(wells)
+    i.tick(32)
+    expect(r.motion?.attractors?.[0]).toEqual({ position: [1, 2, 3], strength: -40 })
+    expect(r.motion?.attractors).toHaveLength(MAX_ATTRACTORS)
+    app.dispose()
+  })
+})
+
+test('without gravity the attractor path is untouched; boolean toggles preserve the gravity setting', async () => {
+  const app = headlessApp().particles(8)
+  const i = full(app)
+  const r = fakeParticleRenderer()
+  i.renderer = r
+  i.running = true
+  i.visible = true
+  i.lastTime = 0
+  const raf = rafKit()
+  await withGlobals({ requestAnimationFrame: raf.raf, cancelAnimationFrame: raf.caf }, () => {
+    i.pointerNdc = [0.5, -0.25]
+    i.tick(16)
+    i.pointerNdc = null
+    i.tick(32)
+    expect(r.motion).toBeNull() // legacy path: renderer.motion is never assigned
+    expect(i.motionParams.attractors).toBeUndefined()
+
+    // Boolean calls only flip reactivity; the gravity config persists.
+    app.interactive({ gravity: 12 })
+    app.interactive(false)
+    expect(i.pointerEnabled).toBe(false)
+    expect(i.pointerGravity).toBe(12)
+    app.reactToPointer()
+    expect(i.pointerEnabled).toBe(true)
+    expect(i.pointerGravity).toBe(12)
+    // An object call without gravity restores the classic force field.
+    app.interactive({})
+    expect(i.pointerGravity).toBeNull()
     app.dispose()
   })
 })

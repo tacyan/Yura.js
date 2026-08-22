@@ -3,7 +3,7 @@
  * live look switching, and a prompt that morphs the swarm into any word.
  * Zero image assets; everything on screen is generated.
  */
-import { yura, shapes, lyrics, eases, type YuraApp, type LyricsRun, type FxPool } from 'yura'
+import { yura, shapes, lyrics, eases, YURA_SHAPE_RADIUS, type YuraApp, type LyricsRun, type FxPool, type AttractorParams } from 'yura'
 
 type LookId = 'neon-galaxy' | 'aurora' | 'cinematic' | 'cyberpunk' | 'helix-storm' | 'sakura'
 
@@ -47,6 +47,7 @@ let currentLook: LookId = 'neon-galaxy'
 let currentCount = 1_000_000
 let booting = false
 let stormFx: FxPool | null = null // live fx pool while Helix Storm runs
+let stopWells: (() => void) | null = null // cancels the binary-well orbit loop
 
 /** ?backend=webgl2 forces the fallback renderer — same page, same UI. */
 const forcedBackend = new URLSearchParams(location.search).get('backend')
@@ -65,6 +66,8 @@ async function boot(): Promise<void> {
     : `summoning ${currentCount.toLocaleString('en-US')} particles`
   cover.classList.remove('hidden')
   await new Promise((r) => setTimeout(r, 250)) // let the cover paint
+  stopWells?.() // the wells' orbit loop must not outlive the app it steers
+  stopWells = null
   app?.dispose()
   stormFx = null
   app = yura(stage, { quality: 'auto', backend: backendOpt })
@@ -81,6 +84,9 @@ async function boot(): Promise<void> {
   // Sakura only: soft petal-flutter turbulence and a slower swirl — glyphs
   // shimmer like falling blossom without breaking the lyric shapes.
   if (currentLook === 'sakura') app.motion({ turbulence: 0.3, swirl: 0.06 })
+  // Neon galaxy only: a binary pair of gravity wells slowly orbits the disc,
+  // dragging the arms into local eddies — see binaryWells() below.
+  if (currentLook === 'neon-galaxy') stopWells = binaryWells(app)
   await app.run()
   ;(window as unknown as { __yura: unknown }).__yura = app
   app.onStats((s) => {
@@ -133,6 +139,50 @@ function helixStorm(a: YuraApp): void {
       color: ['#67e8f9', '#a5f3fc', '#f0abfc'], colorEnd: '#4c1d95', intensity: 3,
     })
   })
+}
+
+// ------------------------------------------------------------ binary wells
+
+/**
+ * BINARY WELLS — the neon galaxy's gravity act. Two equal attractors orbit
+ * the disc in counter-phase like a binary star pair, each dragging the
+ * nearby arms into a slow eddy around itself (and gently warping the YURA
+ * glyphs whenever the auto-cycle passes through text). Both sims re-pack
+ * `motion.attractors` every frame, so mutating the well positions in place
+ * IS the live-retune path — no per-frame API calls. All scales derive from
+ * YURA_SHAPE_RADIUS so the pair stays mid-disc if the shapes ever grow.
+ */
+const WELL_PHASES = [0, Math.PI] // counter-phase: one well on each side of the core
+const WELL_ORBIT_RADIUS = YURA_SHAPE_RADIUS * 0.4 // mid-disc, riding between the arms
+const WELL_ORBIT_RATE = 0.12 // rad/s — one full revolution every ~52 s
+const WELL_STRENGTH = 20 // accel = strength / (d² + radius²): a firm but calm tug
+const WELL_SOFT_RADIUS = YURA_SHAPE_RADIUS * 0.2 // wide softening core — no slingshots
+const WELL_BOB = YURA_SHAPE_RADIUS * 0.08 // slight counter-phase weave out of the plane
+
+/** One well's center at orbital angle `phase` — boot and the orbit loop share it. */
+function wellCenter(phase: number, out: [number, number, number]): void {
+  out[0] = Math.cos(phase) * WELL_ORBIT_RADIUS
+  out[1] = Math.sin(phase) * WELL_BOB // phase offset π flips the bob: counter-phase for free
+  out[2] = Math.sin(phase) * WELL_ORBIT_RADIUS
+}
+
+/** Install the pair (before run()) and start their orbit; returns the cancel. */
+function binaryWells(a: YuraApp): () => void {
+  const wells: AttractorParams[] = WELL_PHASES.map((phase) => {
+    const position: [number, number, number] = [0, 0, 0]
+    wellCenter(phase, position)
+    return { position, strength: WELL_STRENGTH, radius: WELL_SOFT_RADIUS }
+  })
+  a.motion({ attractors: wells }) // sticky: survives any later .preset() swap
+  const t0 = performance.now()
+  let raf = requestAnimationFrame(function orbit() {
+    const t = (performance.now() - t0) / 1000
+    for (let i = 0; i < wells.length; i++) {
+      wellCenter(WELL_PHASES[i] + t * WELL_ORBIT_RATE, wells[i].position)
+    }
+    raf = requestAnimationFrame(orbit)
+  })
+  return () => cancelAnimationFrame(raf)
 }
 
 // ------------------------------------------------------------------ chips

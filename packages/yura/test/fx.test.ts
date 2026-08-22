@@ -1,6 +1,15 @@
 import { test, expect } from 'bun:test'
-import { FxPool, FxTrailEmitter, FX_FLOATS } from '../src/fx'
+import { FxPool, FxTrailEmitter, FX_FLOATS, type AttractorParams } from '../src/fx'
 import { YuraScene } from '../src/scene'
+import {
+  packAttractors,
+  MAX_ATTRACTORS,
+  ATTRACTOR_ARRAY_VEC4S,
+  ATTRACTOR_VEC4S,
+  ATTRACTOR_RADIUS2_SLOT,
+  ATTRACTOR_DIST_EPSILON,
+  DEFAULT_ATTRACTOR_RADIUS,
+} from '@yura/renderer-webgpu'
 
 // FX logic is pure (no DOM, no GPU): pools, emitters, and lifetimes step headless.
 
@@ -374,4 +383,125 @@ test('non-finite trail option values fall back to safe defaults', () => {
   const n = pool.writeInstances(out)
   expect(n).toBe(8)
   for (let i = 0; i < n * FX_FLOATS; i++) expect(Number.isFinite(out[i])).toBe(true)
+})
+
+// --- Attractors: the GPU sims' gravity-well vocabulary on the CPU pool ------
+// FxPool.attractors shares the AttractorParams type, the MAX_ATTRACTORS /
+// DEFAULT_ATTRACTOR_RADIUS / ATTRACTOR_DIST_EPSILON constants, the packed
+// packAttractors layout, and the exact softened inverse-square force with
+// @yura/renderer-webgpu (locked there by attractors.test.ts).
+
+type V3 = [number, number, number]
+
+/**
+ * CPU reference for one step's velocity increment — the same mirror of
+ * attractorTermSource that locks the GPU sims in renderer-webgpu's
+ * attractors.test.ts, reading the same packAttractors layout.
+ */
+function attractorVelDeltaRef(pos: V3, packed: Float32Array, count: number, dt: number): V3 {
+  const out: V3 = [0, 0, 0]
+  for (let j = 0; j < count; j++) {
+    const base = j * ATTRACTOR_VEC4S * 4
+    const toAtt: V3 = [packed[base] - pos[0], packed[base + 1] - pos[1], packed[base + 2] - pos[2]]
+    const attD2 = toAtt[0] * toAtt[0] + toAtt[1] * toAtt[1] + toAtt[2] * toAtt[2]
+    const soft2 = packed[base + ATTRACTOR_RADIUS2_SLOT * 4]
+    const s =
+      (packed[base + 3] /
+        ((attD2 + soft2 + ATTRACTOR_DIST_EPSILON) * Math.sqrt(attD2 + ATTRACTOR_DIST_EPSILON))) *
+      dt
+    out[0] += toAtt[0] * s
+    out[1] += toAtt[1] * s
+    out[2] += toAtt[2] * s
+  }
+  return out
+}
+
+/** Spawns one motionless, force-free particle at `pos`, steps, returns its packed instance. */
+function stepLone(pool: FxPool, pos: V3, steps: number, dt: number): Float32Array {
+  pool.spawn(pos[0], pos[1], pos[2], 0, 0, 0, 60, 0.1, 1, 1, 1, 0, 0)
+  for (let i = 0; i < steps; i++) pool.step(dt)
+  const out = new Float32Array(FX_FLOATS)
+  expect(pool.writeInstances(out)).toBe(1)
+  return out
+}
+
+test('a positive-strength attractor pulls particles toward the well', () => {
+  const pool = new FxPool(4, seeded(11))
+  pool.attractors = [{ position: [0, 0, 0], strength: 8 }]
+  const out = stepLone(pool, [2, 0, 0], 30, 1 / 60)
+  expect(out[0]).toBeLessThan(2) // moved toward the well on x
+  expect(out[1]).toBe(0) // no lateral force off the axis
+  expect(out[2]).toBe(0)
+})
+
+test('a negative-strength attractor pushes particles away', () => {
+  const pool = new FxPool(4, seeded(11))
+  pool.attractors = [{ position: [0, 0, 0], strength: -8 }]
+  const out = stepLone(pool, [2, 0, 0], 30, 1 / 60)
+  expect(out[0]).toBeGreaterThan(2)
+  expect(out[1]).toBe(0)
+  expect(out[2]).toBe(0)
+})
+
+test('unset and empty attractors keep stepping bit-identical to the legacy path', () => {
+  const run = (attractors?: readonly AttractorParams[]): Float32Array => {
+    const pool = new FxPool(256, seeded(21))
+    if (attractors) pool.attractors = attractors
+    pool.burst([0, 1, 0], { count: 96, speed: 5, gravity: -9, life: 2, drag: 0.5 })
+    for (let i = 0; i < 40; i++) pool.step(1 / 60)
+    const out = new Float32Array(256 * FX_FLOATS)
+    const n = pool.writeInstances(out)
+    expect(n).toBeGreaterThan(0)
+    return out.slice(0, n * FX_FLOATS)
+  }
+  const untouched = run() // property never assigned
+  const empty = run([]) // explicit empty array
+  expect(empty.length).toBe(untouched.length)
+  let mismatched = 0
+  for (let i = 0; i < untouched.length; i++) if (!Object.is(empty[i], untouched[i])) mismatched++
+  expect(mismatched).toBe(0)
+})
+
+test("one step applies exactly the GPU sims' reference impulse (same packed layout, same formula)", () => {
+  const dt = 0.0625 // exact binary float keeps the integration reproducible
+  const start: V3 = [Math.fround(1.2), Math.fround(0.4), Math.fround(-0.9)]
+  const wells: AttractorParams[] = [
+    { position: [5, 0, 0], strength: 1.5, radius: 0.2 },
+    { position: [-2, 3, 1], strength: -0.75 }, // omitted radius -> DEFAULT_ATTRACTOR_RADIUS
+  ]
+  const pool = new FxPool(4, seeded(31))
+  pool.attractors = wells
+  pool.spawn(start[0], start[1], start[2], 0, 0, 0, 10, 0.1, 1, 1, 1, 0, 0)
+  pool.step(dt)
+
+  const packed = new Float32Array(ATTRACTOR_ARRAY_VEC4S * 4)
+  const count = packAttractors(wells, packed)
+  expect(count).toBe(2)
+  // The omitted radius took the shared default (stored squared, as float32).
+  expect(packed[ATTRACTOR_VEC4S * 4 + ATTRACTOR_RADIUS2_SLOT * 4]).toBe(
+    Math.fround(DEFAULT_ATTRACTOR_RADIUS ** 2),
+  )
+  const d = attractorVelDeltaRef(start, packed, count, dt)
+
+  const out = new Float32Array(FX_FLOATS)
+  expect(pool.writeInstances(out)).toBe(1)
+  // v = fround(ref delta), p = fround(start + v * dt): identical to the
+  // reference math modulo the pool's float32 storage — compared exactly.
+  expect(out[0]).toBe(Math.fround(start[0] + Math.fround(d[0]) * dt))
+  expect(out[1]).toBe(Math.fround(start[1] + Math.fround(d[1]) * dt))
+  expect(out[2]).toBe(Math.fround(start[2] + Math.fround(d[2]) * dt))
+  expect(out[0]).not.toBe(start[0]) // the superposed pull really moved it
+})
+
+test('attractors beyond MAX_ATTRACTORS are ignored — the same clamp packAttractors applies', () => {
+  const wells: AttractorParams[] = Array.from({ length: MAX_ATTRACTORS + 3 }, (_, i) => ({
+    position: [i + 1, 0, 0] as V3,
+    strength: 2,
+  }))
+  const run = (list: AttractorParams[]): Float32Array => {
+    const pool = new FxPool(4, seeded(12))
+    pool.attractors = list
+    return stepLone(pool, [0, 0, 0], 20, 1 / 60)
+  }
+  expect(run(wells)).toEqual(run(wells.slice(0, MAX_ATTRACTORS)))
 })

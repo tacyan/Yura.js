@@ -13,6 +13,8 @@ import {
 import {
   WebGPUParticleRenderer,
   WebGPUModelRenderer,
+  MAX_ATTRACTORS,
+  type AttractorParams,
   type LookParams,
   type MotionParams,
 } from '@yura/renderer-webgpu'
@@ -137,6 +139,39 @@ export interface MotionTimingOptions {
   morph?: number
   /** Easing for morph transitions: an `eases` name or a custom curve. Default 'cubic'. */
   ease?: Ease
+}
+
+/**
+ * Options for {@link YuraApp.interactive}. Passing an object (instead of a
+ * boolean) turns pointer reactivity on and configures how the cursor couples
+ * to the simulation.
+ */
+export interface InteractiveOptions {
+  /**
+   * Cursor gravity: the pointer's world position is injected every frame as
+   * one `motion.attractors` gravity well of this strength. Positive pulls
+   * particles toward the cursor, negative pushes them away. Omit to keep the
+   * classic hover/click force field only (exact legacy behavior).
+   */
+  gravity?: number
+}
+
+/**
+ * Composes the per-frame attractor list the renderer simulates while cursor
+ * gravity is active: the pointer well leads, the user's `.motion({ attractors })`
+ * follow, clamped to the sims' MAX_ATTRACTORS uniform capacity. The pointer
+ * takes the head slot so a live cursor force never silently vanishes behind a
+ * full static list. Pure — `base` is never mutated (exported for tests).
+ */
+export function withPointerAttractor(
+  base: readonly AttractorParams[] | undefined,
+  position: Vec3,
+  strength: number,
+): AttractorParams[] {
+  // Copy the position so the packed attractor never aliases pointer state
+  // that keeps moving after this frame.
+  const pointer: AttractorParams = { position: [position[0], position[1], position[2]], strength }
+  return [pointer, ...(base ?? [])].slice(0, MAX_ATTRACTORS)
 }
 
 /** Travel direction of a morph sweep across the target's coordinate ordering. */
@@ -561,6 +596,13 @@ export class YuraApp {
   private shapeOverridden = false
   /** Pointer reactivity ships ON — the zero-config path is the flagship path. */
   private pointerEnabled = true
+  /**
+   * Cursor-gravity strength from `.interactive({ gravity })`, or null for the
+   * classic pointer force field only. Deliberately NOT part of userMotion:
+   * the injection is a per-frame dynamic composition (see tick), never a
+   * sticky physics value that preset() would re-apply.
+   */
+  private pointerGravity: number | null = null
   private qualityMode: 'auto' | 'high' | 'low'
   private backendOpt: 'auto' | 'webgpu' | 'webgl2'
 
@@ -789,9 +831,21 @@ export class YuraApp {
   /**
    * Pointer reactivity. ON by default — call `.interactive(false)` for a
    * purely ambient background that ignores the cursor.
+   *
+   * Pass an options object to give the cursor gravity:
+   * `.interactive({ gravity: 40 })` injects the pointer's world position
+   * every frame as a `motion.attractors` well (positive pulls, negative
+   * repels) alongside any attractors set via `.motion()`. A boolean call
+   * only toggles reactivity and leaves the gravity configuration alone;
+   * an object call without `gravity` restores the classic force field.
    */
-  interactive(on = true): this {
-    this.pointerEnabled = on
+  interactive(on: boolean | InteractiveOptions = true): this {
+    if (typeof on === 'boolean') {
+      this.pointerEnabled = on
+      return this
+    }
+    this.pointerEnabled = true
+    this.pointerGravity = on.gravity ?? null
     return this
   }
 
@@ -1384,6 +1438,21 @@ export class YuraApp {
         this.renderer.pointerWorld = world
         // Hover repels gently; a click detonates a decaying shockwave.
         this.renderer.pointerStrength = 60 + this.burst * 2400
+        // Cursor gravity (.interactive({ gravity })): hand the renderer a
+        // fresh motion snapshot with the pointer well composed in front of
+        // the user's attractors. Composing on a COPY of motionParams keeps
+        // the injection fully dynamic — motionParams/userMotion never see
+        // the pointer entry, so preset() sticky-merges stay untouched.
+        if (this.pointerGravity !== null) {
+          this.renderer.motion = {
+            ...this.motionParams,
+            attractors: withPointerAttractor(
+              this.motionParams.attractors,
+              world,
+              this.pointerGravity,
+            ),
+          }
+        }
       }
       this.renderer.parallax = [
         this.renderer.parallax[0] * 0.92 + this.pointerNdc[0] * 0.08,
@@ -1391,6 +1460,10 @@ export class YuraApp {
       ]
     } else {
       this.renderer.pointerStrength = 0
+      // Pointer gone: hand back the un-injected params so the cursor well
+      // disappears with the cursor. Only gravity mode ever touches
+      // renderer.motion — default behavior is byte-identical to before.
+      if (this.pointerGravity !== null) this.renderer.motion = this.motionParams
     }
     this.burst *= Math.exp(-dt * 5)
 

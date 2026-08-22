@@ -1,6 +1,7 @@
 import { CODES, trsToMat4, eulerToQuat, warnCode, YuraError, type Vec3, type Vec4 } from '@yura/core'
 import {
   meshes,
+  MAX_ATTRACTORS,
   type MeshGeometry,
   type MeshHandle,
   type WebGPUModelRenderer,
@@ -10,6 +11,7 @@ import {
   FxPool,
   FxTrailEmitter,
   FX_FLOATS,
+  type AttractorParams,
   type BurstOptions,
   type TrailOptions,
   type CelebrateOptions,
@@ -379,6 +381,13 @@ export interface TrailHandle {
   /** Stops emitting; already-spawned particles fade out naturally. */
   stop(): void
 }
+
+/**
+ * Warn code emitted when gravityWell() calls exceed the shared attractor
+ * budget (MAX_ATTRACTORS from @yura/renderer-webgpu). Registered in CODES
+ * (@yura/core) as GRAVITY_WELL_CLAMPED.
+ */
+export const GRAVITY_WELL_CLAMPED_CODE = CODES.GRAVITY_WELL_CLAMPED
 
 /**
  * One object living in a {@link YuraScene}: a procedural mesh plus its
@@ -795,6 +804,8 @@ export class YuraScene {
   readonly fx = new FxPool(8192)
   private trails: Array<{ obj: SceneObject; emitter: FxTrailEmitter; active: boolean }> = []
   private fxInstances: Float32Array<ArrayBuffer> | null = null
+  /** Active gravity wells (insertion order) — mirrored into fx.attractors. */
+  private wells: AttractorParams[] = []
 
   /**
    * Camera control: `follow(obj)` tracks an object with exponential
@@ -964,6 +975,44 @@ export class YuraScene {
   celebrate(opts: CelebrateOptions = {}): this {
     this.fx.celebrate(opts)
     return this
+  }
+
+  /**
+   * Adds a gravity well that bends every scene particle (bursts, trails,
+   * celebrations) — the one-liner for a black-hole zone:
+   * `const release = scene.gravityWell([0, 1.5, 0], 12)`.
+   *
+   * Positive `strength` pulls particles in, negative pushes them away;
+   * `radius` softens the force near the center (defaults to the sims'
+   * DEFAULT_ATTRACTOR_RADIUS). Same {@link AttractorParams} vocabulary and
+   * force math as the GPU particle sims. Wells accumulate per call; only the
+   * first MAX_ATTRACTORS act at once — extra wells warn and stay queued until
+   * an earlier one is released. Returns a function that removes this well.
+   */
+  gravityWell(
+    position: readonly [number, number, number] | Vec3,
+    strength: number,
+    radius?: number,
+  ): () => void {
+    const well: AttractorParams = {
+      position: [position[0], position[1], position[2]],
+      strength,
+    }
+    if (radius !== undefined) well.radius = radius
+    this.wells.push(well)
+    if (this.wells.length > MAX_ATTRACTORS) {
+      warnCode(
+        GRAVITY_WELL_CLAMPED_CODE,
+        `gravityWell(): ${this.wells.length} wells requested but only ${MAX_ATTRACTORS} can act at once ` +
+          `(MAX_ATTRACTORS). This well stays queued and activates when an earlier one is released.`,
+      )
+    }
+    this.fx.attractors = this.wells
+    return () => {
+      const i = this.wells.indexOf(well)
+      if (i >= 0) this.wells.splice(i, 1)
+      this.fx.attractors = this.wells
+    }
   }
 
   /** @internal called by YuraApp once the GPU renderer exists. */
