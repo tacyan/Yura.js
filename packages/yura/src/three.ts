@@ -29,6 +29,8 @@ import {
   hexToLinear,
   multiply,
   QualityGovernor,
+  YuraError,
+  CODES,
   type Vec3,
 } from '@yura/core'
 import {
@@ -40,6 +42,7 @@ import { WebGL2ParticleRenderer } from '@yura/renderer-webgl'
 import { resolvePreset } from './presets'
 import { looks as lookRegistry, type LookName } from './looks'
 import { shapes as shapeRegistry, type ShapeSpec } from './shapes'
+import { eases, type Ease, type EaseFn, type MotionTimingOptions, type MorphNowOptions } from './app'
 
 // ---------------------------------------------------------------------------
 // Structural (duck) types for the bits of Three.js we read. No 'three' import.
@@ -158,7 +161,7 @@ export function composeSwarmCamera(
 // The layer.
 // ---------------------------------------------------------------------------
 
-export interface YuraLayerOptions {
+export interface YuraLayerOptions extends MotionTimingOptions {
   /** Yura preset name ('neon-galaxy', 'aurora', 'cinematic', 'cyberpunk'). */
   preset?: string
   /** Particle count override (presets default to 600k–1M). */
@@ -183,13 +186,65 @@ export interface YuraLayerOptions {
   quality?: 'auto' | 'high'
   /** z-index for the overlay canvas, if your stacking context needs it. */
   zIndex?: string
+  /**
+   * Reserved: seconds a shape would hold before an automatic cycle morphs on
+   * (the layer has no automatic cycle yet). Accepted for `.motion()` parity;
+   * exposed as `layer.holdSeconds`. Default 3.2.
+   */
+  hold?: number
+  /** Seconds a `morphTo` transition takes. Default 2.6 (the legacy constant). */
+  morph?: number
+  /** Easing for `morphTo` transitions: an `eases` name or a custom curve. Default 'cubic'. */
+  ease?: Ease
 }
 
-const MORPH_SECONDS = 2.6
+/** Per-call overrides for ONE `morphTo` transition — the `duration`/`ease` slice of the app's `MorphNowOptions`. */
+export type YuraLayerMorphOptions = Pick<MorphNowOptions, 'duration' | 'ease'>
+
+// Defaults mirror the app's choreography constants (hold 3.2s, morph 2.6s,
+// cubic) — the curves themselves come from the shared `eases` registry.
+const DEFAULT_HOLD_SECONDS = 3.2
+const DEFAULT_MORPH_SECONDS = 2.6
+/** Floor for morph durations — keeps `timer / duration` finite (≈ instant). */
+const MIN_MORPH_SECONDS = 1e-4
 const MAX_DT = 1 / 30
 
-function easeInOutCubic(t: number): number {
-  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+function resolveEase(e: Ease): EaseFn {
+  if (typeof e === 'function') return e
+  const fn = (eases as Record<string, EaseFn | undefined>)[e]
+  if (!fn) {
+    throw new YuraError(
+      CODES.UNKNOWN_EASE,
+      `Unknown ease "${String(e)}". Available: ${Object.keys(eases).join(', ')}.`,
+      `yuraLayer(renderer, camera, { ease: 'expo' })  // or pass any f(0)=0, f(1)=1 function`,
+    )
+  }
+  return fn
+}
+
+/** One computed step of a morph transition (pure math, exported for tests). */
+export interface MorphStep {
+  /** Global morph parameter for the renderer (0 = target A, 1 = target B). */
+  morphT: number
+  /** Transition-energy hump, sin²(πk) — 0 at both endpoints. */
+  boost: number
+  /** True once the transition has reached its destination. */
+  done: boolean
+}
+
+/**
+ * The morph timing used by `YuraThreeLayer.sync()`: `timer` seconds into a
+ * transition `seconds` long, shaped by `ease`, departing from endpoint `pos`
+ * (0 runs the morph parameter 0 → 1, 1 runs it 1 → 0).
+ */
+export function morphStep(timer: number, seconds: number, ease: EaseFn, pos: 0 | 1): MorphStep {
+  const k = Math.min(timer / seconds, 1)
+  const e = ease(k)
+  return {
+    morphT: pos === 0 ? e : 1 - e,
+    boost: Math.sin(Math.PI * k) ** 2,
+    done: k >= 1,
+  }
 }
 
 export class YuraThreeLayer {
@@ -217,6 +272,16 @@ export class YuraThreeLayer {
   private morphTimer = 0
   private morphActive = false
 
+  // Layer-level morph choreography (from YuraLayerOptions) plus the values in
+  // force for the CURRENT transition (per-call morphTo overrides land here).
+  private morphSeconds: number
+  private morphEase: EaseFn
+  private activeMorphSeconds: number
+  private activeMorphEase: EaseFn
+
+  /** The `hold` option (reserved: the layer has no automatic cycle yet). */
+  readonly holdSeconds: number
+
   /** @internal — use yuraLayer(). */
   constructor(
     renderer: WebGPUParticleRenderer | WebGL2ParticleRenderer,
@@ -234,6 +299,12 @@ export class YuraThreeLayer {
     this.count = renderer.count
     this.offset = (opts.position ?? [0, 0, 0]) as Vec3
     this.scale = (opts.radius ?? 6) / YURA_SHAPE_RADIUS
+    this.holdSeconds = opts.hold !== undefined ? Math.max(opts.hold, 0) : DEFAULT_HOLD_SECONDS
+    this.morphSeconds =
+      opts.morph !== undefined ? Math.max(opts.morph, MIN_MORPH_SECONDS) : DEFAULT_MORPH_SECONDS
+    this.morphEase = opts.ease !== undefined ? resolveEase(opts.ease) : eases.cubic
+    this.activeMorphSeconds = this.morphSeconds
+    this.activeMorphEase = this.morphEase
     if (opts.quality === 'high') this.governor.enabled = false
     else if (this.count >= 300_000) this.governor.setLevel(2)
 
@@ -288,8 +359,14 @@ export class YuraThreeLayer {
     return this
   }
 
-  /** Morph the swarm into a new shape (or particle text for a string). */
-  async morphTo(shape: ShapeSpec | string): Promise<this> {
+  /**
+   * Morph the swarm into a new shape (or particle text for a string).
+   * `duration`/`ease` override the layer-level timing for THIS transition
+   * only (the same shape as the app's `morphNow` options); omitted fields
+   * fall back to the `yuraLayer` options, whose defaults reproduce the
+   * historical fixed 2.6s cubic transition exactly.
+   */
+  async morphTo(shape: ShapeSpec | string, opts: YuraLayerMorphOptions = {}): Promise<this> {
     const spec = typeof shape === 'string' ? shapeRegistry.text(shape) : shape
     const data = await Promise.resolve(spec.generate(this.count))
     if (this.disposed) return this
@@ -301,6 +378,9 @@ export class YuraThreeLayer {
     }
     if (this.morphPos === 0) this.renderer.writeTargetB(data)
     else this.renderer.writeTargetA(data)
+    this.activeMorphSeconds =
+      opts.duration !== undefined ? Math.max(opts.duration, MIN_MORPH_SECONDS) : this.morphSeconds
+    this.activeMorphEase = opts.ease !== undefined ? resolveEase(opts.ease) : this.morphEase
     this.morphTimer = 0
     this.morphActive = true
     return this
@@ -323,14 +403,12 @@ export class YuraThreeLayer {
 
     if (this.morphActive) {
       this.morphTimer += dt
-      const k = Math.min(this.morphTimer / MORPH_SECONDS, 1)
-      const e = easeInOutCubic(k)
-      this.renderer.morphT = this.morphPos === 0 ? e : 1 - e
-      this.renderer.morphBoost = Math.sin(Math.PI * k) ** 2
-      if (k >= 1) {
+      const step = morphStep(this.morphTimer, this.activeMorphSeconds, this.activeMorphEase, this.morphPos)
+      this.renderer.morphT = step.morphT
+      this.renderer.morphBoost = step.done ? 0 : step.boost
+      if (step.done) {
         this.morphPos = this.morphPos === 0 ? 1 : 0
         this.morphActive = false
-        this.renderer.morphBoost = 0
       }
     }
 

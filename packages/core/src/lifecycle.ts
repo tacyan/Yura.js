@@ -5,8 +5,15 @@ export function prefersReducedMotion(): boolean {
 /**
  * Calls back with `false` when the tab is hidden OR the element scrolls
  * offscreen, `true` when both are visible again. Returns a cleanup function.
+ *
+ * The current state is emitted synchronously on subscription, so a tab that
+ * starts out hidden is reported immediately (without IntersectionObserver
+ * nothing else would fire until the first visibilitychange). In non-DOM
+ * environments (no `document`) this is a no-op and returns a no-op disposer.
  */
 export function watchVisibility(el: Element, cb: (visible: boolean) => void): () => void {
+  if (typeof document === 'undefined') return () => {}
+
   let tabVisible = document.visibilityState !== 'hidden'
   let inViewport = true
 
@@ -28,6 +35,9 @@ export function watchVisibility(el: Element, cb: (visible: boolean) => void): ()
     })
     io.observe(el)
   }
+
+  // Initial synchronous emit so subscribers learn the starting state.
+  emit()
 
   return () => {
     document.removeEventListener('visibilitychange', onVisibility)

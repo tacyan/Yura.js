@@ -139,3 +139,160 @@ test('composeSwarmCamera passes fovY and sizeScale through for WebGL sizing', ()
   expect(cam.sizeScale!).toBeCloseTo(0.4, 6)
   expect(YURA_SHAPE_RADIUS).toBe(11)
 })
+
+// ---------------------------------------------------------------------------
+// Morph timing options (hold / morph / ease), shared with the app's `eases`
+// registry. The layer itself runs DOM-free here: stub ResizeObserver, fake
+// renderer/host/canvas, and a deterministic performance.now clock.
+// ---------------------------------------------------------------------------
+
+import { YuraThreeLayer, morphStep, type YuraLayerOptions } from '../src/three'
+import { eases, type Ease } from '../src/app'
+
+const g = globalThis as unknown as { ResizeObserver?: unknown }
+if (!g.ResizeObserver) {
+  g.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  }
+}
+
+type LayerRenderer = ConstructorParameters<typeof YuraThreeLayer>[0]
+
+class FakeRenderer {
+  count = 1000
+  morphT = 0
+  morphBoost = 0
+  externalCamera: unknown = null
+  wroteA = 0
+  wroteB = 0
+  resize(): void {}
+  writeTargetA(): void {
+    this.wroteA++
+  }
+  writeTargetB(): void {
+    this.wroteB++
+  }
+  frame(): void {}
+  dispose(): void {}
+}
+
+const flatSpec = () => ({
+  kind: 'test',
+  generate: (n: number) => new Float32Array(n * 4),
+})
+
+function makeLayer(opts: YuraLayerOptions = {}): { layer: YuraThreeLayer; renderer: FakeRenderer } {
+  const renderer = new FakeRenderer()
+  const host = { clientWidth: 640, clientHeight: 360, offsetLeft: 0, offsetTop: 0 }
+  const camera = {
+    projectionMatrix: { elements: glPerspective(Math.PI / 3, 16 / 9, 0.1, 200) },
+    matrixWorldInverse: { elements: lookAt([0, 0, 20], [0, 0, 0], [0, 1, 0]) },
+  }
+  const layer = new YuraThreeLayer(
+    renderer as unknown as LayerRenderer,
+    'webgpu',
+    { style: {} } as unknown as HTMLCanvasElement,
+    host as unknown as HTMLCanvasElement,
+    camera,
+    opts,
+  )
+  return { layer, renderer }
+}
+
+/** Run `fn` under a controllable performance.now (milliseconds). */
+async function withClock(fn: (set: (ms: number) => void) => Promise<void>): Promise<void> {
+  const own = Object.getOwnPropertyDescriptor(performance, 'now')
+  let t = 0
+  Object.defineProperty(performance, 'now', { configurable: true, value: () => t })
+  try {
+    await fn((ms) => {
+      t = ms
+    })
+  } finally {
+    if (own) Object.defineProperty(performance, 'now', own)
+    else delete (performance as unknown as { now?: unknown }).now
+  }
+}
+
+// sync()'s very first frame uses a fixed 16.6ms dt; later frames cap at 1/30s.
+const DT0 = 16.6 / 1000
+const DT_CAP = 1 / 30
+
+test('morphStep reproduces the legacy fixed transition and runs both directions', () => {
+  const half = morphStep(1.3, 2.6, eases.cubic, 0)
+  expect(half.morphT).toBeCloseTo(eases.cubic(0.5), 6)
+  expect(half.boost).toBeCloseTo(1, 6)
+  expect(half.done).toBe(false)
+  // Departing endpoint 1 runs the same clock 1 -> 0.
+  expect(morphStep(1.3, 2.6, eases.cubic, 1).morphT).toBeCloseTo(1 - eases.cubic(0.5), 6)
+  const end = morphStep(2.6, 2.6, eases.cubic, 0)
+  expect(end.morphT).toBe(1)
+  expect(end.done).toBe(true)
+})
+
+test('yuraLayer defaults are unchanged: 2.6s cubic morphs, hold 3.2s', async () => {
+  await withClock(async (set) => {
+    const { layer, renderer } = makeLayer()
+    expect(layer.holdSeconds).toBe(3.2)
+    expect(makeLayer({ hold: 5 }).layer.holdSeconds).toBe(5)
+    await layer.morphTo(flatSpec())
+    expect(renderer.wroteB).toBe(1)
+    set(0)
+    layer.sync()
+    expect(renderer.morphT).toBeGreaterThan(0)
+    expect(renderer.morphT).toBeCloseTo(eases.cubic(DT0 / 2.6), 6)
+  })
+})
+
+test('layer-level morph/ease options drive morphTo transitions', async () => {
+  await withClock(async (set) => {
+    const { layer, renderer } = makeLayer({ morph: 0.1, ease: 'linear' })
+    await layer.morphTo(flatSpec())
+    set(0)
+    layer.sync()
+    expect(renderer.morphT).toBeCloseTo(DT0 / 0.1, 4)
+    expect(renderer.morphBoost).toBeGreaterThan(0)
+    set(100)
+    layer.sync()
+    expect(renderer.morphT).toBeCloseTo((DT0 + DT_CAP) / 0.1, 4)
+    set(200)
+    layer.sync()
+    expect(renderer.morphT).toBeCloseTo((DT0 + 2 * DT_CAP) / 0.1, 4)
+    set(300)
+    layer.sync()
+    expect(renderer.morphT).toBe(1)
+    expect(renderer.morphBoost).toBe(0)
+  })
+})
+
+test('morphTo duration/ease override applies to that transition only', async () => {
+  await withClock(async (set) => {
+    const { layer, renderer } = makeLayer({ morph: 0.1, ease: 'linear' })
+    await layer.morphTo(flatSpec(), { duration: 0.05, ease: (t) => t * t })
+    set(0)
+    layer.sync()
+    expect(renderer.morphT).toBeCloseTo((DT0 / 0.05) ** 2, 4)
+    set(100)
+    layer.sync()
+    expect(renderer.morphT).toBeCloseTo(((DT0 + DT_CAP) / 0.05) ** 2, 4)
+    set(200)
+    layer.sync()
+    expect(renderer.morphT).toBe(1)
+    // The next morphTo reverts to the layer-level 0.1s linear, running 1 -> 0.
+    await layer.morphTo(flatSpec())
+    expect(renderer.wroteA).toBe(1)
+    set(300)
+    layer.sync()
+    expect(renderer.morphT).toBeCloseTo(1 - DT_CAP / 0.1, 4)
+  })
+})
+
+test('unknown ease names are rejected with the available names', async () => {
+  expect(() => makeLayer({ ease: 'bogus' as unknown as Ease })).toThrow(/Unknown ease "bogus"/)
+  const { layer } = makeLayer()
+  await expect(layer.morphTo(flatSpec(), { ease: 'nope' as unknown as Ease })).rejects.toThrow(
+    /cubic/,
+  )
+})

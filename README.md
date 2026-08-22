@@ -108,6 +108,15 @@ What you get for free:
 - **Shadows** — shadow-mapped meshes plus automatic ground blob shadows.
 - **Particle FX one-liners** — `scene.burst(pos)`, `obj.trail()`,
   `scene.celebrate()` render through the same GPU pipeline as everything else.
+  Bursts take direction when you want more than a pop:
+
+  ```ts
+  scene.burst(player.position, {
+    direction: [0, 1, 0], spread: Math.PI / 6,   // cone (30° half-angle) instead of a full sphere
+    shape: 'disc', radius: 0.8,                  // spawn volume: 'sphere' | 'disc' | 'box'
+    colorEnd: '#7c3aed', drag: 2,                // fade to violet over life; air drag
+  })
+  ```
 - **Zero assets** — seven procedural shapes (`sphere`, `box`, `torus`,
   `knot`, `cylinder`, `plane`, `disc`) and curated PBR materials
   (`chrome`, `gold`, `obsidian`, `checker`, `materials.neon(hex)`, …).
@@ -174,6 +183,13 @@ lyrics(app, [
 })
 ```
 
+No timestamps yet? Bare strings are sugar for `{ text }` and auto-time
+themselves, one line every `every` seconds:
+
+```ts
+lyrics(app, ['君の声が', '粒子のなかで', 'また君に出会う'], { every: 3.4 })
+```
+
 How the char-by-char sweep works: text shapes assign each grapheme a
 contiguous band of the palette/delay coordinate in reading order, and
 `app.morphNow(shape, { sweep, direction })` staggers per-particle morph
@@ -183,6 +199,19 @@ letters land one after another, and the color gradient follows the same
 ordering. Graphemes are segmented with `Intl.Segmenter('ja')` when
 available (Japanese-first: CJK, combining marks, and compound emoji stay
 whole), with a surrogate-pair-safe fallback elsewhere.
+
+The choreography itself is tunable: `.motion()` retimes the automatic shape
+cycle app-wide, `morphNow` overrides per call, and `ease` takes a name from
+the `eases` registry (`cubic`, `expo`, `back`, `smooth`, `linear`) or any
+custom `f(0)=0, f(1)=1` function:
+
+```ts
+app.motion({ hold: 2.2, morph: 1.4, ease: 'expo' })   // automatic shape cycle
+app.morphNow(shapes.helix({ turns: 5 }), { duration: 0.8, ease: 'back' })
+```
+
+(`shapes.box()`, `shapes.cone()`, and `shapes.helix()` are morph targets too,
+next to `galaxy`, `sphere`, `ring`, `vortex`, `flow`, `text`, and `image`.)
 
 Per line you can override `sweep`, `direction`, or substitute any
 `ShapeSpec` instead of text; the run handle has `stop()` and `seek(t)`.
@@ -195,14 +224,15 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 
 | Surface | Highlights |
 | --- | --- |
-| `yura(sel)` | `.preset()` `.look()` `.model(url)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD', { sweep, direction })` |
+| `yura(sel)` | `.preset()` `.look()` `.motion({ hold, morph, ease })` `.model(url)` `.interactive()` `.run()`, runtime `app.morphNow('ANY WORD', { sweep, direction, duration, ease })`, `app.onStats(cb)`, `app.frames(n)` |
 | `app.scene(opts)` | `add(shape, opts)`, `onUpdate(cb)`, `camera.follow/orbit`, `text()`, `each(tag, cb)`, `count(tag)`, `burst/trail/celebrate`, `input` (keyboard + touch + gamepad) |
 | `SceneObject` | `position` `velocity` `spin`, `body: 'dynamic'`, `solid`, `tag`, `grounded`, `onCollide()`, `trail()`, `remove()` |
 | `yuraLayer(renderer, camera, opts)` | `attach(obj)`, `at(x, y, z)`, `setRadius(r)`, `morphTo(textOrShape)`, `sync()`, `stats`, `dispose()` |
-| `lyrics(app, lines, opts)` | timed lines → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop`, per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
+| `lyrics(app, lines, opts)` | timed lines (or bare strings auto-timed `every` seconds apart) → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop`, per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
 | `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, `volume`, `mute()`; context created lazily on first user gesture |
-| `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
-| `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` |
+| `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `box` `cone` `helix` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
+| `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` — each takes `Partial<LookParams>` overrides, e.g. `neon({ blendMode: 'alpha', toneMapping: 'reinhard' })` |
+| `eases` | named morph curves `cubic` `expo` `back` `smooth` `linear` for `.motion({ ease })` / `morphNow({ ease })`; any `f(0)=0, f(1)=1` function is also accepted |
 | `materials` | `matte` `plastic` `metal` `neon(hex)` + named presets (`chrome`, `gold`, `obsidian`, `checker`, …) |
 
 ## What works today (v0.1 prototype)
@@ -222,6 +252,13 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 - **HDR pipeline** — rgba16float scene target, light trails, threshold
   bloom, anamorphic streaks, chromatic aberration, ACES tonemapping,
   vignette, film grain; procedural nebula + starfield backdrop, zero assets.
+  Particle blending and tone mapping are look params, so every look preset
+  accepts them as overrides:
+
+  ```ts
+  app.look(looks.neon({ blendMode: 'alpha', toneMapping: 'reinhard' }))
+  // blendMode: 'additive' | 'alpha' | 'screen' · toneMapping: 'aces' | 'reinhard' | 'linear'
+  ```
 - **Interaction** — hover repels particles; click detonates a shockwave.
 - **glTF 2.0 / PBR** — `.model('/file.glb')` loads GLB and renders
   Cook-Torrance GGX with IBL from a procedural studio environment (no LUT,
@@ -233,6 +270,11 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   thresholds and hitch rejection so a GC pause never costs you quality.
   Surviving particles are intensity-compensated so governed frames keep the
   same light on screen.
+- **Stats HUD one-liner** — `app.onStats((_, text) => { hud.textContent = text })`
+  calls back every 500 ms with live `YuraStats` plus the preformatted
+  `formatStats` string; `app.frames(120)` returns recent frame times in ms
+  for a sparkline. `onStats` returns a stop function, and every subscription
+  ends on `dispose()`.
 - **Web-native behavior** — `prefers-reduced-motion` renders a settled
   static frame; the loop pauses offscreen and on hidden tabs; device-lost
   recovers; every failure is a stable `YURA-xxx` error code with a fix

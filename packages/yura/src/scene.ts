@@ -1,4 +1,4 @@
-import { trsToMat4, eulerToQuat, warnCode, YuraError, type Vec3, type Vec4 } from '@yura/core'
+import { CODES, trsToMat4, eulerToQuat, warnCode, YuraError, type Vec3, type Vec4 } from '@yura/core'
 import {
   meshes,
   type MeshGeometry,
@@ -23,13 +23,6 @@ import {
 
 export const SHAPE_NAMES = ['sphere', 'box', 'torus', 'knot', 'cylinder', 'plane', 'disc'] as const
 export type ShapeName = (typeof SHAPE_NAMES)[number]
-
-/**
- * Scene-layer codes continue the YURA-xxx registry in @yura/core (CODES).
- * YURA-012 is taken by INVALID_COLOR in core/src/math.ts.
- */
-const CODE_UNKNOWN_SHAPE = 'YURA-013'
-const CODE_GROUND_REPLACED = 'YURA-014'
 
 /** Seconds a Space tap stays buffered waiting for a landing (jump buffer). */
 const JUMP_BUFFER = 0.15
@@ -766,7 +759,7 @@ export class YuraScene {
     if (shape === 'plane') {
       if (this.groundY !== null) {
         warnCode(
-          CODE_GROUND_REPLACED,
+          CODES.GROUND_REPLACED,
           `add('plane') called again: the ground height moves from y=${this.groundY} to y=${obj.position[1]}. ` +
             `The earlier plane keeps rendering but no longer acts as the ground.`,
         )
@@ -1240,7 +1233,7 @@ function buildShape(
       // TS makes this unreachable, but plain-JS callers can pass any string
       // and would otherwise die on `Cannot destructure` at the call site.
       throw new YuraError(
-        CODE_UNKNOWN_SHAPE,
+        CODES.UNKNOWN_SHAPE,
         `Unknown shape "${String(shape)}". Available: ${SHAPE_NAMES.join(', ')}.`,
         `scene.add('sphere', { radius: 0.5 })`,
       )

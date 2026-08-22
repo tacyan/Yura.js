@@ -88,7 +88,7 @@ function resolveEase(e: Ease): EaseFn {
   const fn = (eases as Record<string, EaseFn | undefined>)[e]
   if (!fn) {
     throw new YuraError(
-      'YURA-015',
+      CODES.UNKNOWN_EASE,
       `Unknown ease "${String(e)}". Available: ${Object.keys(eases).join(', ')}.`,
       `app.motion({ ease: 'expo' })  // or pass any f(0)=0, f(1)=1 function`,
     )

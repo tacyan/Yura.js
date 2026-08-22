@@ -140,3 +140,9 @@ test('governor setLevel(NaN) resolves to level 0', () => {
   expect(g.level).toBe(0)
   expect(g.current()).toEqual(DEFAULT_LEVELS[0])
 })
+
+test('CODES registry has no duplicate code values', async () => {
+  const { CODES } = await import('../src/errors')
+  const values = Object.values(CODES)
+  expect(new Set(values).size).toBe(values.length)
+})

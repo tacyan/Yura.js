@@ -66,7 +66,7 @@ precision highp float;
 layout(location = 0) in vec4 aPos;
 layout(location = 1) in vec4 aVel;
 uniform mat4 uViewProj;
-uniform float uSizePx, uIntensity, uSpeedColorMix, uTime, uTwinkle;
+uniform float uSizePx, uIntensity, uSpeedColorMix, uTime, uTwinkle, uMaxPointSize;
 uniform vec3 uColorA, uColorB, uColorHot;
 out vec3 vCol;
 
@@ -81,7 +81,10 @@ void main() {
   col = mix(col, uColorHot, speedMix * 0.85);
   col *= 1.0 + uTwinkle * 0.45 * sin(uTime * (2.0 + 4.0 * h2) + h2 * 40.0);
   if (h2 > 0.995) { size *= 3.0; col *= 2.6; }
-  gl_PointSize = clamp(size / max(gl_Position.w, 0.1), 1.0, 64.0);
+  // Upper clamp is the device's ALIASED_POINT_SIZE_RANGE[1] (wired by the
+  // renderer as uMaxPointSize) so close-up particles keep growing like the
+  // WebGPU billboards. Lower bound stays 1px to avoid sub-pixel vanishing.
+  gl_PointSize = clamp(size / max(gl_Position.w, 0.1), 1.0, uMaxPointSize);
   vCol = col * uIntensity;
 }
 `

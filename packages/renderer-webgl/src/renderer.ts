@@ -145,6 +145,10 @@ export class WebGL2ParticleRenderer {
   private resources = createResourceTracker()
   /** Stored so dispose() can removeEventListener the contextlost handler. */
   private contextLostHandler: ((e: Event) => void) | null = null
+  /** Upper gl_PointSize clamp (uMaxPointSize): the device's
+   * ALIASED_POINT_SIZE_RANGE[1], queried once at init; 64 (the historic
+   * hardcoded cap) if the query yields nothing usable. */
+  private maxPointSize: number
 
   private constructor(canvas: HTMLCanvasElement, gl: WebGL2RenderingContext, opts: RendererOptions) {
     this.canvas = canvas
@@ -155,6 +159,14 @@ export class WebGL2ParticleRenderer {
     this.colorA = opts.colorA
     this.colorB = opts.colorB
     this.appliedToneMapping = resolveToneMapping(opts.look.toneMapping)
+    // One-time device query: the largest point size the hardware rasterizes
+    // (>= 1024 on most GPUs). Drives the uMaxPointSize clamp in RENDER_VS.
+    const sizeRange = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE) as
+      | Float32Array
+      | number[]
+      | null
+    const deviceMax = sizeRange?.[1]
+    this.maxPointSize = typeof deviceMax === 'number' && Number.isFinite(deviceMax) && deviceMax >= 1 ? deviceMax : 64
     const buf = () => this.resources.track(gl.createBuffer()!, (b) => gl.deleteBuffer(b))
     const vao = () => this.resources.track(gl.createVertexArray()!, (v) => gl.deleteVertexArray(v))
     this.posBuf = [buf(), buf()]
@@ -510,6 +522,7 @@ void main() { o = vec4(0.0); }
     const sizePx =
       ((this.look.particleSize * (ext?.sizeScale ?? 1)) * this.height) / (2 * Math.tan(fovY / 2))
     gl.uniform1f(ru('uSizePx'), sizePx)
+    gl.uniform1f(ru('uMaxPointSize'), this.maxPointSize)
     gl.uniform1f(ru('uIntensity'), this.look.intensity * trailComp * countComp * damp)
     gl.uniform1f(ru('uSpeedColorMix'), this.motion.speedColorMix)
     gl.uniform1f(ru('uTime'), time)

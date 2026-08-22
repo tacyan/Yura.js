@@ -120,8 +120,8 @@ test('watchVisibility emits on tab visibility and viewport changes', () => {
     const calls: boolean[] = []
     const dispose = watchVisibility(el, (v) => calls.push(v))
     try {
-      // no initial emission; observer is registered on the element
-      expect(calls).toEqual([])
+      // the initial state is emitted synchronously; observer is registered on the element
+      expect(calls).toEqual([true])
       expect(doc.addCalls).toBe(1)
       expect(doc.listenerCount('visibilitychange')).toBe(1)
       const io = FakeIntersectionObserver.instances[0]
@@ -133,18 +133,18 @@ test('watchVisibility emits on tab visibility and viewport changes', () => {
       doc.fire('visibilitychange')
       doc.visibilityState = 'visible'
       doc.fire('visibilitychange')
-      expect(calls).toEqual([false, true])
+      expect(calls).toEqual([true, false, true])
 
       // leaves viewport -> false, re-enters -> true
       io.cb([{ isIntersecting: false }])
       io.cb([{ isIntersecting: true }])
-      expect(calls).toEqual([false, true, false, true])
+      expect(calls).toEqual([true, false, true, false, true])
 
       // hidden tab wins even while the element is in the viewport
       doc.visibilityState = 'hidden'
       doc.fire('visibilitychange')
       io.cb([{ isIntersecting: true }])
-      expect(calls).toEqual([false, true, false, true, false, false])
+      expect(calls).toEqual([true, false, true, false, true, false, false])
     } finally {
       dispose()
     }
@@ -166,10 +166,10 @@ test('watchVisibility disposer removes every listener and disconnects the observ
     const io = FakeIntersectionObserver.instances[0]
     expect(io.disconnectCalls).toBe(1)
 
-    // firing after dispose reaches no listener
+    // firing after dispose reaches no listener (only the initial emit remains)
     doc.visibilityState = 'hidden'
     doc.fire('visibilitychange')
-    expect(calls).toEqual([])
+    expect(calls).toEqual([true])
 
     // disposing twice stays balanced overall (each remove matched a listener list no-op)
     dispose()
@@ -188,14 +188,46 @@ test('watchVisibility works without IntersectionObserver (visibility only)', () 
     const dispose = watchVisibility({} as Element, (v) => calls.push(v))
     try {
       expect(FakeIntersectionObserver.instances).toEqual([])
+      // hidden-at-start is reported immediately, not only on the first event
+      expect(calls).toEqual([false])
       doc.visibilityState = 'visible'
       doc.fire('visibilitychange')
-      expect(calls).toEqual([true])
+      expect(calls).toEqual([false, true])
     } finally {
       dispose()
     }
     expect(doc.removeCalls).toBe(doc.addCalls)
     expect(doc.listenerCount('visibilitychange')).toBe(0)
+  } finally {
+    restore()
+  }
+})
+
+test('watchVisibility emits the initial hidden state synchronously with IntersectionObserver present', () => {
+  const doc = makeFakeDocument('hidden')
+  const restore = installDomFakes(doc, true)
+  try {
+    const calls: boolean[] = []
+    const dispose = watchVisibility({} as Element, (v) => calls.push(v))
+    try {
+      expect(calls).toEqual([false])
+    } finally {
+      dispose()
+    }
+  } finally {
+    restore()
+  }
+})
+
+test('watchVisibility is a no-op in non-DOM environments (no document)', () => {
+  const restore = installDomFakes(undefined, false)
+  try {
+    expect(typeof document).toBe('undefined')
+    const calls: boolean[] = []
+    const dispose = watchVisibility({} as Element, (v) => calls.push(v))
+    expect(calls).toEqual([])
+    expect(FakeIntersectionObserver.instances).toEqual([])
+    expect(() => dispose()).not.toThrow()
   } finally {
     restore()
   }

@@ -1,4 +1,4 @@
-import { warnCode } from './errors'
+import { CODES, warnCode } from './errors'
 
 export type Vec3 = [number, number, number]
 export type Vec4 = [number, number, number, number]
@@ -178,9 +178,6 @@ export function transformPoint(m: Float32Array, p: Vec3): Vec3 {
   ]
 }
 
-// Local to math.ts: errors.ts owns CODES, but color parsing warns from here.
-const INVALID_COLOR = 'YURA-012'
-
 /**
  * sRGB hex ("#8b5cf6") to linear RGB, for HDR-correct colors.
  *
@@ -198,7 +195,7 @@ export function hexToLinear(hex: string): Vec3 {
     full = h.slice(0, 6)
   } else {
     warnCode(
-      INVALID_COLOR,
+      CODES.INVALID_COLOR,
       `Unsupported color "${hex}". Use "#rgb", "#rrggbb", or "#rrggbbaa". Falling back to white.`,
     )
     return [1, 1, 1]
