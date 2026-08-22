@@ -14,6 +14,7 @@ import type { LookParams, MotionParams, RendererOptions, ExternalCamera } from '
 // only re-exports renderer types.
 import {
   GL_FUNC_ADD,
+  computeFrameComp,
   glBlendSpec,
   resolveToneMapping,
   type ToneMapping,
@@ -484,14 +485,16 @@ void main() { o = vec4(0.0); }
     this.cur = next
 
     // --- Trail fade + particles into the HDR accumulation buffer ---
-    const trail = Math.max(this.look.trail, 0)
-    const fadeAlpha = trail > 0.02 ? 1 - Math.exp(-dt / trail) : 1
-    const trailComp = trail > 0.02 ? Math.min(Math.max(fadeAlpha * 1.4, 0.06), 1) : 1
-    // Match the WebGPU renderer: brighten survivors when the governor sheds
-    // particles so low quality levels don't fade to black.
-    const countComp = Math.min(Math.pow(this.count / n, 0.7), 4)
-    // Text-readability damping (1 = bit-exact neutral, see field docs).
-    const damp = Math.min(Math.max(this.textDamp, 0), 1)
+    // Exposure/trail compensation — the exact same computeFrameComp the
+    // WebGPU backend calls (shared via @yura/renderer-webgpu look-math),
+    // so the two backends can never drift apart visually.
+    const { fadeAlpha, trailComp, countComp, damp } = computeFrameComp({
+      trail: this.look.trail,
+      dt,
+      count: this.count,
+      activeCount: n,
+      textDamp: this.textDamp,
+    })
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdrFBO)
     gl.viewport(0, 0, this.width, this.height)

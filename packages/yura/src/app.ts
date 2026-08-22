@@ -1,6 +1,7 @@
 import {
   YuraError,
   CODES,
+  warnCode,
   hexToLinear,
   acquireWebGPU,
   prefersReducedMotion,
@@ -45,6 +46,16 @@ const MAX_DT = 1 / 30
 
 /** Floor for morph durations — keeps `timer / duration` finite (≈ instant). */
 const MIN_MORPH_SECONDS = 1e-4
+
+/**
+ * Warn code emitted when scene() replaces a live scene. Numbered in the CODES
+ * sequence (next free slot after UNKNOWN_EASE = YURA-015) but defined here
+ * Registered in CODES (@yura/core) as SCENE_REPLACED.
+ */
+export const SCENE_REPLACED_CODE = CODES.SCENE_REPLACED
+
+/** Setup callback for {@link YuraApp.game}: receives the fresh scene; may be async. */
+export type GameSetup = (scene: YuraScene) => void | Promise<void>
 
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
@@ -594,10 +605,48 @@ export class YuraApp {
   /**
    * Procedural 3D scene + game kit: primitives, PBR materials, physics-lite,
    * input, follow camera, HUD text. No assets required.
+   *
+   * Calling scene() again replaces the live scene: the previous scene is
+   * detached first — its registered cleanups run and its GPU handles are
+   * reset — so nothing from the old game silently keeps running or leaking.
    */
   scene(opts: SceneOptions = {}): YuraScene {
+    if (this.sceneObj) {
+      warnCode(
+        SCENE_REPLACED_CODE,
+        `scene() called again: the previous scene was detached (listeners removed, GPU handles reset). ` +
+          `It stops receiving updates — call run() to start the new scene.`,
+      )
+      this.cleanups = drainCleanups(this.cleanups)
+      resetSceneHandles(this.sceneObj)
+    }
     this.sceneObj = new YuraScene(opts)
     return this.sceneObj
+  }
+
+  /**
+   * The shortest path from zero to a running game:
+   * `scene(opts)` → `setup(scene)` (sync or async) → `run()`, in one call.
+   *
+   *   yura('#game').game({ gravity: -20 }, (s) => {
+   *     const hero = s.add('sphere', { radius: 0.5, body: 'dynamic' })
+   *     s.camera.follow(hero)
+   *   })
+   *
+   * Resolves with the scene once run() has started the loop.
+   */
+  game(setup?: GameSetup): Promise<YuraScene>
+  game(opts: SceneOptions, setup?: GameSetup): Promise<YuraScene>
+  async game(
+    optsOrSetup: SceneOptions | GameSetup = {},
+    maybeSetup?: GameSetup,
+  ): Promise<YuraScene> {
+    const setup = typeof optsOrSetup === 'function' ? optsOrSetup : maybeSetup
+    const opts = typeof optsOrSetup === 'function' ? {} : optsOrSetup
+    const scene = this.scene(opts)
+    if (setup) await setup(scene)
+    await this.run()
+    return scene
   }
 
   gradient(a: string, b: string): this {

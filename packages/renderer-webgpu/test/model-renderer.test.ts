@@ -2,6 +2,7 @@ import { test, expect } from 'bun:test'
 import { ortho, lookAt, multiply, transform4, type Vec3 } from '@yura/core'
 import { WebGPUModelRenderer, computeLightViewProj } from '../src/model-renderer'
 import type { SceneMaterial } from '../src/model-renderer'
+import { POST_WGSL } from '../src/shaders'
 import type { LookParams } from '../src/renderer'
 import type { MeshGeometry } from '../src/meshes'
 
@@ -20,8 +21,10 @@ class FakeBuffer {
 
 class FakeTexture {
   destroyed = false
+  views = 0
   constructor(public desc: unknown) {}
   createView(): object {
+    this.views++
     return {}
   }
   destroy(): void {
@@ -54,14 +57,22 @@ installWebGPUGlobals()
 function makeFakeGPU() {
   const buffers: FakeBuffer[] = []
   const textures: FakeTexture[] = []
+  const shaderModules: { label?: string; code: string }[] = []
+  const pipelines: { label?: string }[] = []
   const pass = {
     setPipeline() {}, setBindGroup() {}, setVertexBuffer() {}, setIndexBuffer() {},
     draw() {}, drawIndexed() {}, end() {},
   }
   const device = {
     destroyed: false,
-    createShaderModule: () => ({}),
-    createRenderPipeline: () => ({ getBindGroupLayout: () => ({}) }),
+    createShaderModule: (desc: { label?: string; code: string }) => {
+      shaderModules.push(desc)
+      return {}
+    },
+    createRenderPipeline: (desc: { label?: string }) => {
+      pipelines.push(desc)
+      return { getBindGroupLayout: () => ({}) }
+    },
     createTexture: (desc: unknown) => {
       const t = new FakeTexture(desc)
       textures.push(t)
@@ -94,7 +105,7 @@ function makeFakeGPU() {
     height: 0,
     getContext: (kind: string) => (kind === 'webgpu' ? context : null),
   }
-  return { device, context, canvas, buffers, textures }
+  return { device, context, canvas, buffers, textures, shaderModules, pipelines }
 }
 
 const LOOK: LookParams = {
@@ -167,6 +178,72 @@ test('mesh remove() destroys its buffers immediately; dispose is idempotent', as
   r.dispose()
   r.dispose() // second dispose is a no-op
   expect(buffers.every((b) => b.destroyed)).toBe(true)
+})
+
+// ---------------------------------------------------------------------------
+// toneMapping: default is byte-identical to the historic shader; switching
+// modes rebuilds the composite pipeline exactly once.
+// ---------------------------------------------------------------------------
+
+test('default toneMapping compiles the exact historic post shader', async () => {
+  const { shaderModules } = await makeRenderer()
+  const post = shaderModules.filter((m) => m.label === 'yura-model-post')
+  expect(post.length).toBe(1)
+  expect(post[0]!.code).toBe(POST_WGSL)
+})
+
+test('toneMapping switch rebuilds the composite pipeline exactly once', async () => {
+  const { r, pipelines, shaderModules } = await makeRenderer()
+  r.addMesh(triangleGeo(), PBR_MAT, { shadow: true })
+  r.resize(64, 64)
+  const pipesBefore = pipelines.length
+  const modulesBefore = shaderModules.length
+
+  // Default ('aces') frames never rebuild anything.
+  r.frame(1 / 60, 0)
+  r.frame(1 / 60, 1 / 60)
+  expect(pipelines.length).toBe(pipesBefore)
+  expect(shaderModules.length).toBe(modulesBefore)
+
+  // Switching the mode rebuilds the post module + composite pipeline once.
+  r.look = { ...LOOK, toneMapping: 'reinhard' }
+  r.frame(1 / 60, 2 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 1)
+  expect(pipelines[pipelines.length - 1]!.label).toBe('yura-model-compositeFS')
+  expect(shaderModules.length).toBe(modulesBefore + 1)
+
+  // Further frames with the same mode do not rebuild again.
+  r.frame(1 / 60, 3 / 60)
+  r.frame(1 / 60, 4 / 60)
+  expect(pipelines.length).toBe(pipesBefore + 1)
+  expect(shaderModules.length).toBe(modulesBefore + 1)
+})
+
+// ---------------------------------------------------------------------------
+// ViewCache: steady-state frames must not call createView() on any
+// renderer-owned texture; resize invalidates and re-caches.
+// ---------------------------------------------------------------------------
+
+test('steady-state frames reuse cached texture views (no per-frame createView)', async () => {
+  const { r, textures } = await makeRenderer()
+  r.addMesh(triangleGeo(), PBR_MAT, { shadow: true })
+  r.resize(64, 64)
+
+  // First frame warms the cache (shadow/depth/bloomC views created lazily).
+  r.frame(1 / 60, 0)
+  const warm = textures.map((t) => t.views)
+
+  r.frame(1 / 60, 1 / 60)
+  r.frame(1 / 60, 2 / 60)
+  expect(textures.map((t) => t.views)).toEqual(warm)
+
+  // Recreating render targets invalidates the cache; the next steady state
+  // again stops calling createView().
+  r.resize(32, 32)
+  r.frame(1 / 60, 3 / 60)
+  const rewarmed = textures.map((t) => t.views)
+  r.frame(1 / 60, 4 / 60)
+  expect(textures.map((t) => t.views)).toEqual(rewarmed)
 })
 
 // ---------------------------------------------------------------------------

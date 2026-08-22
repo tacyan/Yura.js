@@ -4,6 +4,7 @@ import {
   YuraScene,
   SHAPE_NAMES,
   type ShapeName,
+  type AddOptions,
   SceneInput,
   rollDelta,
   cameraFollowGoal,
@@ -789,4 +790,63 @@ test("a second add('plane') warns with YURA-014 but still moves the ground", () 
   const ball = scene.add('sphere', { radius: 0.5, position: [0, 6, 0], body: 'dynamic' })
   for (let i = 0; i < 600; i++) scene.step(1 / 60, i / 60)
   expect(ball.position[1]).toBeCloseTo(2.5, 1)
+})
+
+// --- Mesh-asset shape vocabulary --------------------------------------------
+// The renderer's mesh assets (torusMesh/torusKnotMesh/cylinderMesh/discMesh)
+// are exposed through scene.add as torus/knot/cylinder/disc. Each case pins
+// the option style and the collision-radius approximation buildShape assigns.
+
+const MESH_ASSET_SHAPES: ShapeName[] = ['torus', 'knot', 'cylinder', 'disc']
+
+const MESH_ASSET_CASES: Array<{ shape: ShapeName; opts?: AddOptions; radius: number; note: string }> = [
+  { shape: 'torus', radius: 1.2, note: 'default ring radius 1 → bound r*1.2' },
+  { shape: 'torus', opts: { radius: 2 }, radius: 2.4, note: 'radius option scales the bound' },
+  { shape: 'knot', radius: 1.3, note: 'default radius 1 → bound r*1.3' },
+  { shape: 'knot', opts: { radius: 2 }, radius: 2.6, note: 'radius option scales the bound' },
+  { shape: 'disc', radius: 1, note: 'default radius 1 → collision radius = visual radius' },
+  { shape: 'disc', opts: { radius: 2 }, radius: 2, note: 'radius option is the collision radius' },
+  { shape: 'cylinder', opts: { size: [1.1, 2.6, 1.1] }, radius: 0.55, note: 'size → radial radius s3[0]/2' },
+]
+
+for (const { shape, opts, radius, note } of MESH_ASSET_CASES) {
+  test(`add('${shape}'${opts ? ', ' + JSON.stringify(opts) : ''}) builds geometry with radius ${radius} (${note})`, () => {
+    const scene = new YuraScene({})
+    const obj = scene.add(shape, opts)
+    // Real geometry came back from the renderer's mesh asset.
+    expect(obj.geo.positions.length).toBeGreaterThan(0)
+    expect(obj.geo.indices.length).toBeGreaterThan(0)
+    expect(obj.geo.normals.length).toBe(obj.geo.positions.length)
+    // Collision radius follows the documented approximation…
+    expect(obj.radius).toBeCloseTo(radius, 5)
+    // …and hitRadius defaults to it, like every other shape.
+    expect(obj.hitRadius).toBeCloseTo(radius, 5)
+  })
+}
+
+test('cylinder keeps its band collider; the other mesh-asset shapes stay spheres', () => {
+  const scene = new YuraScene({})
+  const pillar = scene.add('cylinder', { size: [1.1, 2.6, 1.1] })
+  expect(pillar.collider).toBe('cylinder')
+  expect(pillar.halfHeight).toBeCloseTo(1.3, 5) // s3[1]/2
+  for (const shape of ['torus', 'knot', 'disc'] as ShapeName[]) {
+    const obj = scene.add(shape)
+    expect(obj.collider).toBe('sphere')
+    expect(obj.halfHeight).toBeCloseTo(obj.radius, 5) // sphere colliders: band = radius
+  }
+})
+
+test('every mesh-asset shape is listed in SHAPE_NAMES and the YURA-013 error', () => {
+  for (const shape of MESH_ASSET_SHAPES) expect(SHAPE_NAMES).toContain(shape)
+  const scene = new YuraScene({})
+  let err: unknown = null
+  try {
+    scene.add('pyramid' as ShapeName)
+  } catch (e) {
+    err = e
+  }
+  expect(err).toBeInstanceOf(YuraError)
+  const message = (err as YuraError).message
+  // SHAPE_NAMES is the single source of truth, so each name flows into the list.
+  for (const shape of MESH_ASSET_SHAPES) expect(message).toContain(shape)
 })

@@ -660,3 +660,134 @@ test('morphNow before run() still degrades to .shape() with options dropped', as
   expect(i.activeMorphEase).toBe(eases.cubic)
   app.dispose()
 })
+
+// ---------------------------------------------------------------------------
+// game() sugar + scene() double-call detach
+// ---------------------------------------------------------------------------
+
+import { SCENE_REPLACED_CODE } from '../src/app'
+import type { GameSetup } from '../src/app'
+
+/** Swap run() for a headless fake that only records the call order. */
+function fakeRun(app: YuraApp, order: string[]): { runs: number } {
+  const state = { runs: 0 }
+  ;(app as unknown as { run: () => Promise<YuraApp> }).run = async () => {
+    state.runs++
+    order.push('run')
+    return app
+  }
+  return state
+}
+
+/** Capture warnCode output (it logs via console.info) around fn. */
+function captureInfo(fn: () => void): string[] {
+  const seen: string[] = []
+  const orig = console.info
+  console.info = (...args: unknown[]) => {
+    seen.push(args.map(String).join(' '))
+  }
+  try {
+    fn()
+  } finally {
+    console.info = orig
+  }
+  return seen
+}
+
+const appCleanups = (app: YuraApp) => (app as unknown as { cleanups: Array<() => void> }).cleanups
+
+test('game(opts, setup) builds the scene with the options, runs setup, then run(), and resolves with the scene', async () => {
+  const app = headlessApp()
+  const order: string[] = []
+  const runState = fakeRun(app, order)
+
+  const seen: YuraScene[] = []
+  const scene = await app.game({ gravity: -12, bounds: 30 }, (s) => {
+    seen.push(s)
+    order.push('setup')
+  })
+
+  expect(scene).toBeInstanceOf(YuraScene)
+  expect(seen.length).toBe(1)
+  expect(seen[0]).toBe(scene)
+  expect(scene.gravity).toBe(-12)
+  expect(scene.bounds).toBe(30)
+  expect(runState.runs).toBe(1)
+  expect(order).toEqual(['setup', 'run']) // setup fully done before the loop starts
+  app.dispose()
+})
+
+test('game(setup) with opts omitted awaits an async setup before starting run()', async () => {
+  const app = headlessApp()
+  const order: string[] = []
+  fakeRun(app, order)
+
+  const scene = await app.game(async (s) => {
+    await sleep(10)
+    s.add('sphere', { radius: 0.5, position: [0, 0, 0] })
+    order.push('setup')
+  })
+
+  expect(order).toEqual(['setup', 'run'])
+  let objects = 0
+  scene.each(null, () => objects++)
+  expect(objects).toBe(1) // the sphere added by the (already finished) setup
+  expect(scene.gravity).toBe(0) // SceneOptions defaults
+  app.dispose()
+})
+
+test('game() with no setup still creates a scene and starts run()', async () => {
+  const app = headlessApp()
+  const order: string[] = []
+  const runState = fakeRun(app, order)
+  const setup: GameSetup | undefined = undefined
+  const scene = await app.game(setup)
+  expect(scene).toBeInstanceOf(YuraScene)
+  expect(runState.runs).toBe(1)
+  app.dispose()
+})
+
+test('a second scene() call detaches the old scene: cleanups drain, handles reset, YURA-016 warned', () => {
+  const app = headlessApp()
+
+  const first = captureInfo(() => app.scene()) // first call: silent
+  expect(first).toEqual([])
+  const oldScene = (app as unknown as { sceneObj: YuraScene }).sceneObj
+  const removed = { n: 0 }
+  const obj = oldScene.add('sphere', { radius: 0.5, position: [0, 0, 0] })
+  obj.handle = fakeHandle(removed)
+  obj.shadowHandle = fakeHandle(removed)
+
+  const drained: string[] = []
+  appCleanups(app).push(() => drained.push('old-listener'))
+
+  const replacements: YuraScene[] = []
+  const infos = captureInfo(() => {
+    replacements.push(app.scene({ gravity: -9 }))
+  })
+
+  const second = replacements[0]
+  expect(second).not.toBe(oldScene)
+  expect(second.gravity).toBe(-9)
+  expect(drained).toEqual(['old-listener']) // old scene's cleanups ran…
+  expect(appCleanups(app)).toEqual([]) // …and the list is empty again
+  expect(obj.handle).toBeNull() // stale GPU handles reset, not double-freed
+  expect(obj.shadowHandle).toBeNull()
+  expect(removed.n).toBe(0)
+  expect(infos.length).toBe(1)
+  expect(infos[0]).toContain(SCENE_REPLACED_CODE)
+  expect(infos[0]).toContain('scene() called again')
+  app.dispose()
+})
+
+test('the first scene() call keeps its original silent behavior (no warn, no drain)', () => {
+  const app = headlessApp()
+  appCleanups(app).push(() => {
+    throw new Error('must not be drained by a first scene() call')
+  })
+  const infos = captureInfo(() => app.scene())
+  expect(infos).toEqual([])
+  expect(appCleanups(app).length).toBe(1)
+  appCleanups(app).length = 0 // discard the sentinel so dispose stays quiet
+  app.dispose()
+})

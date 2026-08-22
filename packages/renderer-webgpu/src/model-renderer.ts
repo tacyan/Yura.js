@@ -9,7 +9,9 @@ import {
   warnCode,
   type Vec3,
 } from '@yura/core'
-import { POST_WGSL } from './shaders'
+import { buildPostWgsl } from './shaders'
+import { resolveToneMapping, type ToneMapping } from './blend'
+import { ViewCache } from './view-cache'
 import { ENV_WGSL, BLIT_WGSL, PBR_WGSL, SHADOW_WGSL, FX_WGSL } from './model-shaders'
 import { loadGLB, type GLTFModel } from './gltf'
 import type { MeshGeometry } from './meshes'
@@ -141,6 +143,11 @@ export class WebGPUModelRenderer {
   private compositePipeline!: GPURenderPipeline
   private fxPipeline!: GPURenderPipeline
 
+  private postModule!: GPUShaderModule
+  private appliedToneMapping: ToneMapping
+  /** Caches per-frame texture views; invalidated when render targets are recreated. */
+  private readonly viewCache = new ViewCache()
+
   private envTex!: GPUTexture
   private shadowTex!: GPUTexture
   private envSampler!: GPUSampler
@@ -237,6 +244,7 @@ export class WebGPUModelRenderer {
     this.context = context
     this.format = format
     this.look = look
+    this.appliedToneMapping = resolveToneMapping(look.toneMapping)
   }
 
   static async create(canvas: HTMLCanvasElement, device: GPUDevice, look: LookParams): Promise<WebGPUModelRenderer> {
@@ -259,7 +267,10 @@ export class WebGPUModelRenderer {
   private initPipelines(): void {
     const d = this.device
     const pbrModule = d.createShaderModule({ label: 'yura-pbr', code: PBR_WGSL })
-    const postModule = d.createShaderModule({ label: 'yura-model-post', code: POST_WGSL })
+    this.postModule = d.createShaderModule({
+      label: 'yura-model-post',
+      code: buildPostWgsl(this.appliedToneMapping),
+    })
 
     this.pbrPipeline = d.createRenderPipeline({
       label: 'yura-pbr',
@@ -337,17 +348,9 @@ export class WebGPUModelRenderer {
       depthStencil: { format: 'depth24plus', depthWriteEnabled: false, depthCompare: 'less-equal' },
     })
 
-    const makePost = (entryPoint: string, format: GPUTextureFormat): GPURenderPipeline =>
-      d.createRenderPipeline({
-        label: `yura-model-${entryPoint}`,
-        layout: 'auto',
-        vertex: { module: postModule, entryPoint: 'fsVS' },
-        fragment: { module: postModule, entryPoint, targets: [{ format }] },
-        primitive: { topology: 'triangle-list' },
-      })
-    this.brightPipeline = makePost('brightFS', 'rgba16float')
-    this.blurPipeline = makePost('blurFS', 'rgba16float')
-    this.compositePipeline = makePost('compositeFS', this.format)
+    this.brightPipeline = this.makePostPipeline('brightFS', 'rgba16float')
+    this.blurPipeline = this.makePostPipeline('blurFS', 'rgba16float')
+    this.buildCompositePipeline()
 
     this.envSampler = d.createSampler({ magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear' })
     this.matSampler = d.createSampler({
@@ -402,6 +405,50 @@ export class WebGPUModelRenderer {
   }
 
   /** Render the procedural studio HDRI into a mipped cubemap, once. */
+  private makePostPipeline(entryPoint: string, format: GPUTextureFormat): GPURenderPipeline {
+    return this.device.createRenderPipeline({
+      label: `yura-model-${entryPoint}`,
+      layout: 'auto',
+      vertex: { module: this.postModule, entryPoint: 'fsVS' },
+      fragment: { module: this.postModule, entryPoint, targets: [{ format }] },
+      primitive: { topology: 'triangle-list' },
+    })
+  }
+
+  private buildCompositePipeline(): void {
+    this.compositePipeline = this.makePostPipeline('compositeFS', this.format)
+  }
+
+  private rebuildCompositeBG(): void {
+    if (!this.hdrTex || !this.bloomA || !this.bloomC) return
+    this.compositeBG = this.device.createBindGroup({
+      layout: this.compositePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: this.postSampler },
+        { binding: 1, resource: this.viewCache.getView(this.hdrTex) },
+        { binding: 2, resource: { buffer: this.compositeUB } },
+        { binding: 3, resource: this.viewCache.getView(this.bloomA) },
+        { binding: 4, resource: this.viewCache.getView(this.bloomC) },
+      ],
+    })
+  }
+
+  /**
+   * Rebuild the post pipeline only when look.toneMapping actually changed
+   * (same discipline as the particle renderer's syncLookModes).
+   */
+  private syncLookModes(): void {
+    const tone = resolveToneMapping(this.look.toneMapping)
+    if (tone === this.appliedToneMapping) return
+    this.appliedToneMapping = tone
+    this.postModule = this.device.createShaderModule({
+      label: 'yura-model-post',
+      code: buildPostWgsl(tone),
+    })
+    this.buildCompositePipeline()
+    this.rebuildCompositeBG()
+  }
+
   private buildEnvironment(): void {
     const d = this.device
     const envModule = d.createShaderModule({ label: 'yura-env', code: ENV_WGSL })
@@ -778,6 +825,7 @@ export class WebGPUModelRenderer {
     this.bloomA?.destroy()
     this.bloomB?.destroy()
     this.bloomC?.destroy()
+    this.viewCache.invalidate()
 
     const d = this.device
     const tex = (label: string, w: number, h: number, format: GPUTextureFormat) =>
@@ -811,10 +859,9 @@ export class WebGPUModelRenderer {
     writeDir(this.streak1UB, 3.5 / hw, 0)
     writeDir(this.streak2UB, 10 / hw, 0)
 
-    const hdrView = this.hdrTex.createView()
-    const bloomAView = this.bloomA.createView()
-    const bloomBView = this.bloomB.createView()
-    const bloomCView = this.bloomC.createView()
+    const hdrView = this.viewCache.getView(this.hdrTex)
+    const bloomAView = this.viewCache.getView(this.bloomA)
+    const bloomBView = this.viewCache.getView(this.bloomB)
 
     this.brightBG = d.createBindGroup({
       layout: this.brightPipeline.getBindGroupLayout(0),
@@ -837,16 +884,7 @@ export class WebGPUModelRenderer {
     this.blurVBG = blurBG(bloomBView, this.blurVUB)
     this.streak1BG = blurBG(bloomAView, this.streak1UB)
     this.streak2BG = blurBG(bloomBView, this.streak2UB)
-    this.compositeBG = d.createBindGroup({
-      layout: this.compositePipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.postSampler },
-        { binding: 1, resource: hdrView },
-        { binding: 2, resource: { buffer: this.compositeUB } },
-        { binding: 3, resource: bloomAView },
-        { binding: 4, resource: bloomCView },
-      ],
-    })
+    this.rebuildCompositeBG()
   }
 
   /**
@@ -919,6 +957,7 @@ export class WebGPUModelRenderer {
   frame(dt: number, time: number): void {
     if (this.disposed || !this.hdrTex || !this.depthTex || !this.frameBG) return
     if (this.primitives.length === 0 && this.dynMeshes.length === 0 && this.fxCount === 0) return
+    this.syncLookModes()
     const d = this.device
 
     let target: Vec3 = [0, 0, 0]
@@ -1061,7 +1100,7 @@ export class WebGPUModelRenderer {
       label: 'yura-shadow',
       colorAttachments: [],
       depthStencilAttachment: {
-        view: this.shadowTex.createView(),
+        view: this.viewCache.getView(this.shadowTex),
         depthClearValue: 1,
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
@@ -1087,13 +1126,13 @@ export class WebGPUModelRenderer {
     const scene = enc.beginRenderPass({
       label: 'yura-model-scene',
       colorAttachments: [{
-        view: this.hdrTex.createView(),
+        view: this.viewCache.getView(this.hdrTex),
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
         loadOp: 'clear',
         storeOp: 'store',
       }],
       depthStencilAttachment: {
-        view: this.depthTex.createView(),
+        view: this.viewCache.getView(this.depthTex),
         depthClearValue: 1,
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
@@ -1162,11 +1201,11 @@ export class WebGPUModelRenderer {
       pass.draw(3)
       pass.end()
     }
-    fullscreen('yura-mbright', this.brightPipeline, this.brightBG, this.bloomA!.createView())
-    fullscreen('yura-mblur-h', this.blurPipeline, this.blurHBG, this.bloomB!.createView())
-    fullscreen('yura-mblur-v', this.blurPipeline, this.blurVBG, this.bloomA!.createView())
-    fullscreen('yura-mstreak-1', this.blurPipeline, this.streak1BG, this.bloomB!.createView())
-    fullscreen('yura-mstreak-2', this.blurPipeline, this.streak2BG, this.bloomC!.createView())
+    fullscreen('yura-mbright', this.brightPipeline, this.brightBG, this.viewCache.getView(this.bloomA!))
+    fullscreen('yura-mblur-h', this.blurPipeline, this.blurHBG, this.viewCache.getView(this.bloomB!))
+    fullscreen('yura-mblur-v', this.blurPipeline, this.blurVBG, this.viewCache.getView(this.bloomA!))
+    fullscreen('yura-mstreak-1', this.blurPipeline, this.streak1BG, this.viewCache.getView(this.bloomB!))
+    fullscreen('yura-mstreak-2', this.blurPipeline, this.streak2BG, this.viewCache.getView(this.bloomC!))
     fullscreen('yura-mcomposite', this.compositePipeline, this.compositeBG, this.context.getCurrentTexture().createView())
 
     d.queue.submit([enc.finish()])
@@ -1195,6 +1234,7 @@ export class WebGPUModelRenderer {
     this.bloomC?.destroy()
     this.envTex?.destroy()
     this.shadowTex?.destroy()
+    this.viewCache.invalidate()
     // Every buffer this renderer ever created (frame/shadow/post UBOs, env
     // face UBOs, model primitive + dynamic mesh buffers, fx instances).
     for (const b of this.ownedBuffers) b.destroy()

@@ -16,6 +16,7 @@ import {
   type BlendMode,
   type ToneMapping,
 } from './blend'
+import { computeFrameComp } from './look-math'
 import { ViewCache, getZeroScratch } from './view-cache'
 
 export type { BlendMode, ToneMapping } from './blend'
@@ -633,16 +634,15 @@ export class WebGPUParticleRenderer {
     this.simF32[15] = this.morphSpread
     d.queue.writeBuffer(this.simUB, 0, this.simData)
 
-    // Trail decay per frame, framerate-independent. Compensate particle
-    // intensity so steady-state accumulation stays in a sane HDR range.
-    const trail = Math.max(this.look.trail, 0)
-    const fadeAlpha = trail > 0.02 ? 1 - Math.exp(-dt / trail) : 1
-    const trailComp = trail > 0.02 ? Math.min(Math.max(fadeAlpha * 1.4, 0.06), 1) : 1
-    // When the governor sheds particles, brighten the survivors so the total
-    // light on screen stays comparable — otherwise low levels fade to black.
-    const countComp = Math.min(Math.pow(this.count / n, 0.7), 4)
-    // Text-readability damping (1 = bit-exact neutral, see field docs).
-    const damp = Math.min(Math.max(this.textDamp, 0), 1)
+    // Exposure/trail compensation — shared with the WebGL backend via
+    // look-math (single source of truth; see computeFrameComp docs).
+    const { fadeAlpha, trailComp, countComp, damp } = computeFrameComp({
+      trail: this.look.trail,
+      dt,
+      count: this.count,
+      activeCount: n,
+      textDamp: this.textDamp,
+    })
 
     // Render uniforms. Camera right/up derived from the view matrix rows.
     this.renderData.set(this.viewProj, 0)
