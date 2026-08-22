@@ -1,6 +1,10 @@
 # Yura.js
 
+[![CI](https://github.com/tacyan/Yura.js/actions/workflows/ci.yml/badge.svg)](https://github.com/tacyan/Yura.js/actions/workflows/ci.yml)
+[![Live demos](https://img.shields.io/badge/live%20demos-tacyan.github.io%2FYura.js-67e8f9)](https://tacyan.github.io/Yura.js/)
+
 **Make the web move.** Two lines. One million particles.
+**[▶ Live demos](https://tacyan.github.io/Yura.js/)** — showcase, lyric motion, glTF viewer, all in your browser (WebGPU).
 
 ```ts
 import { yura } from 'yura'
@@ -23,6 +27,7 @@ Three reasons Yura is worth your `<div>`:
 ## Quick start
 
 ```sh
+git clone https://github.com/tacyan/Yura.js && cd Yura.js
 bun install
 bun dev            # hello example — 1M-particle neon galaxy
 bun run showcase   # flagship demo: type a word, a million particles obey

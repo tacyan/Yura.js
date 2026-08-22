@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Yura.js — make the web move</title>
+    <meta name="description" content="Two lines, one million GPU particles. WebGPU-first visuals, games, and lyric motion for the web." />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      :root {
+        --bg: #05060e; --panel: #0b0e1d; --line: rgba(148, 163, 184, 0.16);
+        --text: #e2e8f0; --muted: #8494ad; --cyan: #67e8f9; --violet: #c4b5fd;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      html, body { min-height: 100%; background: var(--bg); color: var(--text); }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        display: flex; flex-direction: column; align-items: center;
+        padding: 9vh 20px 60px;
+        background:
+          radial-gradient(60% 45% at 50% 0%, rgba(103, 232, 249, 0.09), transparent 70%),
+          radial-gradient(50% 40% at 80% 90%, rgba(139, 92, 246, 0.08), transparent 70%),
+          var(--bg);
+      }
+      h1 {
+        font-size: clamp(2.6rem, 7vw, 4.5rem); font-weight: 900; letter-spacing: 0.26em;
+        background: linear-gradient(90deg, var(--cyan), var(--violet));
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+      }
+      .tag { margin-top: 14px; color: var(--muted); font-size: clamp(0.95rem, 2vw, 1.15rem); text-align: center; }
+      .snippet {
+        margin-top: 26px; padding: 14px 22px; border-radius: 12px;
+        background: var(--panel); border: 1px solid var(--line);
+        font-family: var(--mono); font-size: clamp(0.75rem, 1.7vw, 0.95rem); color: var(--cyan);
+        white-space: pre; overflow-x: auto; max-width: 100%;
+      }
+      .snippet b { color: var(--violet); font-weight: 600; }
+      .grid {
+        margin-top: 44px; display: grid; gap: 14px; width: min(860px, 100%);
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      }
+      .card {
+        display: block; padding: 18px 20px; border-radius: 14px; text-decoration: none;
+        background: var(--panel); border: 1px solid var(--line);
+        transition: border-color 0.2s, transform 0.2s;
+      }
+      .card:hover { border-color: rgba(103, 232, 249, 0.45); transform: translateY(-2px); }
+      .card h2 { font-size: 1rem; color: var(--text); }
+      .card p { margin-top: 6px; font-size: 0.8rem; color: var(--muted); line-height: 1.55; }
+      .note { margin-top: 40px; color: var(--muted); font-size: 0.82rem; text-align: center; line-height: 1.8; max-width: 640px; }
+      .note code { font-family: var(--mono); color: var(--cyan); font-size: 0.78rem; }
+      .note a { color: var(--violet); }
+      footer { margin-top: 44px; font-size: 0.75rem; color: var(--muted); }
+      footer a { color: var(--cyan); text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <h1>YURA</h1>
+    <p class="tag">Make the web move. Two lines, one million GPU particles.</p>
+    <pre class="snippet"><b>import</b> { yura } <b>from</b> 'yura'
+<b>await</b> yura('#hero').run()  <span style="color:#8494ad">// a cursor-reactive million-particle galaxy</span></pre>
+
+    <div class="grid">
+      <a class="card" href="./showcase/">
+        <h2>Showcase</h2>
+        <p>One million live particles. Type a word — the swarm obeys. Lyric-motion act included.</p>
+      </a>
+      <a class="card" href="./lyrics/">
+        <h2>Lyric Motion</h2>
+        <p>Kinetic typography: Japanese-first lines assembling character by character.</p>
+      </a>
+      <a class="card" href="./hello/">
+        <h2>Hello</h2>
+        <p>The two-line starter — exactly what you get with zero configuration.</p>
+      </a>
+      <a class="card" href="./model/">
+        <h2>glTF Viewer</h2>
+        <p>PBR + IBL in one line. Grab, aim by click, double-click to face front.</p>
+      </a>
+    </div>
+
+    <p class="note">
+      Demos need <b>WebGPU</b> (Chrome / Edge 113+; particle swarms fall back to WebGL2).<br />
+      Run everything locally — playground, live-share, benchmarks — with:<br />
+      <code>git clone https://github.com/tacyan/Yura.js && cd Yura.js && bun install && bun run play</code>
+    </p>
+
+    <footer>
+      MIT · <a href="https://github.com/tacyan/Yura.js">github.com/tacyan/Yura.js</a>
+    </footer>
+  </body>
+</html>
