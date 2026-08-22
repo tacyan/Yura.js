@@ -100,6 +100,60 @@ export function applySweepDirection(
   return data
 }
 
+// ---------------------------------------------------------------- text damping
+//
+// A text morph target packs the whole swarm into thin glyph strokes. Under
+// additive accumulation the per-pixel HDR sums explode, and a high-bloom look
+// (bloom + anamorphic streak) smears every line into a solid overexposed bar.
+// The fix is a runtime damping factor the app eases per frame and both
+// renderers apply to particle intensity, bloom strength, and streak strength.
+// At 1 (neutral) the renderer math multiplies by exactly 1.0 — bit-exact with
+// the undamped pipeline — so non-text moments keep the look untouched.
+
+/** Neutral damping factor — multiplying by it is a bit-exact no-op. */
+export const TEXT_DAMP_NEUTRAL = 1
+/** Particle count at which TEXT_DAMP_AT_REF applies (density reference). */
+export const TEXT_DAMP_REF_COUNT = 250_000
+/** Damping factor at the reference count while text is held. */
+export const TEXT_DAMP_AT_REF = 0.35
+/** Damping floor — even ludicrous swarms keep some glow. */
+export const TEXT_DAMP_MIN = 0.06
+/** Exponential ease rate (per second) toward the damping target. */
+export const TEXT_DAMP_RATE = 5
+/** Snap distance: once this close, land exactly on the target. */
+const TEXT_DAMP_EPS = 0.002
+
+/**
+ * Damping target for the current morph destination (pure; exported for
+ * tests). 1 (neutral) when no text target is active. While text is active
+ * the factor is density-aware: brightness accumulation grows roughly with
+ * count^0.7 (the renderer's own countComp exponent), so heavier swarms damp
+ * harder and glyph strokes stay distinct in every look.
+ */
+export function textDampTarget(textActive: boolean, particleCount: number): number {
+  if (!textActive) return TEXT_DAMP_NEUTRAL
+  const density = Math.max(particleCount, 1) / TEXT_DAMP_REF_COUNT
+  const f = TEXT_DAMP_AT_REF / Math.pow(density, 0.7)
+  return Math.min(Math.max(f, TEXT_DAMP_MIN), TEXT_DAMP_NEUTRAL)
+}
+
+/**
+ * Frame-rate-independent exponential approach toward `target` (pure;
+ * exported for tests). Monotonic, never overshoots, and SNAPS onto the
+ * target once within TEXT_DAMP_EPS so releasing text restores the factor to
+ * exactly 1 — bit-exact neutral — in finite time.
+ */
+export function easeDampFactor(
+  current: number,
+  target: number,
+  dt: number,
+  rate = TEXT_DAMP_RATE,
+): number {
+  const k = 1 - Math.exp(-Math.max(dt, 0) * rate)
+  const next = current + (target - current) * k
+  return Math.abs(next - target) < TEXT_DAMP_EPS ? target : next
+}
+
 /** What `prefers-reduced-motion` means for one run mode. */
 export interface ReducedMotionPolicy {
   /** Start the rAF loop at all? */
@@ -188,6 +242,11 @@ export class YuraApp {
   private morph = { pos: 0 as 0 | 1, phase: 'hold' as 'hold' | 'move', timer: 0, nextShape: 2 }
   /** Set by morphNow(): halts the automatic shape cycle on arrival. */
   private morphPinned = false
+  /** ShapeSpec.kind currently living in [targetA, targetB] — mirrors every
+   * writeTargetA/B call so text destinations are detectable per frame. */
+  private targetKinds: [string, string] = ['galaxy', 'galaxy']
+  /** Eased text-readability damping factor (1 = neutral). */
+  private textDamp = TEXT_DAMP_NEUTRAL
 
   private rafId = 0
   private running = false
@@ -325,6 +384,7 @@ export class YuraApp {
     }
     if (m.pos === 0) this.renderer.writeTargetB(data)
     else this.renderer.writeTargetA(data)
+    this.targetKinds[m.pos === 0 ? 1 : 0] = spec.kind
     // Per-particle sweep: the sign routes the shader to the DESTINATION
     // buffer's delay coordinate (+ = targetB, - = targetA). 0 = uniform.
     const spread = Math.min(Math.max(opts.sweep ?? 0, 0), 1)
@@ -424,6 +484,11 @@ export class YuraApp {
     this.renderer.writeTargetA(first)
     this.renderer.writeTargetB(first)
     this.morph = { pos: 0, phase: 'hold', timer: 0, nextShape: 2 }
+    this.targetKinds = [this.shapeSeq[0].kind, this.shapeSeq[0].kind]
+    // First frame may already rest on a text shape (e.g. the cyberpunk
+    // preset): start at the damped level directly — no visible pop.
+    this.textDamp = textDampTarget(this.shapeSeq[0].kind === 'text', this.particleCount)
+    this.renderer.textDamp = this.textDamp
     void this.generateRemainingShapes()
 
     this.observeResize()
@@ -600,8 +665,20 @@ export class YuraApp {
       const data = await Promise.resolve(this.shapeSeq[idx].generate(this.particleCount))
       if (this.disposed || !this.renderer) return
       this.shapeData.push(data)
-      if (idx === 1) this.renderer.writeTargetB(data)
+      if (idx === 1) {
+        this.renderer.writeTargetB(data)
+        this.targetKinds[1] = this.shapeSeq[1].kind
+      }
     }
+  }
+
+  /** Kind of the shape the swarm is morphing toward (or resting on). */
+  private morphDestKind(): string {
+    const m = this.morph
+    // During a move the destination is the BACK buffer (pos 0 → targetB);
+    // at rest the current shape is the front buffer the swarm sits on.
+    if (m.phase === 'move') return this.targetKinds[m.pos === 0 ? 1 : 0]
+    return this.targetKinds[m.pos]
   }
 
   private toShape(s: ShapeSpec | string): ShapeSpec {
@@ -695,9 +772,16 @@ export class YuraApp {
       m.pos = m.pos === 0 ? 1 : 0
       if (!this.morphPinned) {
         // Arrived at the far buffer. Preload the next shape into the buffer we left.
-        const next = this.shapeData[m.nextShape % this.shapeData.length]
-        if (m.pos === 1) this.renderer.writeTargetA(next)
-        else this.renderer.writeTargetB(next)
+        const idx = m.nextShape % this.shapeData.length
+        const next = this.shapeData[idx]
+        const nextKind = this.shapeSeq[idx]?.kind ?? 'unknown'
+        if (m.pos === 1) {
+          this.renderer.writeTargetA(next)
+          this.targetKinds[0] = nextKind
+        } else {
+          this.renderer.writeTargetB(next)
+          this.targetKinds[1] = nextKind
+        }
         m.nextShape++
       }
       m.phase = 'hold'
@@ -747,6 +831,15 @@ export class YuraApp {
       this.renderer.pointerStrength = 0
     }
     this.burst *= Math.exp(-dt * 5)
+
+    // Text readability: ease the damping factor toward text-safe while the
+    // morph destination is a text shape, back to exactly 1 on release.
+    this.textDamp = easeDampFactor(
+      this.textDamp,
+      textDampTarget(this.morphDestKind() === 'text', this.particleCount),
+      dt,
+    )
+    this.renderer.textDamp = this.textDamp
 
     this.renderer.frame(dt, this.simTime, this.activeCount())
     this.rafId = requestAnimationFrame(this.tick)

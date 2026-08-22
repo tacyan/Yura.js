@@ -3,7 +3,7 @@
  * live look switching, and a prompt that morphs the swarm into any word.
  * Zero image assets; everything on screen is generated.
  */
-import { yura, shapes, type YuraApp } from 'yura'
+import { yura, shapes, lyrics, type YuraApp, type LyricsRun } from 'yura'
 
 type LookId = 'neon-galaxy' | 'aurora' | 'cinematic' | 'cyberpunk'
 
@@ -54,6 +54,8 @@ const backendOpt = forcedBackend === 'webgl2' || forcedBackend === 'webgpu' ? fo
 async function boot(): Promise<void> {
   if (booting) return
   booting = true
+  setLyricChipEnabled(false) // no silent click-swallowing while booting
+  stopLyrics() // a rebooted app invalidates the running lyric timeline
   coverNote.textContent = `summoning ${currentCount.toLocaleString('en-US')} particles`
   cover.classList.remove('hidden')
   await new Promise((r) => setTimeout(r, 250)) // let the cover paint
@@ -66,6 +68,7 @@ async function boot(): Promise<void> {
   ;(window as unknown as { __yura: unknown }).__yura = app
   cover.classList.add('hidden')
   booting = false
+  setLyricChipEnabled(true)
   syncChips()
 }
 
@@ -93,10 +96,60 @@ for (const m of MORPHS) {
   const b = chip(m.label, 'ghost')
   b.addEventListener('click', () => {
     promptEl.value = ''
+    stopLyrics()
     void app?.morphNow(m.make())
   })
   lookRow.appendChild(b)
 }
+
+// ------------------------------------------------------------- lyric motion
+
+/**
+ * LYRIC MOTION — kinetic typography act. Two Japanese lines plus the brand
+ * word, each swept in glyph by glyph (char-by-char sweep) by lyrics(),
+ * looping until toggled off or interrupted by any other morph.
+ */
+const LYRIC_LINES = [
+  { text: 'ゆらめく光', at: 0 },
+  { text: '百万の粒子が', at: 3.4 },
+  { text: '波のように踊る', at: 6.8 },
+  { text: 'YURA', at: 10.2, direction: 'center' as const },
+]
+
+let lyricRun: LyricsRun | null = null
+const lyricChip = chip('lyric motion', 'ghost')
+
+/**
+ * The lyric act needs a live app: during boot the click used to be silently
+ * swallowed by the `booting` guard. Disable the chip visibly instead
+ * (native disabled + class for styling), re-enabling once boot completes.
+ */
+function setLyricChipEnabled(enabled: boolean): void {
+  lyricChip.disabled = !enabled
+  lyricChip.classList.toggle('disabled', !enabled)
+}
+
+function stopLyrics(): void {
+  if (!lyricRun) return
+  lyricRun.stop()
+  lyricRun = null
+  lyricChip.classList.remove('on')
+}
+
+lyricChip.addEventListener('click', () => {
+  if (!app || booting) return
+  if (lyricRun) {
+    stopLyrics()
+    void app.morphNow(shapes.galaxy())
+    return
+  }
+  promptEl.value = ''
+  // sweep 0.8 → strong per-character stagger: each glyph condenses in turn.
+  lyricRun = lyrics(app, LYRIC_LINES, { sweep: 0.8, loop: true, loopTail: 3 })
+  lyricChip.classList.add('on')
+})
+lookRow.appendChild(Object.assign(document.createElement('div'), { className: 'sep' }))
+lookRow.appendChild(lyricChip)
 
 const countChips = new Map<number, HTMLButtonElement>()
 for (const c of COUNTS) {
@@ -118,6 +171,7 @@ function syncChips(): void {
 
 promptEl.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || !app) return
+  stopLyrics()
   const word = promptEl.value.trim()
   void app.morphNow(word ? word.toUpperCase() : shapes.galaxy())
   promptEl.blur()

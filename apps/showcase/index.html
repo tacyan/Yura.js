@@ -77,7 +77,8 @@
         backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
         transition: color 0.2s, border-color 0.2s, background 0.2s; user-select: none;
       }
-      .chip:hover { color: var(--text); border-color: rgba(148, 163, 184, 0.4); }
+      .chip:not(:disabled):hover { color: var(--text); border-color: rgba(148, 163, 184, 0.4); }
+      .chip:disabled, .chip.disabled { opacity: 0.35; cursor: not-allowed; }
       .chip.on {
         color: #04050c; font-weight: 700;
         background: linear-gradient(90deg, var(--cyan), var(--violet)); border-color: transparent;
@@ -139,7 +140,8 @@
 
     <div class="hints ui">
       <b>click</b> shockwave · <b>move</b> parallax + repel<br />
-      <b>1–4</b> looks · <b>⏎</b> summon text · shapes morph on their own
+      <b>1–4</b> looks · <b>⏎</b> summon text · shapes morph on their own<br />
+      <b>lyric motion</b> kinetic typography, char-by-char
     </div>
 
     <div id="cover">

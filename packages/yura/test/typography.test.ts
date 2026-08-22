@@ -1,6 +1,15 @@
 import { test, expect } from 'bun:test'
 import { segmentGraphemes, charCoord, layoutLines, text } from '../src/shapes'
-import { sweepProgress, applySweepDirection } from '../src/app'
+import {
+  sweepProgress,
+  applySweepDirection,
+  textDampTarget,
+  easeDampFactor,
+  TEXT_DAMP_NEUTRAL,
+  TEXT_DAMP_AT_REF,
+  TEXT_DAMP_MIN,
+  TEXT_DAMP_REF_COUNT,
+} from '../src/app'
 import {
   orderLines,
   buildTimeline,
@@ -193,4 +202,57 @@ test('advanceCursor fires only the newest overdue event (tab-switch catch-up)', 
   expect(events[mid.fire].kind).toBe('interstitial')
   // Nothing due yet.
   expect(advanceCursor(events, 3, 5.0).fire).toBe(-1)
+})
+
+// ---- text-readability damping (renderer brightness/bloom scaling) ----
+
+test('no text target -> factor is exactly neutral at any count', () => {
+  for (const n of [1, 250_000, 1_000_000, 2_000_000]) {
+    expect(textDampTarget(false, n)).toBe(TEXT_DAMP_NEUTRAL) // === 1, bit-exact path
+  }
+})
+
+test('active text damping is text-safe, density-aware, and clamped', () => {
+  const ref = textDampTarget(true, TEXT_DAMP_REF_COUNT)
+  expect(ref).toBeCloseTo(TEXT_DAMP_AT_REF, 6)
+  // Heavier swarms accumulate more light per glyph pixel -> damp harder.
+  const at1m = textDampTarget(true, 1_000_000)
+  const at2m = textDampTarget(true, 2_000_000)
+  expect(at1m).toBeLessThan(ref)
+  expect(at2m).toBeLessThanOrEqual(at1m)
+  // Every count stays inside [floor, neutral]; sparse swarms are left alone.
+  for (const n of [1, 10_000, 50_000, 600_000, 8_000_000]) {
+    const f = textDampTarget(true, n)
+    expect(f).toBeGreaterThanOrEqual(TEXT_DAMP_MIN)
+    expect(f).toBeLessThanOrEqual(TEXT_DAMP_NEUTRAL)
+  }
+  expect(textDampTarget(true, 10_000)).toBe(TEXT_DAMP_NEUTRAL) // no over-dimming below ramp
+})
+
+test('easeDampFactor approaches monotonically without overshoot', () => {
+  let f = 1
+  let prev = f
+  for (let i = 0; i < 90; i++) {
+    f = easeDampFactor(f, 0.2, 1 / 60)
+    expect(f).toBeLessThanOrEqual(prev) // monotone descent...
+    expect(f).toBeGreaterThanOrEqual(0.2) // ...never past the target
+    prev = f
+  }
+  expect(f).toBeCloseTo(0.2, 2) // settled within ~1.5 s
+  expect(easeDampFactor(0.5, 0.5, 1 / 60)).toBe(0.5) // already there: stays put
+  expect(easeDampFactor(0.7, 0.2, 0)).toBe(0.7) // dt = 0 is a no-op
+  expect(easeDampFactor(0.7, 0.2, -1)).toBe(0.7) // negative dt never runs backward
+})
+
+test('restore-on-stop returns bit-exact to neutral in finite time', () => {
+  // Text held at 1M -> damped; released -> target flips back to neutral.
+  let f = textDampTarget(true, 1_000_000)
+  expect(f).toBeLessThan(1)
+  let steps = 0
+  while (f !== TEXT_DAMP_NEUTRAL && steps < 600) {
+    f = easeDampFactor(f, textDampTarget(false, 1_000_000), 1 / 60)
+    steps++
+  }
+  expect(f).toBe(TEXT_DAMP_NEUTRAL) // exact ===: the renderer multiplies by 1.0 again
+  expect(steps).toBeLessThan(200) // snaps in ~2 s, not asymptotically never
 })

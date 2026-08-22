@@ -152,6 +152,15 @@ export class WebGPUParticleRenderer {
    * particle (+ = targetB, the destination when morphT rises; - = targetA).
    */
   morphSpread = 0
+  /**
+   * Text-readability damping, eased per frame by the app. 1 = neutral
+   * (multiplies by exactly 1.0 — bit-exact base look); lower values scale
+   * particle intensity, bloom strength, and streak strength toward a
+   * text-safe level so glyph strokes stay distinct while the morph target
+   * is a text shape (additive accumulation would otherwise blow lines out
+   * into solid bars under high-bloom looks).
+   */
+  textDamp = 1
   pointerWorld: Vec3 = [0, 0, 0]
   pointerStrength = 0
   /** Smoothed pointer NDC used for camera parallax. */
@@ -526,6 +535,8 @@ export class WebGPUParticleRenderer {
     // When the governor sheds particles, brighten the survivors so the total
     // light on screen stays comparable — otherwise low levels fade to black.
     const countComp = Math.min(Math.pow(this.count / n, 0.7), 4)
+    // Text-readability damping (1 = bit-exact neutral, see field docs).
+    const damp = Math.min(Math.max(this.textDamp, 0), 1)
 
     // Render uniforms. Camera right/up derived from the view matrix rows.
     this.renderData.set(this.viewProj, 0)
@@ -536,7 +547,7 @@ export class WebGPUParticleRenderer {
     this.renderData[20] = up[0]
     this.renderData[21] = up[1]
     this.renderData[22] = up[2]
-    this.renderData[23] = this.look.intensity * trailComp * countComp
+    this.renderData[23] = this.look.intensity * trailComp * countComp * damp
     this.renderData[24] = this.colorA[0]
     this.renderData[25] = this.colorA[1]
     this.renderData[26] = this.colorA[2]
@@ -561,13 +572,13 @@ export class WebGPUParticleRenderer {
     this.postData[0] = this.look.bloomThreshold
     d.queue.writeBuffer(this.brightUB, 0, this.postData)
     this.postData.fill(0)
-    this.postData[0] = this.look.bloomStrength
+    this.postData[0] = this.look.bloomStrength * damp
     this.postData[1] = this.look.exposure
     this.postData[2] = this.look.vignette
     this.postData[3] = this.look.grain
     this.postData[4] = time
     this.postData[5] = this.look.aberration
-    this.postData[6] = this.look.streak
+    this.postData[6] = this.look.streak * damp
     this.postData[7] = this.look.nebula
     this.postData[8] = this.look.background[0]
     this.postData[9] = this.look.background[1]

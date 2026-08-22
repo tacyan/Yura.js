@@ -39,6 +39,10 @@ export class WebGL2ParticleRenderer {
   morphBoost = 0
   /** Per-particle morph stagger; mirrors WebGPUParticleRenderer.morphSpread. */
   morphSpread = 0
+  /** Text-readability damping; mirrors WebGPUParticleRenderer.textDamp.
+   * 1 = neutral (bit-exact base look); lower values scale particle
+   * intensity, bloom strength, and streak strength to a text-safe level. */
+  textDamp = 1
   pointerWorld: Vec3 = [0, 0, 0]
   pointerStrength = 0
   parallax: [number, number] = [0, 0]
@@ -350,6 +354,8 @@ void main() { o = vec4(0.0); }
     // Match the WebGPU renderer: brighten survivors when the governor sheds
     // particles so low quality levels don't fade to black.
     const countComp = Math.min(Math.pow(this.count / n, 0.7), 4)
+    // Text-readability damping (1 = bit-exact neutral, see field docs).
+    const damp = Math.min(Math.max(this.textDamp, 0), 1)
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.hdrFBO)
     gl.viewport(0, 0, this.width, this.height)
@@ -374,7 +380,7 @@ void main() { o = vec4(0.0); }
     const sizePx =
       ((this.look.particleSize * (ext?.sizeScale ?? 1)) * this.height) / (2 * Math.tan(fovY / 2))
     gl.uniform1f(ru('uSizePx'), sizePx)
-    gl.uniform1f(ru('uIntensity'), this.look.intensity * trailComp * countComp)
+    gl.uniform1f(ru('uIntensity'), this.look.intensity * trailComp * countComp * damp)
     gl.uniform1f(ru('uSpeedColorMix'), this.motion.speedColorMix)
     gl.uniform1f(ru('uTime'), time)
     gl.uniform1f(ru('uTwinkle'), this.look.twinkle)
@@ -432,13 +438,13 @@ void main() { o = vec4(0.0); }
       gl.uniform1i(cu('uScene'), 0)
       gl.uniform1i(cu('uBloom'), 1)
       gl.uniform1i(cu('uStreak'), 2)
-      gl.uniform1f(cu('uBloomStrength'), this.look.bloomStrength)
+      gl.uniform1f(cu('uBloomStrength'), this.look.bloomStrength * damp)
       gl.uniform1f(cu('uExposure'), this.look.exposure)
       gl.uniform1f(cu('uVignette'), this.look.vignette)
       gl.uniform1f(cu('uGrain'), this.look.grain)
       gl.uniform1f(cu('uTime'), time)
       gl.uniform1f(cu('uAberration'), this.look.aberration)
-      gl.uniform1f(cu('uStreakStrength'), this.look.streak)
+      gl.uniform1f(cu('uStreakStrength'), this.look.streak * damp)
       gl.uniform1f(cu('uNebula'), this.look.nebula)
       gl.uniform1f(cu('uStars'), this.look.stars)
       gl.uniform1f(cu('uAspect'), aspect)
