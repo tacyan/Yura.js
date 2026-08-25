@@ -1,5 +1,6 @@
 import { test, expect } from 'bun:test'
 import { loadGLB, parseGLB } from '../src/gltf'
+import { CODES } from '@yura/core'
 
 // ---------------------------------------------------------------------------
 // GLB binary builders (assemble minimal GLB structures in-memory; no file I/O)
@@ -396,8 +397,15 @@ test('parseGLB keeps uint32 indices above 2^24 exact', async () => {
     nodes: [{ mesh: 0 }],
     scenes: [{ nodes: [0] }],
   }
-  const model = await parseGLB(buildGLB(json, bin))
-  expect(Array.from(model.primitives[0].indices)).toEqual([0, 1, big])
+  // The fixture is deliberately out of range — a primitive with 2^24 vertices
+  // is not something a test can build — so the range check rejects it. That
+  // still proves the original property: the reported value is 16777217, not
+  // the 16777216 a Float32 round-trip would produce. readIndices stays on the
+  // integer path.
+  const err = await caught(parseGLB(buildGLB(json, bin)))
+  expect(err.code).toBe(CODES.ASSET_LOAD_FAILED)
+  expect(err.message).toContain(String(big))
+  expect(err.message).not.toContain(String(2 ** 24))
 })
 
 test('parseGLB reads uint8 indices and zero-fills index accessors without a bufferView', async () => {
@@ -610,4 +618,84 @@ test('parseGLB rejects a model with no triangle meshes', async () => {
   const err = await caught(parseGLB(buildGLB(json, bin)))
   expect(err.code).toBe(ASSET_LOAD_FAILED)
   expect(err.message).toContain('no triangle meshes')
+})
+
+// --- Corrupt files must surface as YURA-020, never as garbage or a crash ----
+//
+// parseGLB validates every index and every byte range, but four holes let a
+// bad .glb through: a zero byteStride collapsed the mesh to a point, indices
+// past the vertex array and short attribute accessors reached the GPU, and a
+// node cycle that did not touch a scene root recursed until the stack blew.
+
+test('a zero byteStride reads tightly packed instead of collapsing the mesh', async () => {
+  const { json, bin } = triangleAsset()
+  // glTF's schema puts byteStride in 4..252, but exporters do emit 0 for
+  // "tightly packed", which is also what an absent byteStride means.
+  ;(json.bufferViews as Array<Record<string, unknown>>)[0].byteStride = 0
+  const model = await parseGLB(buildGLB(json, bin))
+  expect(Array.from(model.primitives[0].positions)).toEqual(TRI)
+})
+
+test('an index past the end of the vertex array is rejected', async () => {
+  const positions = new Float32Array(TRI)
+  const indices = new Uint16Array([0, 1, 99]) // only 3 vertices exist
+  const { bin, offsets } = packBin([positions, indices])
+  const json = {
+    asset: { version: '2.0' },
+    buffers: [{ byteLength: bin.byteLength }],
+    bufferViews: [
+      { buffer: 0, byteOffset: offsets[0], byteLength: positions.byteLength },
+      { buffer: 0, byteOffset: offsets[1], byteLength: indices.byteLength },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5123, count: 3, type: 'SCALAR' },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  }
+  const err = await caught(parseGLB(buildGLB(json, bin)))
+  expect(err.code).toBe(CODES.ASSET_LOAD_FAILED)
+  expect(err.message).toContain('99')
+})
+
+test('an attribute accessor shorter than POSITION is rejected', async () => {
+  const positions = new Float32Array(TRI)
+  const normals = new Float32Array([0, 0, 1]) // one vertex, not three
+  const indices = new Uint16Array([0, 1, 2])
+  const { bin, offsets } = packBin([positions, normals, indices])
+  const json = {
+    asset: { version: '2.0' },
+    buffers: [{ byteLength: bin.byteLength }],
+    bufferViews: [
+      { buffer: 0, byteOffset: offsets[0], byteLength: positions.byteLength },
+      { buffer: 0, byteOffset: offsets[1], byteLength: normals.byteLength },
+      { buffer: 0, byteOffset: offsets[2], byteLength: indices.byteLength },
+    ],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5126, count: 1, type: 'VEC3' },
+      { bufferView: 2, componentType: 5123, count: 3, type: 'SCALAR' },
+    ],
+    meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, indices: 2 }] }],
+    nodes: [{ mesh: 0 }],
+    scenes: [{ nodes: [0] }],
+    scene: 0,
+  }
+  const err = await caught(parseGLB(buildGLB(json, bin)))
+  expect(err.code).toBe(CODES.ASSET_LOAD_FAILED)
+  expect(err.message).toContain('NORMAL')
+})
+
+test('a node cycle below the scene root is rejected, not recursed into', async () => {
+  const { json, bin } = triangleAsset()
+  // 0 -> 1 -> 2 -> 1. Root pruning only removes nodes that appear as a child,
+  // so node 0 stays a root and the walk falls into the 1/2 loop.
+  json.nodes = [{ children: [1] }, { children: [2] }, { children: [1], mesh: 0 }]
+  json.scenes = [{ nodes: [0] }]
+  const err = await caught(parseGLB(buildGLB(json, bin)))
+  expect(err.code).toBe(CODES.ASSET_LOAD_FAILED)
+  expect(err.message).toContain('cycle')
 })

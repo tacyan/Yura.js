@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  type FrameCompInput,
   COUNT_COMP_EXPONENT,
   COUNT_COMP_MAX,
   TRAIL_COMP_FLOOR,
@@ -167,5 +168,67 @@ describe('both backends reference the single shared function', () => {
     expect(webglSrc).toMatch(/computeFrameComp[\s\S]*?from '@yura\/renderer-webgpu'/)
     expect(webglSrc).not.toMatch(/Math\.exp\(-dt \/ trail\)/)
     expect(webglSrc).not.toMatch(/Math\.pow\(this\.count \/ n, 0\.7\)/)
+  })
+})
+
+// --- Non-finite input must not reach the GPU -------------------------------
+//
+// Every factor here multiplies particle intensity, bloom, or the fade pass. A
+// NaN in any of them paints the frame as undefined — a black canvas with
+// nothing in the console. Math.min/Math.max/Math.pow all pass NaN through.
+
+test('computeFrameComp stays finite and in range for hostile input', () => {
+  const hostile: Array<[string, FrameCompInput]> = [
+    ['zero particles', { trail: 0.2, dt: 1 / 60, count: 0, activeCount: 0, textDamp: 1 }],
+    ['no active particles', { trail: 0.2, dt: 1 / 60, count: 1000, activeCount: 0, textDamp: 1 }],
+    ['NaN dt', { trail: 0.2, dt: NaN, count: 1000, activeCount: 1000, textDamp: 1 }],
+    ['NaN textDamp', { trail: 0.2, dt: 1 / 60, count: 1000, activeCount: 1000, textDamp: NaN }],
+    ['NaN trail', { trail: NaN, dt: 1 / 60, count: 1000, activeCount: 1000, textDamp: 1 }],
+    ['NaN count', { trail: 0.2, dt: 1 / 60, count: NaN, activeCount: 1000, textDamp: 1 }],
+  ]
+  for (const [what, input] of hostile) {
+    const c = computeFrameComp(input)
+    const detail = `${what} -> ${JSON.stringify(c)}`
+    expect([detail, Object.values(c).every(Number.isFinite)]).toEqual([detail, true])
+    expect([detail, c.fadeAlpha >= 0 && c.fadeAlpha <= 1]).toEqual([detail, true])
+    expect([detail, c.damp >= 0 && c.damp <= 1]).toEqual([detail, true])
+    expect([detail, c.countComp > 0]).toEqual([detail, true])
+  }
+})
+
+test('the non-finite guards leave every finite result bit-identical', () => {
+  // The guards must be inert for real input — the two backends stay in lockstep
+  // only while this function is bit-exact (see the module docstring).
+  const samples: FrameCompInput[] = [
+    { trail: 0, dt: 1 / 60, count: 200000, activeCount: 200000, textDamp: 1 },
+    { trail: 0.02, dt: 1 / 60, count: 200000, activeCount: 200000, textDamp: 1 },
+    { trail: 0.35, dt: 1 / 120, count: 200000, activeCount: 50000, textDamp: 0.6 },
+    { trail: 4, dt: 1 / 30, count: 1000000, activeCount: 1, textDamp: 0 },
+    { trail: 0.2, dt: 1 / 60, count: 1000, activeCount: 0, textDamp: 1 }, // Infinity ratio
+  ]
+  const expected = [
+    { fadeAlpha: 1, trailComp: 1, countComp: 1, damp: 1 },
+    { fadeAlpha: 1, trailComp: 1, countComp: 1, damp: 1 },
+    {
+      fadeAlpha: 1 - Math.exp(-(1 / 120) / 0.35),
+      trailComp: Math.min(Math.max((1 - Math.exp(-(1 / 120) / 0.35)) * 1.4, 0.06), 1),
+      countComp: Math.min(Math.pow(200000 / 50000, 0.7), 4),
+      damp: 0.6,
+    },
+    {
+      fadeAlpha: 1 - Math.exp(-(1 / 30) / 4),
+      trailComp: Math.min(Math.max((1 - Math.exp(-(1 / 30) / 4)) * 1.4, 0.06), 1),
+      countComp: 4,
+      damp: 0,
+    },
+    {
+      fadeAlpha: 1 - Math.exp(-(1 / 60) / 0.2),
+      trailComp: Math.min(Math.max((1 - Math.exp(-(1 / 60) / 0.2)) * 1.4, 0.06), 1),
+      countComp: 4, // Infinity ratio still clamps to COUNT_COMP_MAX, unchanged
+      damp: 1,
+    },
+  ]
+  samples.forEach((input, i) => {
+    expect(computeFrameComp(input)).toEqual(expected[i])
   })
 })

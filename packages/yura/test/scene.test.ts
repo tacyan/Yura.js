@@ -20,6 +20,8 @@ import {
   segmentAxisDistanceXZ,
   sweptSphereTOI,
   sweptCylinderTOI,
+  safeDt,
+  reviveBody,
 } from '../src/scene'
 import { resolveMaterial, materials } from '../src/materials'
 import { FX_FLOATS } from '../src/fx'
@@ -1213,4 +1215,110 @@ test('gravityWell accumulates per call, warns past MAX_ATTRACTORS, and releasing
   } finally {
     info.mockRestore()
   }
+})
+
+// --- Robustness: a single bad frame must not corrupt a running game --------
+//
+// Three defects found by driving the headless scene with hostile-but-reachable
+// inputs: an arena smaller than the body in it, a non-finite frame delta, and
+// user update code that divides by zero.
+
+test('a body wider than the arena rests instead of teleporting side to side', () => {
+  const scene = new YuraScene({ gravity: 0, bounds: 2 })
+  scene.add('plane', { size: 10 })
+  const ball = scene.add('sphere', { radius: 3, position: [0.5, 1, 0], body: 'dynamic' })
+  const xs: number[] = []
+  for (let i = 0; i < 6; i++) {
+    scene.step(1 / 60, i / 60)
+    xs.push(ball.position[0])
+  }
+  // Before the fix this alternated -1, 1, -1, 1… — the clamp flipped the sign
+  // every frame because `bounds - radius` was negative.
+  expect(new Set(xs).size).toBe(1)
+  expect(Math.abs(xs[0])).toBeLessThanOrEqual(2)
+})
+
+test('clampToBounds never flips a body across the arena', () => {
+  // limit < 0 means the body does not fit; it pins at the centre and stays.
+  const first = clampToBounds(0.5, 1, -1)
+  expect(first.position).toBe(0)
+  const second = clampToBounds(first.position, first.velocity, -1)
+  expect(second.position).toBe(first.position)
+  expect(second.velocity).toBe(first.velocity)
+})
+
+test('safeDt rejects deltas that would corrupt the simulation', () => {
+  expect(safeDt(1 / 60)).toBe(1 / 60)
+  expect(safeDt(NaN)).toBe(0)
+  expect(safeDt(Infinity)).toBe(0)
+  expect(safeDt(-1)).toBe(0)
+  expect(safeDt(0)).toBe(0)
+})
+
+test('a non-finite frame delta is a no-op, not a poisoned scene', () => {
+  const scene = new YuraScene({ gravity: -20, bounds: 10 })
+  scene.add('plane', { size: 20 })
+  const ball = scene.add('sphere', { radius: 0.5, position: [0, 3, 0], body: 'dynamic' })
+  scene.step(1 / 60, 0)
+  const before: [number, number, number] = [...ball.position]
+  scene.step(NaN, 1 / 60)
+  expect(ball.position).toEqual(before)
+  expect(ball.velocity.every(Number.isFinite)).toBe(true)
+  // The scene keeps simulating normally afterwards.
+  for (let i = 0; i < 600; i++) scene.step(1 / 60, i / 60)
+  expect(ball.position[1]).toBeCloseTo(0.5, 1)
+})
+
+test('reviveBody rewinds a body whose state went non-finite', () => {
+  const position: [number, number, number] = [NaN, 1, 2]
+  const velocity: [number, number, number] = [3, NaN, 5]
+  expect(reviveBody(position, velocity, [7, 8, 9])).toBe(true)
+  expect(position).toEqual([7, 8, 9])
+  expect(velocity).toEqual([0, 0, 0])
+  // A healthy body is left exactly as it was.
+  const ok: [number, number, number] = [1, 2, 3]
+  const okVel: [number, number, number] = [4, 5, 6]
+  expect(reviveBody(ok, okVel, [0, 0, 0])).toBe(false)
+  expect(ok).toEqual([1, 2, 3])
+  expect(okVel).toEqual([4, 5, 6])
+})
+
+test('reviveBody falls back to the origin when the rewind point is also broken', () => {
+  const position: [number, number, number] = [NaN, NaN, NaN]
+  const velocity: [number, number, number] = [0, 0, 0]
+  expect(reviveBody(position, velocity, [NaN, 5, NaN])).toBe(true)
+  expect(position).toEqual([0, 5, 0])
+})
+
+test('update code that produces NaN recovers with a YURA-018 warning', () => {
+  const info = spyOn(console, 'info').mockImplementation(() => {})
+  try {
+    const scene = new YuraScene({ gravity: -20, bounds: 10 })
+    scene.add('plane', { size: 20 })
+    const ball = scene.add('sphere', { radius: 0.5, position: [0, 3, 0], body: 'dynamic' })
+    let sabotage = true
+    scene.onUpdate(() => {
+      if (!sabotage) return
+      sabotage = false
+      ball.velocity[0] += 0 / 0 // the classic divide-by-zero in game code
+    })
+    for (let i = 0; i < 120; i++) scene.step(1 / 60, i / 60)
+    expect(ball.position.every(Number.isFinite)).toBe(true)
+    expect(ball.velocity.every(Number.isFinite)).toBe(true)
+    expect(ball.position[1]).toBeCloseTo(0.5, 1) // still lands on the ground
+    const codes = info.mock.calls.map((c) => String(c[0]))
+    expect(codes.filter((m) => m.includes(CODES.BODY_NON_FINITE))).toHaveLength(1) // warned once, not every frame
+  } finally {
+    info.mockRestore()
+  }
+})
+
+test('cameraFollowGoal keeps the camera on the player for a garbage velocity', () => {
+  const goal = cameraFollowGoal([1, 2, 3], [NaN, 0, NaN], { distance: 8, height: 3.6 })
+  expect(goal.eye.every(Number.isFinite)).toBe(true)
+  expect(goal.look.every(Number.isFinite)).toBe(true)
+  // It matches the at-rest framing rather than inventing a look-ahead.
+  const rest = cameraFollowGoal([1, 2, 3], [0, 0, 0], { distance: 8, height: 3.6 })
+  expect(goal.eye).toEqual(rest.eye)
+  expect(goal.look).toEqual(rest.look)
 })

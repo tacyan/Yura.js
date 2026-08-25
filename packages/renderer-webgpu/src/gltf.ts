@@ -203,7 +203,10 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
     const { bv, src } = getBufferView(acc.bufferView, `accessor ${idx}`)
     const bvOffset = bv.byteOffset ?? 0
     const accOffset = acc.byteOffset ?? 0
-    const stride = useViewStride ? bv.byteStride ?? elemSize : elemSize
+    // An absent byteStride means tightly packed, and exporters write 0 for the
+    // same thing. Honouring a literal 0 would point every element at the same
+    // bytes and collapse the mesh into a single point with no error at all.
+    const stride = useViewStride ? bv.byteStride || elemSize : elemSize
     if (!isIndexLike(bvOffset) || !isIndexLike(accOffset) || !isIndexLike(stride)) {
       throw malformed(`accessor ${idx} declares an invalid byteOffset or byteStride`)
     }
@@ -321,11 +324,20 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
   const min: Vec3 = [Infinity, Infinity, Infinity]
   const max: Vec3 = [-Infinity, -Infinity, -Infinity]
 
+  // Nodes on the current branch. Root pruning only drops nodes that appear as
+  // somebody's child, so a cycle that does not touch a scene root survives it
+  // and the walk below would recurse until the call stack gives out.
+  const onPath = new Set<number>()
+
   const visit = (nodeIdx: number, parent: Float32Array): void => {
     const node = json!.nodes?.[nodeIdx]
     if (node === null || typeof node !== 'object') {
       throw malformed(`node ${nodeIdx} is referenced but not defined`)
     }
+    if (onPath.has(nodeIdx)) {
+      throw malformed(`node ${nodeIdx} is its own ancestor (the node hierarchy has a cycle)`)
+    }
+    onPath.add(nodeIdx)
     let local: Float32Array
     if (node.matrix) {
       local = new Float32Array(node.matrix)
@@ -354,9 +366,32 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
         const uv = prim.attributes['TEXCOORD_0'] !== undefined
           ? readAccessor(prim.attributes['TEXCOORD_0']).data
           : new Float32Array(pos.count * 2)
+        // Every attribute in a primitive describes the same vertices, so a
+        // short accessor would hand the GPU a vertex buffer smaller than the
+        // draw needs — a validation error or a garbled model, depending on the
+        // backend, with nothing naming the real cause.
+        for (const [name, got] of [
+          ['NORMAL', prim.attributes['NORMAL'] !== undefined ? norm.length / 3 : pos.count],
+          ['TEXCOORD_0', prim.attributes['TEXCOORD_0'] !== undefined ? uv.length / 2 : pos.count],
+        ] as const) {
+          if (got < pos.count) {
+            throw malformed(
+              `${name} supplies ${got} vertices but POSITION declares ${pos.count}`,
+            )
+          }
+        }
         let indices: Uint32Array<ArrayBuffer>
         if (prim.indices !== undefined) {
           indices = readIndices(prim.indices)
+          // An index past the vertex array reaches the GPU as an out-of-range
+          // fetch: memory-safe, but it draws garbage and explains nothing.
+          for (let i = 0; i < indices.length; i++) {
+            if (indices[i] >= pos.count) {
+              throw malformed(
+                `index ${indices[i]} is out of range for a primitive with ${pos.count} vertices`,
+              )
+            }
+          }
         } else {
           indices = new Uint32Array(pos.count)
           for (let i = 0; i < pos.count; i++) indices[i] = i
@@ -379,6 +414,7 @@ export async function parseGLB(buf: ArrayBuffer, baseUrl = ''): Promise<GLTFMode
       }
     }
     for (const child of node.children ?? []) visit(child, world)
+    onPath.delete(nodeIdx)
   }
 
   const sceneNodes = json.scenes?.[json.scene ?? 0]?.nodes ?? (json.nodes ? json.nodes.map((_, i) => i) : [])

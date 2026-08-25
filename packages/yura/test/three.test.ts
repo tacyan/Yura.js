@@ -742,3 +742,47 @@ test('yuraLayer throws and removes its canvas when no GPU backend exists', async
     expect(stage.overlay.removed).toBe(1)
   })
 })
+
+test('fovAspectFromProjection falls back to a usable camera for an un-updated matrix', () => {
+  // A Three.js camera before updateProjectionMatrix() is all zeros: m[5] = 0
+  // gave fovY = pi and 0 / 0 = NaN for the aspect, which blanked the swarm.
+  const zeros = fovAspectFromProjection(new Float32Array(16))
+  expect(Number.isFinite(zeros.fovY)).toBe(true)
+  expect(Number.isFinite(zeros.aspect)).toBe(true)
+  expect(zeros.fovY).toBeCloseTo((50 * Math.PI) / 180, 9) // Three.js's own default
+  expect(zeros.aspect).toBe(1)
+
+  // A real perspective matrix is read exactly as before.
+  const fov = Math.PI / 4
+  const aspect = 16 / 9
+  const f = 1 / Math.tan(fov / 2)
+  const m = new Float32Array(16)
+  m[0] = f / aspect
+  m[5] = f
+  const got = fovAspectFromProjection(m)
+  // Float32 storage costs a few digits — the matrix really is a Float32Array
+  // in every caller, so this is the precision the guard has to preserve.
+  expect(got.fovY).toBeCloseTo(fov, 6)
+  expect(got.aspect).toBeCloseTo(aspect, 6)
+})
+
+test('yuraLayer floors non-finite hold and morph timings instead of freezing', async () => {
+  const stage = createDomStage()
+  await withDom(stage, async () => {
+    // `hold: total / steps` with no steps is the realistic source. Math.max
+    // passed the NaN through, and then `timer >= NaN` never fired (the hold
+    // never ended) while `timer / NaN` left the morph parameter at NaN.
+    const layer = await yuraLayer(
+      { domElement: stage.host as unknown as HTMLCanvasElement },
+      threeCamera(),
+      { backend: 'webgl2', particles: 8, shape: countingSpec(), hold: NaN, morph: NaN },
+    )
+    const i = layer as unknown as { holdSeconds: number; morphSeconds: number; activeMorphSeconds: number }
+    expect(Number.isFinite(i.holdSeconds)).toBe(true)
+    expect(Number.isFinite(i.morphSeconds)).toBe(true)
+    expect(Number.isFinite(i.activeMorphSeconds)).toBe(true)
+    expect(i.holdSeconds).toBe(0)
+    expect(i.morphSeconds).toBe(1e-4)
+    layer.dispose()
+  })
+})

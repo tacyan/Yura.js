@@ -10,9 +10,11 @@
  * Randomness is a seeded LCG implemented below (no Math.random) so every run
  * is reproducible; assertion messages carry the seed and case number.
  */
-import { test, expect } from 'bun:test'
-import { noteToFreq } from '../src/audio'
-import { normalizeLines, buildTimeline, timelineDuration, type LyricInput } from '../src/lyrics'
+import { test, expect, spyOn } from 'bun:test'
+import { noteToFreq, clamp01, pickupTone, landTone } from '../src/audio'
+import { sweepProgress } from '../src/app'
+import { cameraFollowGoal, safeDt, YuraScene } from '../src/scene'
+import { normalizeLines, buildTimeline, timelineDuration, wrapTime, type LyricInput } from '../src/lyrics'
 import { FxPool, FX_FLOATS, type BurstOptions, type AttractorParams } from '../src/fx'
 
 const SEED = 0xf00d01
@@ -320,4 +322,111 @@ test('FxPool fuzz scenario is deterministic for a fixed seed', () => {
   // A different seed must not reproduce the same run byte-for-byte.
   const c = runFxScenario(SEED ^ 0x45, 120, null)
   expect(c).not.toBe(a)
+})
+
+// ---------------------------------------------------------------------------
+// Non-finite hostility sweep.
+//
+// Every helper below advertises a bounded, finite result. Math.min/Math.max
+// pass NaN straight through, so several of them quietly did not: a clamp that
+// does not clamp NaN produced a silent AudioParam TypeError, a permanently
+// stuck morph sweep, a NaN lyric cursor, and a blanked camera. NaN never heals
+// on its own, so one bad value ends the session — this sweep is the standing
+// net for the whole class.
+
+const HOSTILE = [NaN, Infinity, -Infinity] as const
+
+/** Every ordinary value these helpers are also expected to keep handling. */
+const ORDINARY = [-1e6, -1.5, -0.5, 0, 0.25, 1, 1.5, 1e6] as const
+
+test('fuzz: bounded helpers stay finite and in range for hostile numbers', () => {
+  const failures: string[] = []
+  let total = 0
+  const rng = makeLcg(SEED ^ 0x5eed)
+  const values = [...HOSTILE, ...ORDINARY]
+
+  for (let c = 0; c < 400; c++) {
+    // Each case mixes hostile and ordinary arguments so a guard that only
+    // works when every argument is bad does not pass by accident.
+    const a = pick(rng, values)
+    const b = pick(rng, values)
+    const d = pick(rng, values)
+    const note = (what: string, got: unknown) =>
+      failures.push(`case ${c} ${what}(${a}, ${b}, ${d}) -> ${JSON.stringify(got)}`)
+
+    total += 4
+
+    const gain = clamp01(a)
+    if (!Number.isFinite(gain) || gain < 0 || gain > 1) note('clamp01', gain)
+
+    const sweep = sweepProgress(a, b, d)
+    if (!Number.isFinite(sweep) || sweep < 0 || sweep > 1) note('sweepProgress', sweep)
+
+    const wrapped = wrapTime(a, b)
+    if (!Number.isFinite(wrapped) || wrapped < 0) note('wrapTime', wrapped)
+
+    const dt = safeDt(a)
+    if (!Number.isFinite(dt) || dt < 0) note('safeDt', dt)
+  }
+  report(failures, total, 'bounded-helpers')
+})
+
+test('fuzz: tone specs and the follow camera never emit a non-finite number', () => {
+  const failures: string[] = []
+  let total = 0
+  const rng = makeLcg(SEED ^ 0xca77)
+  const values = [...HOSTILE, ...ORDINARY]
+
+  for (let c = 0; c < 400; c++) {
+    const a = pick(rng, values)
+    const b = pick(rng, values)
+    total += 3
+
+    for (const [what, spec] of [
+      ['pickupTone', pickupTone(a)],
+      ['landTone', landTone(a)],
+    ] as const) {
+      const nums = [spec.freq, spec.at, spec.dur, spec.attack, spec.peak, spec.freqEnd ?? 0]
+      if (!nums.every(Number.isFinite)) failures.push(`case ${c} ${what}(${a}) -> ${JSON.stringify(spec)}`)
+    }
+
+    const goal = cameraFollowGoal([a, b, 0], [b, 0, a], { distance: 8, height: 3.6 }, a)
+    if (!goal.eye.every(Number.isFinite) || !goal.look.every(Number.isFinite)) {
+      // The camera may legitimately sit at a hostile *position* — that is the
+      // caller's own number — so only flag output the helper itself invented.
+      if ([a, b].every(Number.isFinite)) failures.push(`case ${c} cameraFollowGoal -> ${JSON.stringify(goal)}`)
+    }
+  }
+  report(failures, total, 'tone-and-camera')
+})
+
+test('fuzz: a scene survives hostile frame deltas and hostile update code', () => {
+  const failures: string[] = []
+  const rng = makeLcg(SEED ^ 0x5cee)
+  const deltas = [NaN, Infinity, -Infinity, -1 / 60, 0, 1 / 60, 1 / 30, 30]
+  // Every case trips YURA-018 by design; keep the run's output readable.
+  const info = spyOn(console, 'info').mockImplementation(() => {})
+  try {
+  for (let c = 0; c < 40; c++) {
+    const scene = new YuraScene({ gravity: -20, bounds: 8 })
+    scene.add('plane', { size: 16 })
+    const ball = scene.add('sphere', { radius: 0.5, position: [0, 4, 0], body: 'dynamic' })
+    scene.onUpdate(() => {
+      // Game code that leaves the reals every few frames.
+      if (rng() < 0.2) ball.velocity[randInt(rng, 0, 2)] += pick(rng, [NaN, Infinity, -Infinity, 0])
+    })
+    let time = 0
+    for (let i = 0; i < 200; i++) {
+      const dt = pick(rng, deltas)
+      time += Number.isFinite(dt) && dt > 0 ? dt : 0
+      scene.step(dt, time)
+    }
+    if (!ball.position.every(Number.isFinite) || !ball.velocity.every(Number.isFinite)) {
+      failures.push(`case ${c} pos=${JSON.stringify(ball.position)} vel=${JSON.stringify(ball.velocity)}`)
+    }
+  }
+  } finally {
+    info.mockRestore()
+  }
+  report(failures, 40, 'scene-step')
 })

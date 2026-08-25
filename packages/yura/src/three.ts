@@ -43,7 +43,7 @@ import { WebGL2ParticleRenderer } from '@yura/renderer-webgl'
 import { resolvePreset } from './presets'
 import { looks as lookRegistry, type LookName } from './looks'
 import { shapes as shapeRegistry, type ShapeSpec } from './shapes'
-import { eases, type Ease, type EaseFn, type MotionTimingOptions, type MorphNowOptions } from './app'
+import { eases, resolveSeconds, type Ease, type EaseFn, type MotionTimingOptions, type MorphNowOptions } from './app'
 
 // ---------------------------------------------------------------------------
 // Structural (duck) types for the bits of Three.js we read. No 'three' import.
@@ -91,8 +91,16 @@ export function glProjectionToWebGPU(m: ArrayLike<number>): Float32Array {
 
 /** Extract vertical fov (radians) and aspect from a perspective projection. */
 export function fovAspectFromProjection(m: ArrayLike<number>): { fovY: number; aspect: number } {
+  // A camera whose projection has not been updated yet is all zeros: m[5] = 0
+  // gives fovY = pi (a camera pointing at nothing) and m[5] / m[0] = 0 / 0 =
+  // NaN, which reaches the swarm as a NaN projection and draws an empty frame
+  // with nothing to explain it. Fall back to a usable camera instead.
+  if (!Number.isFinite(m[5]) || m[5] === 0) {
+    return { fovY: FALLBACK_FOV_Y, aspect: 1 }
+  }
   const fovY = 2 * Math.atan(1 / m[5])
-  return { fovY, aspect: m[5] / m[0] }
+  const aspect = m[5] / m[0]
+  return { fovY, aspect: Number.isFinite(aspect) ? aspect : 1 }
 }
 
 /** Camera world position from a rigid view matrix (eye = -R^T * t). */
@@ -215,6 +223,13 @@ const DEFAULT_MORPH_SECONDS = 2.6
 /** Floor for morph durations — keeps `timer / duration` finite (≈ instant). */
 const MIN_MORPH_SECONDS = 1e-4
 const MAX_DT = 1 / 30
+/**
+ * Vertical field of view used when a projection matrix carries no usable one
+ * (an un-updated Three.js camera is all zeros). 50 degrees is Three.js's own
+ * PerspectiveCamera default, so the fallback frames the scene the way the
+ * caller's camera would once it is initialized.
+ */
+const FALLBACK_FOV_Y = (50 * Math.PI) / 180
 
 function resolveEase(e: Ease): EaseFn {
   if (typeof e === 'function') return e
@@ -317,9 +332,9 @@ export class YuraThreeLayer {
     this.count = renderer.count
     this.offset = (opts.position ?? [0, 0, 0]) as Vec3
     this.scale = (opts.radius ?? 6) / YURA_SHAPE_RADIUS
-    this.holdSeconds = opts.hold !== undefined ? Math.max(opts.hold, 0) : DEFAULT_HOLD_SECONDS
+    this.holdSeconds = opts.hold !== undefined ? resolveSeconds(opts.hold, 0) : DEFAULT_HOLD_SECONDS
     this.morphSeconds =
-      opts.morph !== undefined ? Math.max(opts.morph, MIN_MORPH_SECONDS) : DEFAULT_MORPH_SECONDS
+      opts.morph !== undefined ? resolveSeconds(opts.morph, MIN_MORPH_SECONDS) : DEFAULT_MORPH_SECONDS
     this.morphEase = opts.ease !== undefined ? resolveEase(opts.ease) : eases.cubic
     this.activeMorphSeconds = this.morphSeconds
     this.activeMorphEase = this.morphEase
@@ -411,7 +426,7 @@ export class YuraThreeLayer {
     if (this.morphPos === 0) this.renderer.writeTargetB(data)
     else this.renderer.writeTargetA(data)
     this.activeMorphSeconds =
-      opts.duration !== undefined ? Math.max(opts.duration, MIN_MORPH_SECONDS) : this.morphSeconds
+      opts.duration !== undefined ? resolveSeconds(opts.duration, MIN_MORPH_SECONDS) : this.morphSeconds
     this.activeMorphEase = opts.ease !== undefined ? resolveEase(opts.ease) : this.morphEase
     this.morphTimer = 0
     this.morphActive = true

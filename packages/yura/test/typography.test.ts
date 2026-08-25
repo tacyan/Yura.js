@@ -642,3 +642,32 @@ test('a seek mid-gap re-arms the timer without re-firing consumed lines', async 
     run.stop()
   }
 })
+
+// --- Clamps and wraps must survive a non-finite input ----------------------
+//
+// Math.min/Math.max propagate NaN, so both of these advertised their range and
+// then failed to hold it. A stuck sweep or a NaN lyric cursor never recovers.
+
+test('sweepProgress stays inside 0..1 for non-finite input', () => {
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    expect(sweepProgress(bad, 0, 1)).toBeGreaterThanOrEqual(0)
+    expect(sweepProgress(bad, 0, 1)).toBeLessThanOrEqual(1)
+    expect(sweepProgress(0.5, bad, 1)).toBeGreaterThanOrEqual(0)
+    expect(sweepProgress(0.5, 0, bad)).toBeLessThanOrEqual(1)
+  }
+  // Ordinary values are unchanged.
+  expect(sweepProgress(0, 0, 0)).toBe(0)
+  expect(sweepProgress(1, 0, 0)).toBe(1)
+  expect(sweepProgress(0.5, 0, 0)).toBe(0.5)
+})
+
+test('wrapTime restarts the timeline instead of returning NaN', () => {
+  expect(wrapTime(NaN, 10)).toBe(0)
+  expect(wrapTime(Infinity, 10)).toBe(0)
+  expect(wrapTime(5, NaN)).toBe(0)
+  expect(wrapTime(1, Infinity)).toBe(0) // Infinity % Infinity is NaN
+  // Ordinary wrapping is unchanged.
+  expect(wrapTime(12, 10)).toBe(2)
+  expect(wrapTime(-1, 10)).toBe(9)
+  expect(wrapTime(5, 0)).toBe(0)
+})

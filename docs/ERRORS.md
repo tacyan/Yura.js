@@ -41,6 +41,7 @@ lowercased.
 | [YURA-015](#yura-015) | `UNKNOWN_EASE` | throw | An ease name that is not registered (and not a function) |
 | [YURA-016](#yura-016) | `SCENE_REPLACED` | warn | `app.scene()` called again — the previous scene was detached |
 | [YURA-017](#yura-017) | `GRAVITY_WELL_CLAMPED` | warn | `scene.gravityWell()` calls exceed the shared attractor budget |
+| [YURA-018](#yura-018) | `BODY_NON_FINITE` | warn | A dynamic body reached a non-finite position or velocity and was rewound |
 | [YURA-020](#yura-020) | `ASSET_LOAD_FAILED` | throw | A `.glb` model or `shapes.image()` URL could not be fetched or parsed |
 | [YURA-050](#yura-050) | `DEVICE_LOST` | warn | The GPU device was lost at runtime; Yura attempts recovery |
 
@@ -278,6 +279,42 @@ const release = scene.gravityWell([0, 1.5, 0], 12)
 // later, before adding another:
 release()
 ```
+
+## YURA-018
+
+**`BODY_NON_FINITE` — warn (console.info)**
+
+**When:** a dynamic body finished a simulation tick with `NaN` or `Infinity`
+in its position or velocity. Yura rewinds that body to where it started the
+frame, drops its velocity to rest, and warns once per scene.
+
+**Why:** non-finite numbers never heal on their own. Without the rewind, a
+single bad frame spreads from the body into the camera, its trail, and every
+frame after it — the scene simply stops drawing, with nothing in the console
+to explain it. The rewind keeps the game playable and names the cause.
+
+**Fix:** look in your `onUpdate` for arithmetic that can leave the reals. The
+usual sources:
+
+```ts
+// Divide by zero when the player sits exactly on the target.
+const d = Math.hypot(dx, dz)
+player.velocity[0] += (dx / d) * pull * dt        // d === 0 → NaN
+
+// Guard it:
+if (d > 1e-6) player.velocity[0] += (dx / d) * pull * dt
+```
+
+```ts
+// An unbounded force reaches Infinity, and Infinity - Infinity is NaN.
+player.velocity[1] += 1 / (distance * distance) // distance → 0
+
+// Clamp the magnitude instead:
+player.velocity[1] += Math.min(1 / (distance * distance), MAX_PULL)
+```
+
+The warning fires once per scene, so fix the first occurrence rather than
+counting them.
 
 ## YURA-020
 

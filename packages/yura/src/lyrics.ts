@@ -134,7 +134,10 @@ export function timelineDuration(events: LyricEvent[], tail = DEFAULT_TAIL): num
 
 /** Wraps a timeline clock into [0, duration). (Pure; exported for tests.) */
 export function wrapTime(t: number, duration: number): number {
-  if (duration <= 0) return 0
+  // An invalid span restarts the timeline rather than returning NaN. Infinity
+  // has to be rejected explicitly: `Infinity % Infinity` is NaN, so a duration
+  // of Infinity slips past a plain `duration <= 0` guard and poisons the cursor.
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(t)) return 0
   return ((t % duration) + duration) % duration
 }
 

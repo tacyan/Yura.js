@@ -7,7 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- A dynamic body wider than the arena no longer teleports across the origin
+  every frame. `bounds - radius` goes negative when the body does not fit, and
+  `clampToBounds` flipped the position's sign on each tick; it now collapses
+  the play area to its centre and the body rests.
+- A non-finite frame delta is a no-op instead of a poisoned scene. `step()`
+  quarantines `dt` and `time` at the entry point (`safeDt`), so a stalled
+  clock or a hand-rolled loop can no longer write `NaN` into every body it
+  touches.
+- Game code that produces `NaN` — a division by zero in `onUpdate` is the
+  usual source — no longer ends the session. The body rewinds to where it
+  started the frame, its velocity drops to rest, and Yura warns once with
+  [`YURA-018`](docs/ERRORS.md#yura-018) (`BODY_NON_FINITE`). `NaN` never heals
+  on its own, so previously one bad frame blanked the scene with nothing in
+  the console to explain it.
+- `clamp01` now clamps non-finite input (`NaN` → 0, `Infinity` → 1). Its result
+  feeds `AudioParam.setValueAtTime`, which rejects a non-finite value with a
+  raw `TypeError`, so a single `gain: v / total` with an empty total silenced
+  the whole soundtrack. `pickupTone` and `landTone` are finite for any input.
+- `sweepProgress`, `wrapTime`, and `cameraFollowGoal` hold the ranges they
+  advertise for non-finite input. `Math.min`/`Math.max` pass `NaN` straight
+  through, which left the morph sweep stuck, the lyric cursor at `NaN`, and the
+  follow camera off the player with a blank view. `wrapTime` also rejects an
+  infinite duration, where `Infinity % Infinity` produced `NaN`.
+
+#### glTF loader
+
+- A `bufferView` with `byteStride: 0` now reads tightly packed. Exporters write
+  0 for the same thing an absent `byteStride` means; honouring the literal 0
+  pointed every vertex at the same bytes and collapsed the whole mesh into a
+  single point, with no error anywhere.
+- An index past the end of the vertex array is rejected with
+  [`YURA-020`](docs/ERRORS.md#yura-020). It previously reached the GPU as an
+  out-of-range fetch: memory-safe, but it draws a garbled model and explains
+  nothing.
+- A `NORMAL` or `TEXCOORD_0` accessor with fewer vertices than `POSITION` is
+  rejected. It used to hand the backend a vertex buffer smaller than the draw
+  needs.
+- A node cycle below the scene root is rejected instead of recursed into. Root
+  pruning only drops nodes that appear as somebody's child, so a `0 -> 1 -> 2
+  -> 1` hierarchy stayed reachable and blew the call stack with a raw
+  `RangeError` — the one thing the loader's own validation policy promises will
+  not happen.
+
+#### Renderers and morph choreography
+
+- `computeFrameComp` — the single formula both the WebGPU and WebGL2 backends
+  share — stays finite for a zero particle count (`0 / 0`), a non-finite frame
+  delta, and a non-finite `textDamp`. Each factor multiplies particle
+  intensity, bloom, or the fade pass, so one `NaN` painted the frame as
+  undefined. Every finite input is bit-identical to before, which the two
+  backends depend on.
+- A non-finite choreography timing falls back to its floor instead of slipping
+  past it. `Math.max(NaN, min)` is `NaN`, and from there `timer / NaN` never
+  reaches `k >= 1` (a morph that never completes) and `timer >= NaN` is never
+  true (a hold that never ends) — so `motion({ hold, morph })`,
+  `morphNow({ duration })`, `morphTo({ duration })`, and `yuraLayer({ hold,
+  morph })` all froze the sequence for good on a computed value. All five call
+  sites now share one `resolveSeconds` helper, which also rejects `Infinity`.
+- A non-finite `sweep` reads as no sweep rather than stalling the whole
+  transition.
+- `fovAspectFromProjection` returns a usable camera for an un-updated
+  projection matrix. A Three.js camera before `updateProjectionMatrix()` is all
+  zeros, which gave `fovY = pi` and `0 / 0 = NaN` for the aspect and drew an
+  empty frame.
+
+### Added
+
+- Deterministic fuzz sweep for non-finite input across the bounded helpers,
+  the tone specs, the follow camera, and a full scene stepped with hostile
+  frame deltas — the standing regression net for this class. It found the
+  `wrapTime(t, Infinity)` case that the hand-written tests missed.
 
 ## [0.2.0] - 2026-08-22
 

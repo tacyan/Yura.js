@@ -462,7 +462,7 @@ test('frames() is empty before any tick and its default window fits the ring', (
 
 // ── Morph choreography: eases registry + .motion timing + morphNow options ──
 
-import { eases, type EaseFn } from '../src/app'
+import { eases, resolveSeconds, type EaseFn } from '../src/app'
 import type { ShapeSpec } from '../src/shapes'
 
 /** Typed window into YuraApp's private morph machinery for white-box checks. */
@@ -2508,5 +2508,71 @@ test('the yura() factory constructs a YuraApp bound to the target element', () =
   const app = yura(el as unknown as HTMLElement)
   expect(app).toBeInstanceOf(YuraApp)
   expect(full(app).container).toBe(el)
+  app.dispose()
+})
+
+// --- A morph duration the timer can divide by ------------------------------
+//
+// Math.max passes NaN through, so the MIN_MORPH_SECONDS floor did not hold for
+// a computed duration. `timer / NaN` is NaN, `NaN >= 1` is false, so the morph
+// never completed and every particle target stayed NaN for the rest of the
+// session — a frozen, blank canvas with nothing in the console.
+
+test('resolveSeconds floors a duration the timer cannot divide by', () => {
+  expect(resolveSeconds(NaN)).toBe(1e-4)
+  expect(resolveSeconds(Infinity)).toBe(1e-4) // timer / Infinity is 0 forever
+  expect(resolveSeconds(-Infinity)).toBe(1e-4)
+  // Finite input keeps the previous Math.max(v, min) behaviour exactly.
+  expect(resolveSeconds(0)).toBe(1e-4)
+  expect(resolveSeconds(-5)).toBe(1e-4)
+  expect(resolveSeconds(1)).toBe(1)
+  expect(resolveSeconds(2.6)).toBe(2.6)
+})
+
+test('a non-finite morphNow duration still completes the transition', async () => {
+  const app = headlessApp().particles(8)
+  const i = internals(app)
+  const r = fakeRenderer()
+  i.renderer = r
+
+  await app.morphNow(probeShape(), { duration: NaN, ease: 'linear' })
+  expect(Number.isFinite(i.activeMorphSeconds)).toBe(true)
+  i.updateMorph(1 / 60)
+  expect(Number.isFinite(r.morphT)).toBe(true)
+  expect(i.morph.phase).toBe('hold') // it finished instead of hanging at NaN
+  app.dispose()
+})
+
+test('a non-finite sweep does not stall the sweep for the whole transition', async () => {
+  const app = headlessApp().particles(8)
+  const i = internals(app)
+  const r = fakeRenderer()
+  i.renderer = r
+
+  await app.morphNow(probeShape(), { duration: 1, sweep: NaN })
+  expect(Number.isFinite(r.morphSpread)).toBe(true)
+  expect(r.morphSpread).toBe(0) // neutral: no sweep, not a stuck one
+  app.dispose()
+})
+
+test('a non-finite .motion morph duration falls back to the floor', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  app.motion({ morph: NaN })
+  expect(Number.isFinite(i.morphSeconds)).toBe(true)
+  expect(i.morphSeconds).toBe(1e-4)
+  app.motion({ morph: 3 }) // ordinary values are unchanged
+  expect(i.morphSeconds).toBe(3)
+  app.dispose()
+})
+
+test('a non-finite .motion hold falls back to no hold instead of freezing', () => {
+  const app = headlessApp()
+  const i = internals(app)
+  app.motion({ hold: NaN })
+  expect(Number.isFinite(i.holdSeconds)).toBe(true)
+  expect(i.holdSeconds).toBe(0) // `timer >= NaN` was never true — the sequence stopped
+  app.motion({ hold: 5 }) // ordinary values are unchanged
+  expect(i.holdSeconds).toBe(5)
   app.dispose()
 })
