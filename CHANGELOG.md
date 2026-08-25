@@ -33,6 +33,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   follow camera off the player with a blank view. `wrapTime` also rejects an
   infinite duration, where `Infinity % Infinity` produced `NaN`.
 
+#### glTF loader
+
+- A `bufferView` with `byteStride: 0` now reads tightly packed. Exporters write
+  0 for the same thing an absent `byteStride` means; honouring the literal 0
+  pointed every vertex at the same bytes and collapsed the whole mesh into a
+  single point, with no error anywhere.
+- An index past the end of the vertex array is rejected with
+  [`YURA-020`](docs/ERRORS.md#yura-020). It previously reached the GPU as an
+  out-of-range fetch: memory-safe, but it draws a garbled model and explains
+  nothing.
+- A `NORMAL` or `TEXCOORD_0` accessor with fewer vertices than `POSITION` is
+  rejected. It used to hand the backend a vertex buffer smaller than the draw
+  needs.
+- A node cycle below the scene root is rejected instead of recursed into. Root
+  pruning only drops nodes that appear as somebody's child, so a `0 -> 1 -> 2
+  -> 1` hierarchy stayed reachable and blew the call stack with a raw
+  `RangeError` — the one thing the loader's own validation policy promises will
+  not happen.
+
+#### Renderers and morph choreography
+
+- `computeFrameComp` — the single formula both the WebGPU and WebGL2 backends
+  share — stays finite for a zero particle count (`0 / 0`), a non-finite frame
+  delta, and a non-finite `textDamp`. Each factor multiplies particle
+  intensity, bloom, or the fade pass, so one `NaN` painted the frame as
+  undefined. Every finite input is bit-identical to before, which the two
+  backends depend on.
+- A non-finite choreography timing falls back to its floor instead of slipping
+  past it. `Math.max(NaN, min)` is `NaN`, and from there `timer / NaN` never
+  reaches `k >= 1` (a morph that never completes) and `timer >= NaN` is never
+  true (a hold that never ends) — so `motion({ hold, morph })`,
+  `morphNow({ duration })`, `morphTo({ duration })`, and `yuraLayer({ hold,
+  morph })` all froze the sequence for good on a computed value. All five call
+  sites now share one `resolveSeconds` helper, which also rejects `Infinity`.
+- A non-finite `sweep` reads as no sweep rather than stalling the whole
+  transition.
+- `fovAspectFromProjection` returns a usable camera for an un-updated
+  projection matrix. A Three.js camera before `updateProjectionMatrix()` is all
+  zeros, which gave `fovY = pi` and `0 / 0 = NaN` for the aspect and drew an
+  empty frame.
+
 ### Added
 
 - Deterministic fuzz sweep for non-finite input across the bounded helpers,

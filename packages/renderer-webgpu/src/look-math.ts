@@ -83,18 +83,27 @@ export function computeFrameComp(input: FrameCompInput): FrameComp {
   // Trail decay per frame, framerate-independent. Compensate particle
   // intensity so steady-state accumulation stays in a sane HDR range.
   const trail = Math.max(input.trail, 0)
-  const trailOn = trail > TRAIL_OFF_THRESHOLD
+  // A non-finite dt has no meaningful decay curve, and NaN would flow into the
+  // fade pass and paint the whole frame as undefined. Fall back to the
+  // trails-off branch (full clear). A NaN trail already lands here, because
+  // `NaN > TRAIL_OFF_THRESHOLD` is false.
+  const trailOn = trail > TRAIL_OFF_THRESHOLD && Number.isFinite(input.dt)
   const fadeAlpha = trailOn ? 1 - Math.exp(-input.dt / trail) : 1
   const trailComp = trailOn
     ? Math.min(Math.max(fadeAlpha * TRAIL_COMP_GAIN, TRAIL_COMP_FLOOR), 1)
     : 1
   // When the governor sheds particles, brighten the survivors so the total
   // light on screen stays comparable — otherwise low levels fade to black.
-  const countComp = Math.min(
-    Math.pow(input.count / input.activeCount, COUNT_COMP_EXPONENT),
-    COUNT_COMP_MAX,
-  )
-  // Text-readability damping (1 = bit-exact neutral, see field docs).
-  const damp = Math.min(Math.max(input.textDamp, 0), 1)
+  // A zero configured count divided by a zero active count is NaN, which
+  // Math.pow and Math.min both pass straight through into particle intensity.
+  // Infinity is already handled by the COUNT_COMP_MAX clamp, so only NaN needs
+  // the neutral fallback — every finite input stays bit-identical.
+  const ratio = input.count / input.activeCount
+  const countComp = Number.isNaN(ratio)
+    ? 1
+    : Math.min(Math.pow(ratio, COUNT_COMP_EXPONENT), COUNT_COMP_MAX)
+  // Text-readability damping (1 = bit-exact neutral, see field docs). NaN reads
+  // as neutral rather than surviving the clamp it is supposed to obey.
+  const damp = Number.isNaN(input.textDamp) ? 1 : Math.min(Math.max(input.textDamp, 0), 1)
   return { fadeAlpha, trailComp, countComp, damp }
 }

@@ -66,6 +66,19 @@ const MAX_DT = 1 / 30
 /** Floor for morph durations — keeps `timer / duration` finite (≈ instant). */
 const MIN_MORPH_SECONDS = 1e-4
 
+/**
+ * A duration the choreography clock can actually work with. `Math.max` passes
+ * NaN through, so a computed timing — `total / steps` with no steps, a slider
+ * bound to an empty field — slipped past every floor in the app and froze the
+ * sequence: `timer / NaN` is NaN so a morph never reaches `k >= 1`, and
+ * `timer >= NaN` is never true so a hold never ends. Infinity is rejected for
+ * the mirror-image reason (`timer / Infinity` is 0 forever). Both fall back to
+ * `min`, which reads as an instant transition.
+ */
+export function resolveSeconds(v: number, min: number = MIN_MORPH_SECONDS): number {
+  return Number.isFinite(v) ? Math.max(v, min) : min
+}
+
 /** Setup callback for {@link YuraApp.game}: receives the fresh scene; may be async. */
 export type GameSetup = (scene: YuraScene) => void | Promise<void>
 
@@ -772,8 +785,8 @@ export class YuraApp {
    */
   motion(m: Partial<MotionParams> & MotionTimingOptions): this {
     const { hold, morph, ease, ...physics } = m
-    if (hold !== undefined) this.holdSeconds = Math.max(hold, 0)
-    if (morph !== undefined) this.morphSeconds = Math.max(morph, MIN_MORPH_SECONDS)
+    if (hold !== undefined) this.holdSeconds = resolveSeconds(hold, 0)
+    if (morph !== undefined) this.morphSeconds = resolveSeconds(morph)
     if (ease !== undefined) this.morphEase = resolveEase(ease)
     this.userMotion = { ...this.userMotion, ...physics }
     this.motionParams = { ...this.motionParams, ...physics }
@@ -902,13 +915,16 @@ export class YuraApp {
     this.targetKinds[m.pos === 0 ? 1 : 0] = spec.kind
     // Per-particle sweep: the sign routes the shader to the DESTINATION
     // buffer's delay coordinate (+ = targetB, - = targetA). 0 = uniform.
-    const spread = Math.min(Math.max(opts.sweep ?? 0, 0), 1)
+    // Same NaN hole as the duration floor: an unclamped sweep reaches the
+    // renderer as morphSpread and stalls the sweep for the whole transition.
+    const rawSweep = opts.sweep ?? 0
+    const spread = Number.isNaN(rawSweep) ? 0 : Math.min(Math.max(rawSweep, 0), 1)
     this.renderer.morphSpread = m.pos === 0 ? spread : -spread
     this.renderer.morphT = m.pos
     // Per-call duration/ease apply to THIS transition only; the app-level
     // choreography (.motion) is untouched and defaults are exactly it.
     this.activeMorphSeconds =
-      opts.duration !== undefined ? Math.max(opts.duration, MIN_MORPH_SECONDS) : this.morphSeconds
+      opts.duration !== undefined ? resolveSeconds(opts.duration) : this.morphSeconds
     this.activeMorphEase = opts.ease !== undefined ? resolveEase(opts.ease) : this.morphEase
     m.phase = 'move'
     m.timer = 0
