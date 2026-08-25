@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "codebase-memory": {
+      "command": "npx",
+      "args": ["-y", "codebase-memory-mcp@0.10.8"],
+      "env": {}
+    }
+  }
+}
