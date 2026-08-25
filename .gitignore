@@ -45,8 +45,14 @@ lerna-debug.log*
 *.pem
 *.key
 
-# --- AI agent state (machine-local: hooks reference absolute paths) ---
-.claude/
+# --- AI agent state (machine-local) ---
+# .claude/ is machine-local by default. The exceptions below are the shared,
+# portable session setup: they resolve every path at runtime from
+# $CLAUDE_PROJECT_DIR and hold no machine-specific values, so they travel with
+# the repo (see CLAUDE.md). settings.local.json stays local.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 .codex/
 .gemini/
 .cursor/
