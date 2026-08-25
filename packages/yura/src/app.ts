@@ -200,7 +200,9 @@ export interface MorphNowOptions {
 export function sweepProgress(morphT: number, delayCoord: number, spread: number): number {
   const s = Math.min(Math.abs(spread), 1)
   const e = morphT * (1 + s) - delayCoord * s
-  return Math.min(Math.max(e, 0), 1)
+  // Math.min/Math.max let NaN through untouched, so a single non-finite input
+  // would leave the sweep permanently stuck instead of clamped into 0..1.
+  return Number.isNaN(e) ? 0 : Math.min(Math.max(e, 0), 1)
 }
 
 /**

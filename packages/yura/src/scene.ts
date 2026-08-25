@@ -117,9 +117,47 @@ export function readGamepads(
  * Reflecting instead (-v * bounce) fights a held stick and vibrates the ball.
  */
 export function clampToBounds(position: number, velocity: number, limit: number): { position: number; velocity: number } {
-  if (Math.abs(position) <= limit) return { position, velocity }
+  // A body wider than the arena yields a negative limit. Clamping to it would
+  // flip the position's sign every frame and vibrate the body across the
+  // origin forever, so the play area collapses to its centre instead.
+  const lim = Math.max(limit, 0)
+  if (Math.abs(position) <= lim) return { position, velocity }
   const side = position > 0 ? 1 : -1
-  return { position: side * limit, velocity: velocity * side > 0 ? 0 : velocity }
+  return { position: side * lim, velocity: velocity * side > 0 ? 0 : velocity }
+}
+
+/**
+ * A frame delta the simulation can trust. A non-finite or non-positive delta
+ * — a stalled clock, a hand-rolled loop, `performance.now()` running backwards
+ * — reads as zero, so the tick advances nothing instead of writing NaN into
+ * every body it touches. NaN never heals on its own: one poisoned frame would
+ * otherwise end the session.
+ */
+export function safeDt(dt: number): number {
+  return Number.isFinite(dt) && dt > 0 ? dt : 0
+}
+
+/**
+ * Repair a body whose state went non-finite — almost always game code
+ * dividing by zero or applying an unbounded force. Position rewinds to the
+ * pre-tick snapshot (the origin when that is broken too) and velocity drops
+ * to rest, so one bad frame cannot poison the rest of the session. Returns
+ * true when a repair happened.
+ */
+export function reviveBody(position: Vec3, velocity: Vec3, prev: readonly number[]): boolean {
+  let healthy = true
+  for (let i = 0; i < 3; i++) {
+    if (!Number.isFinite(position[i]) || !Number.isFinite(velocity[i])) {
+      healthy = false
+      break
+    }
+  }
+  if (healthy) return false
+  for (let i = 0; i < 3; i++) {
+    position[i] = Number.isFinite(prev[i]) ? prev[i] : 0
+    velocity[i] = 0
+  }
+  return true
 }
 
 /**
@@ -301,8 +339,10 @@ export function cameraFollowGoal(
   dip = 0,
 ): { eye: Vec3; look: Vec3 } {
   const speed = Math.hypot(vel[0], vel[2])
-  const widen = Math.min(speed * 0.035, 0.3) // up to +30% at high speed
-  const clamp = (v: number) => Math.max(-1.6, Math.min(1.6, v))
+  // NaN survives Math.min/Math.max, so a garbage velocity would put the camera
+  // itself at NaN and blank the view. Fall back to the resting framing instead.
+  const widen = Number.isNaN(speed) ? 0 : Math.min(speed * 0.035, 0.3) // up to +30% at high speed
+  const clamp = (v: number) => (Number.isNaN(v) ? 0 : Math.max(-1.6, Math.min(1.6, v)))
   return {
     eye: [pos[0], pos[1] + base.height * (1 + widen * 0.6) - dip, pos[2] + base.distance * (1 + widen)],
     look: [pos[0] + clamp(vel[0] * 0.22), pos[1] + 0.5 - dip * 0.5, pos[2] + clamp(vel[2] * 0.22)],
@@ -1061,9 +1101,26 @@ export class YuraScene {
     return this
   }
 
+  /** @internal a non-finite body warns once — a broken frame usually repeats. */
+  private warnedNonFinite = false
+
+  /** @internal */
+  private warnNonFiniteBody(): void {
+    if (this.warnedNonFinite) return
+    this.warnedNonFinite = true
+    warnCode(
+      CODES.BODY_NON_FINITE,
+      'A dynamic body reached a non-finite position or velocity and was rewound to where it started the frame. Check onUpdate for a division by zero or an unbounded force.',
+    )
+  }
+
   /** @internal one simulation step; safe to run headless (tests). */
   step(dt: number, time: number): void {
-    this.simTime = time
+    // Quarantine the frame inputs before anything reads them: a non-finite
+    // delta advances nothing, and a non-finite clock keeps the last good one
+    // so coyote time and the jump buffer stay meaningful.
+    dt = safeDt(dt)
+    if (Number.isFinite(time)) this.simTime = time
     // Jump gating for the input's buffered intent: while nothing can take off
     // (airborne past coyote), input.jump must not consume the buffered tap.
     let jumpable = false
@@ -1132,6 +1189,13 @@ export class YuraScene {
               obj.velocity[axis] = r.velocity
             }
           }
+        }
+        // Last line of defence: game code that produced NaN this frame gets
+        // rewound here rather than propagating into the camera, the trails,
+        // and every later frame.
+        if (reviveBody(obj.position, obj.velocity, prev)) {
+          obj.rollQuat = null // a NaN quaternion never renormalizes back
+          this.warnNonFiniteBody()
         }
       }
     }

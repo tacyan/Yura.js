@@ -29,13 +29,26 @@ export interface ToneSpec {
   peak: number
 }
 
-/** Clamp a volume/gain/intensity value to the 0..1 range. */
-export const clamp01 = (v: number): number => Math.min(1, Math.max(0, v))
+/**
+ * Clamp to [lo, hi]. NaN reads as `lo`: `Math.min`/`Math.max` propagate NaN
+ * silently, and every value here ends up in an `AudioParam`, which rejects a
+ * non-finite number with a raw TypeError from the Web Audio API.
+ */
+const clampTo = (v: number, lo: number, hi: number): number =>
+  Number.isNaN(v) ? lo : Math.min(hi, Math.max(lo, v))
+
+/** Clamp a volume/gain/intensity value to the 0..1 range; NaN reads as silent. */
+export const clamp01 = (v: number): number => clampTo(v, 0, 1)
+
+/** Highest combo step the pickup blip transposes by, in semitones. */
+const PICKUP_MAX_SEMITONES = 24
+/** Base frequency of the pickup blip, in Hz. */
+const PICKUP_BASE_HZ = 660
 
 /** Pickup blip: triangle wave one semitone higher per combo step (capped at +24). */
 export const pickupTone = (combo = 0): ToneSpec => ({
   wave: 'triangle',
-  freq: 660 * 2 ** (Math.min(Math.max(combo, 0), 24) / 12),
+  freq: PICKUP_BASE_HZ * 2 ** (clampTo(combo, 0, PICKUP_MAX_SEMITONES) / SEMITONES),
   at: 0, dur: 0.09, attack: 0.004, peak: 0.55,
 })
 

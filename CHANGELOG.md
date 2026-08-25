@@ -7,7 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- A dynamic body wider than the arena no longer teleports across the origin
+  every frame. `bounds - radius` goes negative when the body does not fit, and
+  `clampToBounds` flipped the position's sign on each tick; it now collapses
+  the play area to its centre and the body rests.
+- A non-finite frame delta is a no-op instead of a poisoned scene. `step()`
+  quarantines `dt` and `time` at the entry point (`safeDt`), so a stalled
+  clock or a hand-rolled loop can no longer write `NaN` into every body it
+  touches.
+- Game code that produces `NaN` — a division by zero in `onUpdate` is the
+  usual source — no longer ends the session. The body rewinds to where it
+  started the frame, its velocity drops to rest, and Yura warns once with
+  [`YURA-018`](docs/ERRORS.md#yura-018) (`BODY_NON_FINITE`). `NaN` never heals
+  on its own, so previously one bad frame blanked the scene with nothing in
+  the console to explain it.
+- `clamp01` now clamps non-finite input (`NaN` → 0, `Infinity` → 1). Its result
+  feeds `AudioParam.setValueAtTime`, which rejects a non-finite value with a
+  raw `TypeError`, so a single `gain: v / total` with an empty total silenced
+  the whole soundtrack. `pickupTone` and `landTone` are finite for any input.
+- `sweepProgress`, `wrapTime`, and `cameraFollowGoal` hold the ranges they
+  advertise for non-finite input. `Math.min`/`Math.max` pass `NaN` straight
+  through, which left the morph sweep stuck, the lyric cursor at `NaN`, and the
+  follow camera off the player with a blank view. `wrapTime` also rejects an
+  infinite duration, where `Infinity % Infinity` produced `NaN`.
+
+### Added
+
+- Deterministic fuzz sweep for non-finite input across the bounded helpers,
+  the tone specs, the follow camera, and a full scene stepped with hostile
+  frame deltas — the standing regression net for this class. It found the
+  `wrapTime(t, Infinity)` case that the hand-written tests missed.
 
 ## [0.2.0] - 2026-08-22
 

@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test'
 import { clamp01, gameAudio, noteToFreq, pickupTone, jumpTone, landTone, winTones } from '../src/audio'
-import type { GameAudio, LoopHandle } from '../src/audio'
+import type { GameAudio, LoopHandle, ToneSpec } from '../src/audio'
 
 // --- fake WebAudio graph, enough for gameAudio()'s node chains -------------
 
@@ -456,4 +456,32 @@ test('loop prunes naturally-ended notes: stop() no longer touches them', () => {
     expect(live.onended).toBeNull()
     expect(live.disconnected).toBe(true)
   })
+})
+
+// --- A clamp that does not clamp NaN is not a clamp -------------------------
+//
+// clamp01 feeds AudioParam.setValueAtTime, which throws on a non-finite value.
+// A single NaN gain — `gain: volume / total` with an empty total, a score that
+// went NaN — took the whole soundtrack down with a raw TypeError from the Web
+// Audio API rather than being clamped into range.
+
+test('clamp01 clamps non-finite input into the 0..1 range', () => {
+  expect(clamp01(NaN)).toBe(0)
+  expect(clamp01(Infinity)).toBe(1)
+  expect(clamp01(-Infinity)).toBe(0)
+  // Ordinary values are untouched.
+  expect(clamp01(-0.5)).toBe(0)
+  expect(clamp01(0.25)).toBe(0.25)
+  expect(clamp01(1.5)).toBe(1)
+})
+
+test('tone specs stay finite for any intensity or combo', () => {
+  const finite = (s: ToneSpec) =>
+    [s.freq, s.at, s.dur, s.attack, s.peak, s.freqEnd ?? 0].every(Number.isFinite)
+  for (const value of [NaN, Infinity, -Infinity, -5, 1e9]) {
+    expect(finite(pickupTone(value))).toBe(true)
+    expect(finite(landTone(value))).toBe(true)
+  }
+  expect(finite(jumpTone())).toBe(true)
+  expect(winTones().every(finite)).toBe(true)
 })
