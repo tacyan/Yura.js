@@ -13,6 +13,11 @@
     "showcase": "bun ./apps/showcase/index.html",
     "bench": "bun ./apps/benchmarks/index.html",
     "dev:lyrics": "bun ./examples/lyrics/index.html",
+    "dev:kinetic": "bun ./examples/kinetic/index.html",
+    "dev:game": "bun ./examples/game/index.html",
+    "dev:stage": "bun ./examples/stage/index.html",
+    "dev:site": "bun ./examples/site/index.html",
+    "dev:gallery": "bun ./examples/gallery/index.html",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build:npm": "bash scripts/build-npm.sh",
@@ -21,6 +26,7 @@
   "devDependencies": {
     "@types/bun": "^1.2.13",
     "@webgpu/types": "^0.1.44",
+    "happy-dom": "^20.14.5",
     "typescript": "^5.6.0"
   }
 }

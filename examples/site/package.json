@@ -1,0 +1,10 @@
+{
+  "name": "example-site",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "yura": "workspace:*",
+    "three": "^0.168.0"
+  }
+}

@@ -23,7 +23,7 @@ Three reasons Yura is worth your `<div>`:
    and when you *do* have a Three.js scene, `yuraLayer` composits into it in
    three lines (the adapter is duck-typed — `three` is never a dependency of `yura`).
 
-![One million particles forming a neon galaxy in the Yura showcase](docs/screenshots/showcase-galaxy-1m.jpg)
+![A lyric stage in the sakura theme: petals falling in 3D, tategaki lyrics, scheme swaps on every line](docs/screenshots/hero-sakura.gif)
 
 ## Install
 
@@ -51,6 +51,10 @@ bun install
 bun dev            # hello example — 1M-particle neon galaxy
 bun run showcase   # flagship demo: type a word, a million particles obey
 bun run dev:lyrics # kinetic typography — timed lyrics as particle morphs
+bun run dev:kinetic # DOM lyric motion — every web text effect, by name
+bun run dev:stage   # lyric hero — Three.js world × kinetic lyrics, drop-in <yura-lyric-stage>
+bun run dev:site    # a complete studio-grade site built only from data-yura-* attributes
+bun run dev:gallery # everything above, live on one page (generated from the library's own catalogs)
 bun run dev:model  # glTF PBR demo (DamagedHelmet, drag to orbit)
 bun run bench      # honest benchmarks vs Three.js, measured on YOUR machine
 bun run play       # local playground server — edit, run, share snippets
@@ -156,7 +160,7 @@ What you get for free:
 
 ## Works WITH Three.js — 1M particles in your scene
 
-![A Yura particle vortex swirling through a Three.js scene](docs/screenshots/three-interop.jpg)
+![A Three.js world behind the lyrics: synthwave grid, striped sun, per-line colour cuts](docs/screenshots/stage-synthwave.gif)
 
 Already have a Three.js scene? Keep it. `yuraLayer` puts a GPU-simulated
 particle swarm on top of your render, matched to your camera every frame
@@ -212,7 +216,7 @@ runs before `dispose()`.
 
 ## Kinetic typography / lyric motion
 
-![Japanese lyric line assembling character by character from particles](docs/screenshots/lyric-motion.jpg)
+![Noir lyric stage: monoliths, timecode HUD, amber and cyan chromatic cuts](docs/screenshots/stage-noir.gif)
 
 `lyrics()` turns a list of timed lines into a particle lyric video: at each
 timestamp the swarm morphs into the next line, assembling **character by
@@ -261,6 +265,108 @@ ordering. Graphemes are segmented with `Intl.Segmenter('ja')` when
 available (Japanese-first: CJK, combining marks, and compound emoji stay
 whole), with a surrogate-pair-safe fallback elsewhere.
 
+### Web typography motion — `kineticLyrics()`
+
+Particles are one way to say a lyric. The other is the way landing pages
+do it: real text, split per character, revealed from masks, pulled into
+focus, decoded from noise. `kineticLyrics()` plays the same timed lines as
+animated DOM text over any element (or over a particle canvas), with a
+vocabulary of **33 entrances, 12 holds, 22 exits and 9 layouts**, each one
+named and described in words — see
+[`docs/LYRIC_MOTION.md`](docs/LYRIC_MOTION.md) for the full dictionary
+(`bun run dev:kinetic` previews every one):
+
+![Every web typography motion playing in the gallery — 33 entrances, 12 holds, 22 exits, 9 layouts](docs/screenshots/gallery-motions.jpg)
+
+```ts
+import { kineticLyrics } from 'yura'
+
+kineticLyrics('#stage', [
+  { text: '君の声が', at: 0 },
+  { text: '夜を照らす', at: 3.2, enter: 'rise', exit: 'sink' }, // mask reveal in, sink out
+  { text: 'もう一度', at: 6.4, accent: true },                    // hook line: stamp / zoom + beat pulse
+  { text: '縦に\n流れる', at: 9.6, layout: 'vertical' },
+], { mood: 'graphic', seed: 7, bpm: 128 })
+```
+
+A **mood** (`calm`, `pop`, `glitch`, `graphic`, `editorial`, `emotional`, or
+`'mix'`) plans every line's enter / hold / exit / layout from a seed — same
+seed, same video — and anything you name on a line wins. Pass
+`clock: () => audio.currentTime` to lock the lines to a song. Everything is
+sized in em, so it reads the same on any screen; OS reduced-motion settings
+switch it to plain fades automatically, and each line keeps its lyric as an
+`aria-label`.
+
+### Studio-grade sites from attributes — `yuraSite()`
+
+![A release site built only from data-yura-* attributes: split-text heading, magnetic buttons, themed type](docs/screenshots/site-story.jpg)
+
+The effects a studio hand-builds for a premium site — an opening loader,
+split-text headings that rise out of masks, curtains that sweep across
+images, velocity-reactive marquees, count-ups, magnetic buttons, a follower
+cursor, the whole page recolouring section by section, and lyrics that
+**play with the scroll** — as HTML attributes and one line of JavaScript.
+The full attribute reference is [`docs/SITE.md`](docs/SITE.md); `examples/site`
+(`bun run dev:site`) is a complete release site built with nothing else:
+
+```html
+<script>document.documentElement.classList.add('yura-js')</script>
+
+<h1 class="yura-display" data-yura-text="rise">OUT NOW</h1>
+<div data-yura-marquee>NEW SINGLE ✦ OUT NOW ✦</div>
+<ul data-yura-stagger="0.1" data-yura-reveal="curtain">…</ul>
+<b data-yura-counter="12.8" data-yura-suffix="M">0</b>
+<section data-yura-scrub="500vh"><yura-lyric-stage>…</yura-lyric-stage></section>
+```
+
+```ts
+import * as THREE from 'three'
+import { yuraSite } from 'yura'
+
+yuraSite({ theme: 'noir', three: THREE, opening: true })
+```
+
+One theme drives the page and every lyric stage (colours and type as CSS
+variables, plus `yura-btn` / `yura-link` / `yura-display` utilities). It
+measures everything at runtime, batches layout reads before writes in a
+single frame loop, keeps split headings readable to screen readers, and
+with reduced motion simply shows the finished page. Without JavaScript,
+nothing is hidden. `bun run dev:gallery` shows every feature live on one page.
+
+### Lyric stage — Three.js × lyric motion, drop-in
+
+| | |
+| --- | --- |
+| ![Abyss theme: flying through a tunnel of glowing rings](docs/screenshots/stage-tunnel.jpg) | ![Crimson theme: crystal shards, chromatic lyric, barcode decor](docs/screenshots/stage-shards.jpg) |
+
+`lyricStage()` builds a whole lyric hero from one call, and
+`<yura-lyric-stage>` makes it a tag you paste into any page. Every line is
+a *cut*: the colour scheme swaps, the camera makes a new move through a
+Three.js world, a transition wipes the frame, and the words arrive with the
+kinetic vocabulary above — framed by HUD / editorial decor and finished with
+grain, scanlines and accent flashes. **12 themes, 7 worlds, 11 camera moves,
+9 transitions and 14 decor marks**, all documented in
+[`docs/LYRIC_MOTION.md`](docs/LYRIC_MOTION.md) (`bun run dev:stage`):
+
+```html
+<script type="module">
+  import * as THREE from 'three'
+  import { defineLyricStage } from 'yura'
+  defineLyricStage({ three: THREE })
+</script>
+
+<yura-lyric-stage theme="synthwave" bpm="128" song="Song" artist="Artist">
+  <p>夜明けの色を</p>
+  <p data-accent>ひかりが走る</p>
+</yura-lyric-stage>
+```
+
+Like the Three adapter, the stage never imports `three` — you hand it your
+own namespace (omit it for a CSS backdrop; a missing WebGL falls back the
+same way with `YURA-021`). It sizes itself from its box at runtime, fits
+long lines, pauses off screen, keeps the source lyrics in the page for
+search engines and screen readers, and honours reduced-motion settings.
+
 The choreography itself is tunable: `.motion()` retimes the automatic shape
 cycle app-wide, `morphNow` overrides per call, and `ease` takes a name from
 the `eases` registry (`cubic`, `expo`, `back`, `smooth`, `linear`) or any
@@ -305,6 +411,9 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 | `SceneObject` | `position` `velocity` `spin`, `body: 'dynamic'`, `solid`, `tag`, `grounded`, `onCollide()`, `onLand()`, `trail()`, `remove()` |
 | `yuraLayer(renderer, camera, opts)` | `attach(obj)`, `at(x, y, z)`, `setRadius(r)`, `motion(m)`, `morphTo(textOrShape)`, `sync()`, `stats`, `dispose()` |
 | `lyrics(app, lines, opts)` | timed lines (or bare strings auto-timed `every` seconds apart) → char-by-char particle morphs; `style: 'assemble'/'rain'/'explode'`, `out`, `loop` (with `loopTail` hold), per-line `sweep`/`direction`/`shape`; returns `stop()`/`seek(t)` |
+| `kineticLyrics(target, lines, opts)` | timed lines → animated DOM text; `mood` + `seed` planning, per-line `enter`/`hold`/`exit`/`layout`/`accent`, `bpm`, `clock` (song sync), `loop`; returns `stop()`/`seek(t)`/`render(t)`. Vocabulary in `motions` / `kineticCatalog()` |
+| `lyricStage(target, lines, opts)` / `defineLyricStage({ three })` | lyric hero: Three.js world + kinetic lyrics + decor + transitions + texture on one clock; `theme`, `world`, `camera`, `transition`, `decor`, `bpm`, `audio`/`clock`, `seed`; `<yura-lyric-stage>` custom element; returns `stop()`/`seek(t)`/`render(t)` |
+| `yuraSite(opts)` | page-level motion from `data-yura-*` attributes: text / block reveals, stagger, marquee, parallax, counter, magnetic, cursor, scheme sections, scroll-scrubbed lyric stages, opening loader, progress bar; `setTheme()` / `refresh()` / `destroy()` |
 | `gameAudio()` | zero-asset WebAudio SFX: `pickup(combo)` `jump()` `land(intensity)` `win()`, chiptune-style BGM `loop(pattern, { bpm, wave, gain })`, `volume`, `mute()`; context created lazily on first user gesture |
 | `shapes` | `galaxy` `sphere` `ring` `vortex` `flow` `box` `cone` `helix` `text` (v2: multi-line, `letterSpacing`, `align`, auto-fit) `image` |
 | `looks` | `cinematic` `cyberpunk` `aurora` `neon` `studio` `sakura` — each takes `Partial<LookParams>` overrides, e.g. `neon({ blendMode: 'alpha', toneMapping: 'reinhard' })` |
@@ -325,6 +434,15 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   `morphNow({ sweep, direction })` char-by-char assembly; text shapes v2
   with multi-line, `letterSpacing`, `align`, auto-fit, and grapheme
   segmentation via `Intl.Segmenter` (Japanese-first).
+- **Studio-grade sites** — `yuraSite()`: reveals, marquees, counters,
+  magnetic buttons, cursor, section recolouring and scroll-played lyrics,
+  all from HTML attributes.
+- **Lyric stage** — `lyricStage()` / `<yura-lyric-stage>`: a Three.js
+  world, per-line colour-scheme cuts, camera moves, transitions, decor and
+  film texture around kinetic lyrics, from one tag.
+- **Web typography motion** — `kineticLyrics()` renders lyrics as DOM text
+  with 76 named, documented motions (mask reveals, shutters, scramble,
+  neon, beat pulses, tategaki…) and six seed-planned moods.
 - **HDR pipeline** — rgba16float scene target, light trails, threshold
   bloom, anamorphic streaks, chromatic aberration, ACES tonemapping,
   vignette, film grain; procedural nebula + starfield backdrop, zero assets.
@@ -373,8 +491,8 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
 
 | | |
 | --- | --- |
-| ![Text morph in the hello example](docs/screenshots/showcase-hello-morph.jpg) | ![Click shockwave with live HUD](docs/screenshots/showcase-shockwave-hud.jpg) |
-| ![WebGL2 fallback rendering a vortex](docs/screenshots/showcase-webgl2-vortex.jpg) | ![Benchmark results page](docs/screenshots/bench-results.jpg) |
+| ![Ink theme: every glyph of the song as a star, the sung line lit, tategaki](docs/screenshots/stage-cosmos.jpg) | ![Bubblegum theme: orbit rings and a wireframe core](docs/screenshots/stage-orbit.jpg) |
+| ![Studio site: curtain-revealed track cards](docs/screenshots/site-tracks.jpg) | ![All twelve themes in the feature gallery](docs/screenshots/gallery-themes.jpg) |
 
 ## Honest performance notes
 

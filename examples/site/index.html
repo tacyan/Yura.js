@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307070a'/%3E%3Ctext x='32' y='45' font-size='38' text-anchor='middle' fill='%23f5a50c' font-family='sans-serif' font-weight='900'%3EY%3C/text%3E%3C/svg%3E" />
+    <title>YOAKE — 夜明けの色</title>
+    <meta name="description" content="New single「夜明けの色」— lyric motion site built with Yura.js" />
+    <!-- Hides reveal targets until the script arms them (no flash). Without JS the page stays fully visible. -->
+    <script>document.documentElement.classList.add('yura-js')</script>
+    <style>
+      /* Page layout only — colour, type, buttons, links and every motion come from yuraSite(). */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { overflow-x: hidden; }
+      a { color: inherit; }
+      .wrap { width: min(1240px, 100% - 2 * clamp(20px, 5vw, 64px)); margin-inline: auto; }
+      section { position: relative; }
+
+      nav { position: fixed; inset: 0 0 auto; z-index: 50; mix-blend-mode: difference; color: #fff; }
+      nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 84px; }
+      nav .logo { font-weight: 900; letter-spacing: 0.3em; font-size: 15px; text-decoration: none; }
+      nav ul { display: flex; gap: 32px; list-style: none; font-size: 13px; letter-spacing: 0.12em; }
+      nav .yura-btn { color: #fff; padding: 0.8em 1.5em; font-size: 12px; }
+      @media (max-width: 760px) { nav ul { display: none; } }
+
+      .hero { height: 100svh; }
+      .hero yura-lyric-stage { position: absolute; inset: 0; aspect-ratio: auto; }
+      .hero .cue { position: absolute; left: 50%; bottom: 42px; transform: translateX(-50%); z-index: 5; color: #fff; mix-blend-mode: difference; }
+
+      .band { padding: 28px 0; border-block: 1px solid color-mix(in srgb, var(--yura-sub) 40%, transparent); font-size: clamp(2.4rem, 7vw, 6rem); font-weight: 900; letter-spacing: -0.01em; }
+      .band span { padding-inline: 0.4em; }
+      .band .o { color: transparent; -webkit-text-stroke: 1px var(--yura-fg); }
+
+      .intro { padding: clamp(120px, 18vw, 240px) 0; }
+      .intro .grid { display: grid; grid-template-columns: 1fr 1.6fr; gap: clamp(32px, 6vw, 96px); align-items: start; }
+      .intro .yura-lead { margin-top: 36px; max-width: 34em; }
+      .intro .actions { margin-top: 44px; display: flex; gap: 14px; flex-wrap: wrap; }
+      @media (max-width: 860px) { .intro .grid { grid-template-columns: 1fr; } }
+
+      .stats { padding: 0 0 clamp(120px, 16vw, 200px); }
+      .stats ul { list-style: none; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid color-mix(in srgb, var(--yura-sub) 40%, transparent); }
+      .stats li { padding: 36px 24px 0 0; }
+      .stats b { display: block; font-size: clamp(2.4rem, 5vw, 4.4rem); font-weight: 900; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+      .stats small { display: block; margin-top: 10px; }
+      @media (max-width: 760px) { .stats ul { grid-template-columns: repeat(2, 1fr); row-gap: 36px; } }
+
+      .tracks { padding: clamp(120px, 16vw, 200px) 0; }
+      .tracks header { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 56px; flex-wrap: wrap; }
+      .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+      .card { position: relative; aspect-ratio: 4 / 5; border-radius: 6px; overflow: hidden; padding: 26px; display: flex; flex-direction: column; justify-content: space-between; text-decoration: none; background: var(--yura-dim); }
+      .card .art { position: absolute; inset: 0; z-index: 0; transition: transform 1.2s cubic-bezier(.2,.7,.1,1); }
+      .card:hover .art { transform: scale(1.06); }
+      .card .glyph { position: absolute; right: -6%; bottom: -12%; font-size: 22rem; line-height: 1; font-weight: 900; color: var(--yura-bg); opacity: 0.22; }
+      .card > *:not(.art) { position: relative; z-index: 1; }
+      .card h3 { font-size: clamp(1.4rem, 2.2vw, 2rem); font-weight: 800; }
+      .card .n { font-family: var(--yura-mono); font-size: 12px; letter-spacing: 0.2em; }
+      .a1 { background: radial-gradient(120% 90% at 20% 10%, var(--yura-accent) 0%, transparent 55%), linear-gradient(160deg, var(--yura-accent2), var(--yura-dim)); }
+      .a2 { background: conic-gradient(from 210deg at 70% 70%, var(--yura-accent), var(--yura-dim), var(--yura-accent2), var(--yura-accent)); }
+      .a3 { background: repeating-linear-gradient(115deg, var(--yura-accent) 0 2px, transparent 2px 18px), linear-gradient(0deg, var(--yura-dim), var(--yura-bg)); }
+      @media (max-width: 860px) { .cards { grid-template-columns: 1fr; } .card { aspect-ratio: 16 / 11; } }
+
+      .scrub-head { padding: clamp(100px, 14vw, 180px) 0 40px; text-align: center; }
+
+      .statement { padding: clamp(140px, 20vw, 280px) 0; overflow: hidden; }
+      .statement .big { font-size: clamp(4rem, 16vw, 16rem); line-height: 0.9; font-weight: 900; white-space: nowrap; }
+      .statement .outline { color: transparent; -webkit-text-stroke: 1.5px var(--yura-fg); }
+      .statement .yura-lead { margin: 64px auto 0; max-width: 36em; text-align: center; }
+
+      .tour { padding: 0 0 clamp(120px, 16vw, 200px); }
+      .tour ol { list-style: none; border-top: 1px solid color-mix(in srgb, var(--yura-sub) 40%, transparent); }
+      .tour li { display: grid; grid-template-columns: 140px 1fr 1fr auto; gap: 24px; align-items: center; padding: 30px 0; border-bottom: 1px solid color-mix(in srgb, var(--yura-sub) 40%, transparent); font-size: clamp(1rem, 1.6vw, 1.3rem); }
+      .tour li b { font-weight: 800; }
+      .tour .d { font-family: var(--yura-mono); letter-spacing: 0.1em; }
+      @media (max-width: 760px) { .tour li { grid-template-columns: 1fr auto; } .tour li .v { display: none; } }
+
+      footer { padding: clamp(100px, 14vw, 180px) 0 40px; }
+      footer .cta { text-align: center; }
+      footer .cta .yura-btn { margin-top: 48px; font-size: 1.1rem; }
+      footer .huge { margin-top: clamp(80px, 12vw, 160px); font-size: clamp(5rem, 22vw, 22rem); font-weight: 900; line-height: 0.85; letter-spacing: -0.04em; }
+      footer .meta { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; margin-top: 40px; }
+      footer .meta ul { display: flex; gap: 24px; list-style: none; }
+      .themes { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 28px; }
+      .themes button { font: inherit; font-size: 12px; padding: 0.55em 1.1em; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--yura-sub) 60%, transparent); background: transparent; color: var(--yura-fg); cursor: pointer; }
+      .themes button[aria-pressed='true'] { background: var(--yura-accent); color: var(--yura-bg); border-color: var(--yura-accent); }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <div class="wrap">
+        <a class="logo" href="#top">YOAKE</a>
+        <ul>
+          <li><a class="yura-link" href="#story">STORY</a></li>
+          <li><a class="yura-link" href="#lyrics">LYRICS</a></li>
+          <li><a class="yura-link" href="#tracks">TRACKS</a></li>
+          <li><a class="yura-link" href="#tour">TOUR</a></li>
+        </ul>
+        <a class="yura-btn" href="#tour" data-yura-magnetic data-yura-cursor="GO">TICKETS</a>
+      </div>
+    </nav>
+
+    <main id="top">
+      <!-- 1. Hero: a whole lyric stage, one tag. -->
+      <section class="hero">
+        <yura-lyric-stage id="hero-stage" theme="noir" bpm="124" decor="index crosshair coords progress" song="夜明けの色" artist="YOAKE">
+          <p data-at="0.3">夜明けの色を</p>
+          <p>覚えてる</p>
+          <p>ことばより先に</p>
+          <p data-accent>ひかりが走る</p>
+          <p>遠く とおく</p>
+          <p data-accent>もう一度 歌おう</p>
+        </yura-lyric-stage>
+        <div class="cue yura-eyebrow">SCROLL ↓</div>
+      </section>
+
+      <!-- 2. Velocity marquee. -->
+      <div class="band" data-yura-marquee="0.05" aria-label="New single 夜明けの色 out now">
+        <span>NEW SINGLE</span><span class="o">夜明けの色</span><span>OUT NOW</span><span class="o">✦</span>
+      </div>
+
+      <!-- 3. Story. -->
+      <section class="intro" id="story" data-yura-scheme="0">
+        <div class="wrap grid">
+          <p class="yura-eyebrow" data-yura-reveal="fade-up">01 — STORY</p>
+          <div>
+            <h1 class="yura-title" data-yura-text="rise">言葉より先に、<br />ひかりが走った朝のこと。</h1>
+            <p class="yura-lead" data-yura-reveal="fade-up" data-yura-delay="0.2">
+              眠れなかった夜の終わり、窓の外がゆっくり色を変えていく。その数分間だけを切り取って、一曲にしました。
+              歌詞は画面の上で生まれ、ほどけ、また次の行へ。スクロールすると、曲そのものの中を歩けます。
+            </p>
+            <div class="actions" data-yura-reveal="fade-up" data-yura-delay="0.35">
+              <a class="yura-btn" href="#lyrics" data-yura-magnetic data-yura-cursor="PLAY">歌詞を体験する →</a>
+              <a class="yura-btn" href="#tracks" data-yura-magnetic>収録曲</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Numbers. -->
+      <section class="stats">
+        <ul class="wrap" data-yura-stagger="0.1" data-yura-reveal="fade-up">
+          <li><b data-yura-counter="12.8" data-yura-suffix="M">0</b><small class="yura-eyebrow">STREAMS</small></li>
+          <li><b data-yura-counter="42">0</b><small class="yura-eyebrow">CITIES</small></li>
+          <li><b data-yura-counter="3" data-yura-suffix=" min 51 s">0</b><small class="yura-eyebrow">RUNTIME</small></li>
+          <li><b data-yura-counter="124" data-yura-suffix=" BPM">0</b><small class="yura-eyebrow">TEMPO</small></li>
+        </ul>
+      </section>
+
+      <!-- 5. Scroll-driven lyrics: the section pins, the scroll is the playhead. -->
+      <section id="lyrics" data-yura-scheme="1">
+        <div class="scrub-head wrap">
+          <p class="yura-eyebrow" data-yura-reveal="fade-up">02 — LYRICS</p>
+          <h2 class="yura-title" data-yura-text="blur-in" style="margin-top: 18px">スクロールが、再生ボタン。</h2>
+        </div>
+        <div data-yura-scrub="520vh">
+          <yura-lyric-stage theme="noir" world="cosmos" seed="7" song="夜明けの色" artist="YOAKE" every="3">
+            <p>眠れない夜の</p>
+            <p>終わりのほうで</p>
+            <p data-layout="vertical">窓がゆっくり</p>
+            <p>色を変えていく</p>
+            <p data-accent>ことばより先に</p>
+            <p data-accent>ひかりが走る</p>
+            <p>遠く とおく</p>
+            <p>また会えるまで</p>
+          </yura-lyric-stage>
+        </div>
+      </section>
+
+      <!-- 6. Tracks with curtain reveals. -->
+      <section class="tracks" id="tracks" data-yura-scheme="0">
+        <div class="wrap">
+          <header>
+            <div>
+              <p class="yura-eyebrow" data-yura-reveal="fade-up">03 — TRACKS</p>
+              <h2 class="yura-title" data-yura-text="slide-left" style="margin-top: 18px">三つの夜明け。</h2>
+            </div>
+            <p class="yura-lead" data-yura-reveal="fade-up" style="max-width: 26em">同じ朝を、三つの温度で。どれから聴いても、最後は同じ場所に着きます。</p>
+          </header>
+          <div class="cards" data-yura-stagger="0.12" data-yura-reveal="curtain">
+            <a class="card" href="#top" data-yura-cursor="LISTEN"><div class="art a1"></div><span class="glyph">夜</span><span class="n">TRACK 01</span><h3>夜明けの色</h3></a>
+            <a class="card" href="#top" data-yura-cursor="LISTEN"><div class="art a2"></div><span class="glyph">光</span><span class="n">TRACK 02</span><h3>ひかりが走る</h3></a>
+            <a class="card" href="#top" data-yura-cursor="LISTEN"><div class="art a3"></div><span class="glyph">遠</span><span class="n">TRACK 03</span><h3>遠く、とおく</h3></a>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. Statement with parallax type. -->
+      <section class="statement" data-yura-scheme="2">
+        <div class="big" data-yura-parallax="-0.25">SEE THE <span class="outline">DAWN</span></div>
+        <div class="big outline" data-yura-parallax="0.2" style="text-align: right">夜明けを見に</div>
+        <p class="yura-lead wrap" data-yura-text="fade-up">朝はいつも、誰かにとっての最初のページ。この曲が、あなたのそれになりますように。</p>
+      </section>
+
+      <!-- 8. Tour list. -->
+      <section class="tour" id="tour" data-yura-scheme="2">
+        <div class="wrap">
+          <p class="yura-eyebrow" data-yura-reveal="fade-up" style="margin-bottom: 28px">04 — TOUR 2026</p>
+          <ol data-yura-stagger="0.07" data-yura-reveal="wipe">
+            <li><span class="d">10.12</span><b>TOKYO</b><span class="v">Zepp Haneda</span><a class="yura-link" href="#tour" data-yura-cursor="BUY">TICKETS →</a></li>
+            <li><span class="d">10.19</span><b>OSAKA</b><span class="v">Zepp Namba</span><a class="yura-link" href="#tour" data-yura-cursor="BUY">TICKETS →</a></li>
+            <li><span class="d">10.26</span><b>FUKUOKA</b><span class="v">Zepp Fukuoka</span><a class="yura-link" href="#tour" data-yura-cursor="BUY">TICKETS →</a></li>
+            <li><span class="d">11.02</span><b>SAPPORO</b><span class="v">Zepp Sapporo</span><a class="yura-link" href="#tour" data-yura-cursor="BUY">TICKETS →</a></li>
+          </ol>
+        </div>
+      </section>
+    </main>
+
+    <footer data-yura-scheme="0">
+      <div class="wrap cta">
+        <p class="yura-eyebrow" data-yura-reveal="fade-up">05 — LISTEN</p>
+        <h2 class="yura-display" data-yura-text="stamp" style="margin-top: 20px">OUT NOW</h2>
+        <a class="yura-btn" href="#top" data-yura-magnetic="0.5" data-yura-cursor="PLAY">いますぐ聴く ↗</a>
+        <div class="themes" id="themes" aria-label="テーマを切り替える"></div>
+      </div>
+      <div class="huge" data-yura-marquee="0.03" aria-hidden="true"><span>YOAKE ✦ 夜明けの色 ✦&nbsp;</span></div>
+      <div class="wrap meta yura-eyebrow">
+        <span>© 2026 YOAKE</span>
+        <ul><li><a class="yura-link" href="#top">INSTAGRAM</a></li><li><a class="yura-link" href="#top">X</a></li><li><a class="yura-link" href="#top">YOUTUBE</a></li></ul>
+        <span>MOTION BY YURA.JS</span>
+      </div>
+    </footer>
+
+    <script src="../_shared/unbundled-notice.js"></script>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
