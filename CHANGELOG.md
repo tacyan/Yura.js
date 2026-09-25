@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-26
+
+### Fixed
+
+- The screenshots that the 0.1.0 and 0.2.0 READMEs link to are back in the
+  repository. Those READMEs use relative paths, which npm resolves against
+  the default branch, and replacing the README media had deleted them, so
+  every image on those package pages was broken. A test now keeps them, and
+  the current README's GIFs and stills, from being deleted again.
+- The package page's README links point at this release's tag, so its GIFs
+  and images keep showing exactly what shipped with it.
+
 ## [0.3.0] - 2026-09-26
 
 ### Fixed
