@@ -40,6 +40,26 @@ Or straight from a CDN — no install, no build step:
 </script>
 ```
 
+A lyric hero and studio-grade page motion on **any** page — paste this, no
+build step (pin the versions you tested with):
+
+```html
+<script>document.documentElement.classList.add('yura-js')</script>
+
+<yura-lyric-stage theme="sakura" bpm="84" song="春の宵">
+  <p>桜ひらひら</p>
+  <p data-layout="vertical">春の宵に</p>
+  <p data-accent>君の名前</p>
+</yura-lyric-stage>
+<h2 data-yura-text="rise">貼るだけで、ページが歌い出す。</h2>
+
+<script type="module">
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js'
+  import { yuraSite } from 'https://cdn.jsdelivr.net/npm/yurayura@0.3/dist/index.js'
+  yuraSite({ theme: 'sakura', three: THREE })
+</script>
+```
+
 Inside this repo the same package is the `yura` workspace — the examples
 import `'yura'`; npm users import `'yurayura'`. Same API, same code.
 

@@ -37,15 +37,17 @@ import { yuraSite } from 'yurayura'
 yuraSite({ theme: 'noir', three: THREE, opening: true })
 ```
 
-ビルドなしで CDN から読む場合（公開版に含まれるバージョン以降）:
+ビルドなしで CDN から読む場合（`yurayura` 0.3.0 以降。バージョンは固定して使うのがおすすめです）:
 
 ```html
 <script type="module">
-  import * as THREE from 'https://esm.sh/three@0.168.0'
-  import { yuraSite } from 'https://esm.sh/yurayura'
+  import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.168.0/build/three.module.js'
+  import { yuraSite } from 'https://cdn.jsdelivr.net/npm/yurayura@0.3/dist/index.js'
   yuraSite({ theme: 'noir', three: THREE })
 </script>
 ```
+
+`yurayura` の配布ファイルは依存を含まない1つの ES モジュールなので、変換サービスを通さずにそのまま読み込めます。
 
 `three` を渡すと `<yura-lyric-stage>` が 3D になります。渡さなくても、ステージは CSS の背景で動きます。
 

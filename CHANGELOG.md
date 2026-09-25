@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-26
+
 ### Fixed
 
 - A staggered entrance now ends every glyph exactly at rest. At the end of

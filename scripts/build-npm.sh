@@ -13,6 +13,7 @@ cd "$(dirname "$0")/.."
 
 VERSION=$(bun -e "console.log(JSON.parse(await Bun.file('packages/yura/package.json').text()).version)")
 OUT=dist-npm
+REPO_URL=https://github.com/tacyan/Yura.js
 rm -rf "$OUT"
 mkdir -p "$OUT/dist"
 
@@ -51,6 +52,8 @@ cp -R "$OUT/.types-tmp/packages/renderer-webgpu" "$OUT/types/renderer-webgpu"
 cp -R "$OUT/.types-tmp/packages/renderer-webgl" "$OUT/types/renderer-webgl"
 cp -R "$OUT/.types-tmp/packages/yura" "$OUT/types/yura"
 rm -rf "$OUT/.types-tmp"
+# Test files are not part of the API; their declarations only add weight.
+find "$OUT/types" -type d -name test -prune -exec rm -rf {} +
 # Portable rewrite (Linux/macOS): @yura/* -> relative paths, TypedArray
 # generics stripped, and the @webgpu/types reference prepended to every
 # yura/src entry d.ts (index, three, ...) so subpath imports compile too.
@@ -64,7 +67,7 @@ cat > "$OUT/package.json" <<EOF
 {
   "name": "yurayura",
   "version": "$VERSION",
-  "description": "Make the web move. Two lines, one million GPU particles — WebGPU-first visuals, games, lyric motion, and an optional Three.js layer.",
+  "description": "Make the web move. One million GPU particles, a drop-in Three.js lyric stage, 76 named web text motions, and studio-grade page motion from HTML attributes.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -80,15 +83,15 @@ cat > "$OUT/package.json" <<EOF
   "dependencies": { "@webgpu/types": "^0.1.44" },
   "peerDependencies": { "react": ">=17" },
   "peerDependenciesMeta": { "react": { "optional": true } },
-  "keywords": ["webgpu", "webgl2", "particles", "creative-coding", "visualization", "bun", "graphics", "animation", "kinetic-typography", "threejs"],
-  "repository": { "type": "git", "url": "git+https://github.com/tacyan/Yura.js.git" },
+  "keywords": ["webgpu", "webgl2", "particles", "creative-coding", "visualization", "graphics", "animation", "kinetic-typography", "text-animation", "lyrics", "lyric-video", "threejs", "scroll-animation", "web-components", "landing-page", "motion-design"],
+  "repository": { "type": "git", "url": "git+$REPO_URL.git" },
   "homepage": "https://tacyan.github.io/Yura.js/",
-  "bugs": "https://github.com/tacyan/Yura.js/issues"
+  "bugs": "$REPO_URL/issues"
 }
 EOF
-sed -e "s|from 'yura'|from 'yurayura'|g" -e "s|from 'yura/three'|from 'yurayura/three'|g" \
-  -e "s|from 'yura/react'|from 'yurayura/react'|g" \
-  README.md > "$OUT/README.md"
+# Relative links / images resolve to nothing on npmjs.com: point them at the
+# repository, pinned to this release's tag so the page matches the version.
+bun scripts/readme-for-npm.ts README.md "$OUT/README.md" "$REPO_URL" "v$VERSION"
 cp LICENSE "$OUT/LICENSE"
 
 # 4) Consumer smoke test: a synthetic consumer must type-check against dist-npm.
