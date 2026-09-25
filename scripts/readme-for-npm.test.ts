@@ -36,3 +36,26 @@ test('the real README has no relative link left after the rewrite', async () => 
   expect(relative).toEqual([])
   expect(out).not.toMatch(/from ['"]yura['"/]/)
 })
+
+/**
+ * READMEs already on npm (0.1.0, 0.2.0) link these images with relative
+ * paths, which npm resolves against the repository's default branch — not a
+ * tag. Deleting any of them breaks those published pages for good (it
+ * happened once, when the README media was replaced). From 0.3.0 on, links
+ * are pinned to the release tag, so only this legacy list needs guarding.
+ */
+const LEGACY_PUBLISHED_ASSETS = [
+  'docs/screenshots/showcase-galaxy-1m.jpg',
+  'docs/screenshots/three-interop.jpg',
+  'docs/screenshots/lyric-motion.jpg',
+  'docs/screenshots/showcase-hello-morph.jpg',
+  'docs/screenshots/showcase-shockwave-hud.jpg',
+  'docs/screenshots/showcase-webgl2-vortex.jpg',
+  'docs/screenshots/bench-results.jpg',
+]
+
+test('assets linked by already-published READMEs are never deleted', async () => {
+  for (const path of LEGACY_PUBLISHED_ASSETS) {
+    expect({ path, exists: await Bun.file(new URL(`../${path}`, import.meta.url).pathname).exists() }).toEqual({ path, exists: true })
+  }
+})
