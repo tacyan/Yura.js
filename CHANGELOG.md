@@ -9,6 +9,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A staggered entrance now ends every glyph exactly at rest. At the end of
+  the phase `(1 + s) − 1·s` rounded to `0.9999999999999999`, leaving the
+  last glyph a hair off its resting position.
+
+### Added
+
+- `yuraSite()` — studio-grade page motion from `data-yura-*` attributes and
+  one line of JavaScript: split-text reveals (every kinetic entrance),
+  block reveals (`fade-up`, `mask`, `wipe`, `curtain`, `zoom`, `iris`,
+  `blinds`), staggered children, velocity-reactive marquees, parallax,
+  count-ups, magnetic elements, a follower cursor, a scroll progress bar,
+  an opening loader, whole-page scheme changes per section (cross-faded via
+  registered colour properties), and `data-yura-scrub` sections that pin a
+  `<yura-lyric-stage>` and play it with the scroll. One theme drives the page
+  and the lyric stages. Guide: [`docs/SITE.md`](docs/SITE.md).
+- `<yura-lyric-stage decor="…">` chooses the decor marks (or `none`).
+- `examples/site` (`bun run dev:site`) — a complete release site built only
+  from those attributes.
+- `lyricStage()` and the `<yura-lyric-stage>` custom element
+  (`defineLyricStage({ three })`) — a drop-in lyric hero. Each line is a
+  cut: a new colour scheme, a camera move through a Three.js world (your own
+  `THREE`, never imported), a transition, and kinetic lyrics, framed by
+  decor and finished with grain / scanlines / paper / vignette and accent
+  flashes, all on one clock (`bpm`, or `audio` to sync to a song). 12 themes,
+  7 worlds (the lyrics themselves live in the 3D space), 11 camera moves,
+  9 transitions and 14 decor marks, documented in `docs/LYRIC_MOTION.md`.
+  Every theme's lyric colour meets WCAG 4.5:1 contrast (tested).
+- [`YURA-021`](docs/ERRORS.md#yura-021) (`STAGE_3D_FALLBACK`) when the 3D
+  world cannot start; the stage continues on its CSS backdrop.
+- `examples/stage` (`bun run dev:stage`) — a landing page with a full-screen
+  lyric hero and an embedded portrait card.
+- Examples opened without Bun (file:// or a static server) now explain how
+  to open them instead of showing a silent black screen.
+- `kineticLyrics()` — lyric motion as real DOM text, alongside the particle
+  `lyrics()`. Lines split into per-grapheme spans animated with CSS
+  transform / opacity / filter / clip-path, so they stay selectable,
+  screen-reader friendly and crisp at any resolution, and can sit on top of
+  a particle canvas. Sync to a song with `clock: () => audio.currentTime`.
+- A named, described vocabulary of web typography motion (`motions`,
+  `kineticCatalog()`): 33 entrances, 12 holds, 22 exits and 9 layouts —
+  mask reveals, shutters, focus pulls, scramble decoders, neon flicker,
+  beat-locked pulses, tategaki, oversized crops and more — plus six moods
+  (`calm`, `pop`, `glitch`, `graphic`, `editorial`, `emotional`) that plan
+  a whole song from a seed. Every recipe is documented in
+  [`docs/LYRIC_MOTION.md`](docs/LYRIC_MOTION.md), and a test fails if one
+  is missing from it.
+- [`YURA-019`](docs/ERRORS.md#yura-019) (`UNKNOWN_MOTION`) for an
+  unregistered motion or mood name.
+- `examples/kinetic` (`bun run dev:kinetic`) — an interactive gallery of
+  every recipe and mood.
+
+### Fixed
+
 - A dynamic body wider than the arena no longer teleports across the origin
   every frame. `bounds - radius` goes negative when the body does not fit, and
   `clampToBounds` flipped the position's sign on each tick; it now collapses

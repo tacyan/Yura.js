@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307070a'/%3E%3Ctext x='32' y='45' font-size='38' text-anchor='middle' fill='%23f5a50c' font-family='sans-serif' font-weight='900'%3EY%3C/text%3E%3C/svg%3E" />
+    <title>YURA LYRIC STAGE</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html { background: #07070a; color: #e8e4de; }
+      body { font-family: 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif; }
+      /* The hero: one element, full viewport. */
+      #hero { height: 100svh; aspect-ratio: auto; }
+      .bar {
+        position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 10;
+        display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-radius: 999px;
+        background: rgba(10, 10, 14, 0.72); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      .bar select, .bar button { font: 600 12px/1 inherit; color: #fff; background: transparent; border: 0; padding: 8px 10px; border-radius: 999px; cursor: pointer; }
+      .bar button:hover, .bar select:hover { background: rgba(255, 255, 255, 0.1); }
+      .bar option { color: #000; }
+      .bar .name { font-size: 11px; color: #aaa; padding: 0 8px; min-width: 9em; text-align: center; }
+      section.page { max-width: 1080px; margin: 0 auto; padding: 120px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+      section.page h2 { font-size: clamp(28px, 4vw, 46px); line-height: 1.25; letter-spacing: 0.02em; }
+      section.page p { margin-top: 18px; color: #9a958e; line-height: 1.9; font-size: 15px; }
+      section.page code { color: #f5a50c; font-size: 13px; }
+      .card { border-radius: 18px; overflow: hidden; box-shadow: 0 40px 80px rgba(0, 0, 0, 0.5); }
+      .card yura-lyric-stage { aspect-ratio: 9 / 16; }
+      @media (max-width: 760px) { section.page { grid-template-columns: 1fr; padding: 72px 20px; } }
+    </style>
+  </head>
+  <body>
+    <yura-lyric-stage id="hero" theme="noir" bpm="124" song="ヨアケノイロ" artist="YURA.JS">
+      <p data-at="0.4">夜明けの色を</p>
+      <p>覚えてる</p>
+      <p>ことばより先に</p>
+      <p data-accent>ひかりが走る</p>
+      <p>遠く とおく</p>
+      <p>名前のない街で</p>
+      <p data-accent>もう一度 歌おう</p>
+      <p>また会えるまで</p>
+    </yura-lyric-stage>
+
+    <section class="page">
+      <div>
+        <h2>貼るだけで、<br />ページが歌い出す。</h2>
+        <p>
+          <code>&lt;yura-lyric-stage&gt;</code> の中に歌詞を書くだけ。行ごとに配色が切り替わり、Three.js の空間をカメラが進み、
+          文字は Web の定番表現で現れて去っていきます。縦長のカードにも、全画面のヒーローにも、そのまま収まります。
+        </p>
+      </div>
+      <div class="card">
+        <yura-lyric-stage theme="sakura" bpm="84" song="春の宵" artist="YURA.JS">
+          <p>桜ひらひら</p>
+          <p data-layout="vertical">春の宵に</p>
+          <p>舞い散る</p>
+          <p data-accent>君の名前</p>
+        </yura-lyric-stage>
+      </div>
+    </section>
+
+    <div class="bar" role="toolbar" aria-label="stage controls">
+      <select id="theme" aria-label="theme"></select>
+      <span class="name" id="name"></span>
+      <button id="shuffle" title="R">おまかせ ↻</button>
+    </div>
+
+    <script src="../_shared/unbundled-notice.js"></script>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

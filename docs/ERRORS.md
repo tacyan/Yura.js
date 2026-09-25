@@ -42,7 +42,9 @@ lowercased.
 | [YURA-016](#yura-016) | `SCENE_REPLACED` | warn | `app.scene()` called again — the previous scene was detached |
 | [YURA-017](#yura-017) | `GRAVITY_WELL_CLAMPED` | warn | `scene.gravityWell()` calls exceed the shared attractor budget |
 | [YURA-018](#yura-018) | `BODY_NON_FINITE` | warn | A dynamic body reached a non-finite position or velocity and was rewound |
+| [YURA-019](#yura-019) | `UNKNOWN_MOTION` | throw | A `kineticLyrics()` motion (`enter` / `hold` / `exit` / `layout`) or `mood` name that is not registered |
 | [YURA-020](#yura-020) | `ASSET_LOAD_FAILED` | throw | A `.glb` model or `shapes.image()` URL could not be fetched or parsed |
+| [YURA-021](#yura-021) | `STAGE_3D_FALLBACK` | warn | `lyricStage()` was given THREE but its WebGL world could not start; the CSS backdrop is used |
 | [YURA-050](#yura-050) | `DEVICE_LOST` | warn | The GPU device was lost at runtime; Yura attempts recovery |
 
 ---
@@ -316,6 +318,29 @@ player.velocity[1] += Math.min(1 / (distance * distance), MAX_PULL)
 The warning fires once per scene, so fix the first occurrence rather than
 counting them.
 
+## YURA-019
+
+**`UNKNOWN_MOTION`** — throws `YuraError`, from `planKinetic()` in
+`packages/yura/src/kinetic.ts` (and so from `kineticLyrics()`), and from
+`planStage()` in `packages/yura/src/stage.ts` (and so from `lyricStage()`).
+
+**When it appears.** An `enter`, `hold`, `exit` or `layout` name — on the
+run options or on a single line — or a `mood` name is not in the lyric
+motion vocabulary; or a lyric stage `theme`, `world`, `camera`,
+`transition` or `decor` name is unknown. The message lists the accepted
+names.
+
+**Why.** Motion names resolve through the `motions` registry; a typo would
+otherwise silently drop a line's animation, so it throws with the options.
+
+**How to fix.** Use a listed name. `kineticCatalog()` returns every recipe
+with its Japanese name and a description, and
+[`LYRIC_MOTION.md`](LYRIC_MOTION.md) documents them all:
+
+```js
+kineticLyrics('#stage', lines, { mood: 'graphic', enter: 'rise', exit: 'sink' })
+```
+
 ## YURA-020
 
 **`ASSET_LOAD_FAILED`** — throws `YuraError`, from
@@ -339,6 +364,28 @@ re-export models as binary glTF 2.0:
 
 ```js
 yura('#app').model('/model.glb').run()   // .glb = binary glTF 2.0
+```
+
+## YURA-021
+
+**`STAGE_3D_FALLBACK`** — warn (`console.info`), from `lyricStage()` in
+`packages/yura/src/stage.ts`.
+
+**When it appears.** A `three` namespace was passed, but building the
+Three.js world threw — almost always because WebGL is unavailable (disabled
+GPU, blocked context, a very old browser) or the context limit was hit.
+
+**Why.** A hero section must never go blank. The stage keeps running with
+its CSS backdrop (colour-swapping glow and sweep), so the lyrics, decor,
+transitions and textures all still play; this message says why the 3D
+layer is missing.
+
+**How to fix.** Nothing is required. To get the 3D world back, check that
+WebGL works on the page (`!!document.createElement('canvas').getContext('webgl2')`)
+and that not too many WebGL canvases are alive at once:
+
+```js
+lyricStage('#hero', lines, { three: THREE })   // falls back by itself when WebGL is missing
 ```
 
 ## YURA-050

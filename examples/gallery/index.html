@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2307070a'/%3E%3Ctext x='32' y='45' font-size='38' text-anchor='middle' fill='%23f5a50c' font-family='sans-serif' font-weight='900'%3EY%3C/text%3E%3C/svg%3E" />
+    <title>YURA — できることの全部</title>
+    <script>document.documentElement.classList.add('yura-js')</script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { overflow-x: hidden; }
+      .wrap { width: min(1320px, 100% - 2 * clamp(16px, 4vw, 48px)); margin-inline: auto; }
+      header.top { position: sticky; top: 0; z-index: 40; backdrop-filter: blur(14px); background: color-mix(in srgb, var(--yura-bg) 82%, transparent); border-bottom: 1px solid color-mix(in srgb, var(--yura-sub) 25%, transparent); }
+      header.top .wrap { display: flex; gap: 20px; align-items: center; height: 64px; overflow-x: auto; }
+      header.top b { letter-spacing: .3em; font-size: 13px; white-space: nowrap; }
+      header.top nav { display: flex; gap: 18px; font-size: 12px; letter-spacing: .08em; white-space: nowrap; }
+      header.top nav a { color: var(--yura-sub); }
+      section.block { padding: clamp(80px, 11vw, 150px) 0 0; }
+      .head { display: grid; grid-template-columns: 1fr 1.3fr; gap: 32px; align-items: end; margin-bottom: 40px; }
+      .head .yura-lead { max-width: 40em; }
+      @media (max-width: 860px) { .head { grid-template-columns: 1fr; } }
+      .count { font-family: var(--yura-mono); color: var(--yura-accent); }
+
+      /* 1. stage lab */
+      .lab { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; }
+      .lab yura-lyric-stage { border-radius: 10px; }
+      .panel { display: flex; flex-direction: column; gap: 14px; font-size: 13px; }
+      .panel label { display: grid; gap: 6px; color: var(--yura-sub); font-size: 11px; letter-spacing: .12em; }
+      .panel select { font: inherit; font-size: 13px; color: var(--yura-fg); background: color-mix(in srgb, var(--yura-fg) 6%, transparent); border: 1px solid color-mix(in srgb, var(--yura-sub) 40%, transparent); border-radius: 8px; padding: 9px 10px; }
+      .panel option { color: #000; }
+      .panel .desc { color: var(--yura-sub); line-height: 1.7; font-size: 12px; min-height: 5.1em; }
+      .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .chips button, .seg button { font: inherit; font-size: 11px; padding: 6px 10px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--yura-sub) 45%, transparent); background: transparent; color: var(--yura-fg); cursor: pointer; }
+      .chips button[aria-pressed='true'], .seg button[aria-pressed='true'] { background: var(--yura-accent); color: var(--yura-bg); border-color: var(--yura-accent); }
+      @media (max-width: 960px) { .lab { grid-template-columns: 1fr; } }
+
+      /* themes */
+      .themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+      .theme { text-align: left; font: inherit; color: inherit; cursor: pointer; border: 1px solid color-mix(in srgb, var(--yura-sub) 30%, transparent); background: transparent; border-radius: 10px; overflow: hidden; }
+      .theme[aria-pressed='true'] { outline: 2px solid var(--yura-accent); outline-offset: 2px; }
+      .theme .sw { display: flex; height: 64px; }
+      .theme .sw span { flex: 1; display: grid; place-items: center; font-weight: 900; font-size: 22px; }
+      .theme .tx { padding: 12px 14px 14px; }
+      .theme .tx b { font-size: 14px; }
+      .theme .tx small { display: block; margin-top: 6px; color: var(--yura-sub); font-size: 11px; line-height: 1.6; }
+      .theme code { font-family: var(--yura-mono); font-size: 10px; color: var(--yura-accent); margin-left: 6px; }
+
+      /* 2. text motions */
+      .seg { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; }
+      .motions { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+      .m { border: 1px solid color-mix(in srgb, var(--yura-sub) 28%, transparent); border-radius: 10px; padding: 14px; display: grid; grid-template-rows: 92px auto; gap: 10px; }
+      .m .demo { display: grid; place-items: center; font-size: 34px; font-weight: 900; perspective: 6em; overflow: hidden; }
+      .m .demo span { display: inline-block; white-space: pre; }
+      .m .name b { font-size: 13px; }
+      .m .name code { font-family: var(--yura-mono); font-size: 10px; color: var(--yura-accent); margin-left: 6px; }
+      .m .name small { display: block; margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--yura-sub); }
+      .moods { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; margin-top: 28px; }
+      .mood { border-left: 3px solid var(--yura-accent); padding: 6px 14px; }
+      .mood b { font-size: 14px; } .mood code { font-family: var(--yura-mono); font-size: 10px; color: var(--yura-accent); margin-left: 6px; }
+      .mood small { display: block; font-size: 11px; line-height: 1.7; color: var(--yura-sub); margin-top: 4px; }
+
+      /* 3. site effects */
+      .reveals { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+      .rv { display: grid; gap: 10px; }
+      .rv .box { position: relative; aspect-ratio: 4 / 3; border-radius: 8px; overflow: hidden; }
+      .rv .box > div { position: absolute; inset: 0; background: radial-gradient(90% 90% at 20% 20%, var(--yura-accent), transparent 60%), linear-gradient(135deg, var(--yura-accent2), var(--yura-dim)); display: grid; place-items: center; font-size: 40px; font-weight: 900; color: var(--yura-bg); }
+      .rv .curtain { position: absolute; inset: 0; background: var(--yura-accent); transform-origin: 0 50%; transform: scaleX(0); z-index: 2; }
+      .rv b { font-size: 13px; } .rv code { font-family: var(--yura-mono); font-size: 10px; color: var(--yura-accent); margin-left: 6px; }
+      .rv small { display: block; font-size: 11px; line-height: 1.6; color: var(--yura-sub); margin-top: 4px; }
+      .rv button { justify-self: start; }
+      .fx { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; margin-top: 40px; }
+      .fxc { border: 1px solid color-mix(in srgb, var(--yura-sub) 28%, transparent); border-radius: 10px; padding: 22px; min-height: 200px; display: grid; align-content: space-between; gap: 16px; overflow: hidden; }
+      .fxc h3 { font-size: 15px; } .fxc code { font-family: var(--yura-mono); font-size: 10px; color: var(--yura-accent); }
+      .fxc p { font-size: 12px; color: var(--yura-sub); line-height: 1.7; }
+      .fxc .num { font-size: 52px; font-weight: 900; font-variant-numeric: tabular-nums; }
+      .band { font-size: 44px; font-weight: 900; margin: 0 -22px; border-block: 1px solid color-mix(in srgb, var(--yura-sub) 30%, transparent); padding: 8px 0; }
+      .band span { padding-inline: .35em; }
+      .pgrid { display: flex; gap: 14px; height: 120px; align-items: center; }
+      .pgrid div { flex: 1; height: 80px; border-radius: 8px; background: var(--yura-accent); display: grid; place-items: center; color: var(--yura-bg); font-weight: 900; }
+      .scrub-intro { text-align: center; padding: 60px 0 30px; }
+      .demos { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding-bottom: 120px; }
+      .demos a { display: block; text-decoration: none; color: inherit; border: 1px solid color-mix(in srgb, var(--yura-sub) 30%, transparent); border-radius: 10px; padding: 22px; }
+      .demos a b { font-size: 16px; } .demos a p { font-size: 12px; color: var(--yura-sub); margin-top: 8px; line-height: 1.7; }
+      .demos a code { display: block; margin-top: 12px; font-family: var(--yura-mono); font-size: 11px; color: var(--yura-accent); }
+    </style>
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap">
+        <b>YURA — ALL FEATURES</b>
+        <nav>
+          <a class="yura-link" href="#stage">① 歌詞ステージ</a>
+          <a class="yura-link" href="#themes">② テーマ</a>
+          <a class="yura-link" href="#text">③ 文字の表現</a>
+          <a class="yura-link" href="#site">④ サイト演出</a>
+          <a class="yura-link" href="#scrub">⑤ スクロール再生</a>
+          <a class="yura-link" href="#demos">⑥ 完成例</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="block" id="stage">
+        <div class="head">
+          <div>
+            <p class="yura-eyebrow" data-yura-reveal="fade-up">01 — LYRIC STAGE × THREE.JS</p>
+            <h1 class="yura-title" data-yura-text="rise" style="margin-top: 14px">歌詞ステージ<br />を全部いじる</h1>
+          </div>
+          <p class="yura-lead" data-yura-reveal="fade-up">
+            <code>&lt;yura-lyric-stage&gt;</code> 一つの中身です。右のパネルで世界・カメラ・つなぎ・装飾を切り替えると、その場で組み直されます。
+            説明文はライブラリ自身が持っている言語化です。
+          </p>
+        </div>
+        <div class="lab">
+          <yura-lyric-stage id="lab" theme="noir" bpm="124" song="夜明けの色" artist="YURA.JS">
+            <p data-at="0.2">夜明けの色を</p>
+            <p>覚えてる</p>
+            <p data-accent>ひかりが走る</p>
+            <p data-layout="vertical">遠く とおく</p>
+            <p>ことばより先に</p>
+            <p data-accent>もう一度 歌おう</p>
+          </yura-lyric-stage>
+          <div class="panel" id="panel"></div>
+        </div>
+      </section>
+
+      <section class="block" id="themes">
+        <div class="head">
+          <div>
+            <p class="yura-eyebrow" data-yura-reveal="fade-up">02 — THEMES <span class="count" id="theme-count"></span></p>
+            <h2 class="yura-title" data-yura-text="blur-in" style="margin-top: 14px">テーマ</h2>
+          </div>
+          <p class="yura-lead" data-yura-reveal="fade-up">配色（行ごとに切り替わる複数のパターン）・書体・質感・3Dの世界・よく使う動きのセット。クリックすると、このページ全体とステージがそのテーマになります。</p>
+        </div>
+        <div class="themes" id="theme-list"></div>
+      </section>
+
+      <section class="block" id="text">
+        <div class="head">
+          <div>
+            <p class="yura-eyebrow" data-yura-reveal="fade-up">03 — TEXT MOTION <span class="count" id="motion-count"></span></p>
+            <h2 class="yura-title" data-yura-text="scramble" style="margin-top: 14px">文字の表現</h2>
+          </div>
+          <p class="yura-lead" data-yura-reveal="fade-up">登場・保持・退場・配置。歌詞にも、ページの見出し（<code>data-yura-text</code>）にも同じ名前で使えます。すべて繰り返し再生しています。</p>
+        </div>
+        <div class="seg" id="phase-tabs"></div>
+        <div class="motions" id="motion-grid"></div>
+        <div class="moods" id="mood-list"></div>
+      </section>
+
+      <section class="block" id="site">
+        <div class="head">
+          <div>
+            <p class="yura-eyebrow" data-yura-reveal="fade-up">04 — SITE EFFECTS</p>
+            <h2 class="yura-title" data-yura-text="slide-left" style="margin-top: 14px">サイトの演出</h2>
+          </div>
+          <p class="yura-lead" data-yura-reveal="fade-up">すべて HTML の属性だけ。このページ自体も <code>yuraSite()</code> 1行で動いています（見出しの登場、上端の進行バー、カーソル、配色の切り替え）。</p>
+        </div>
+        <div class="reveals" id="reveal-grid"></div>
+        <div class="fx">
+          <div class="fxc" data-yura-reveal="fade-up">
+            <div><h3>帯（マーキー）</h3><code>data-yura-marquee</code></div>
+            <div class="band" data-yura-marquee="0.08"><span>SCROLL FASTER</span><span>✦</span><span>速くスクロールすると加速して傾く</span><span>✦</span></div>
+            <p>上に戻すと逆走します。</p>
+          </div>
+          <div class="fxc" data-yura-reveal="fade-up">
+            <div><h3>数え上げ</h3><code>data-yura-counter</code></div>
+            <div class="num"><span data-yura-counter="12.8" data-yura-suffix="M">0</span> / <span data-yura-counter="124" data-yura-suffix=" BPM">0</span></div>
+            <p>画面に入った瞬間に 0 から数え上げ。桁区切りは閲覧者の言語に合わせます。</p>
+          </div>
+          <div class="fxc" data-yura-reveal="fade-up">
+            <div><h3>吸い付くボタン ＋ カーソル</h3><code>data-yura-magnetic / data-yura-cursor</code></div>
+            <div><a class="yura-btn" href="#site" data-yura-magnetic="0.5" data-yura-cursor="HELLO">近づいてみる →</a></div>
+            <p>ポインタに引き寄せられ、カーソルが大きくなって文字を表示します（マウスのある端末のみ）。</p>
+          </div>
+          <div class="fxc" data-yura-reveal="fade-up">
+            <div><h3>時間差の登場</h3><code>data-yura-stagger</code></div>
+            <div class="pgrid" data-yura-stagger="0.12" data-yura-reveal="mask"><div>1</div><div>2</div><div>3</div><div>4</div></div>
+            <p>子要素を一つずつ。カードや一覧に。</p>
+          </div>
+          <div class="fxc" data-yura-reveal="fade-up">
+            <div><h3>視差（パララックス）</h3><code>data-yura-parallax</code></div>
+            <div style="position: relative; height: 90px"><div data-yura-parallax="0.25" style="position: absolute; inset: 0; font-size: 64px; font-weight: 900; color: var(--yura-accent)">DEPTH</div></div>
+            <p>スクロールすると奥行きがあるようにずれます。</p>
+          </div>
+          <div class="fxc" data-yura-reveal="fade-up">
+            <div><h3>ボタンとリンク</h3><code>class="yura-btn" / "yura-link"</code></div>
+            <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap"><a class="yura-btn" href="#site">ホバーで満ちる</a><a class="yura-link" href="#site">下線が引かれるリンク</a></div>
+            <p>クラスを付けるだけの定番パーツ。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="block" id="scrub" data-yura-scheme="1">
+        <div class="scrub-intro">
+          <p class="yura-eyebrow" data-yura-reveal="fade-up">05 — SCROLL TO PLAY · data-yura-scrub</p>
+          <h2 class="yura-title" data-yura-text="rise" style="margin-top: 14px">スクロールが再生ボタン</h2>
+          <p class="yura-lead" data-yura-reveal="fade-up" style="margin: 16px auto 0; max-width: 34em">このセクションの間はページ全体の配色も切り替わります（<code>data-yura-scheme</code>）。</p>
+        </div>
+      </section>
+    </main>
+    <div data-yura-scrub="420vh" id="scrub-zone">
+      <yura-lyric-stage theme="noir" world="cosmos" seed="3" every="3" decor="index corners progress">
+        <p>スクロールすると</p>
+        <p>一行ずつ</p>
+        <p data-accent>歌詞が進む</p>
+        <p>戻せば</p>
+        <p>巻き戻る</p>
+      </yura-lyric-stage>
+    </div>
+
+    <main class="wrap">
+      <section class="block" id="demos" data-yura-scheme="0">
+        <div class="head">
+          <div>
+            <p class="yura-eyebrow" data-yura-reveal="fade-up">06 — FULL DEMOS</p>
+            <h2 class="yura-title" data-yura-text="stamp" style="margin-top: 14px">完成例</h2>
+          </div>
+          <p class="yura-lead" data-yura-reveal="fade-up">組み合わせた実例。それぞれ別のコマンドで開けます。</p>
+        </div>
+        <div class="demos" data-yura-stagger="0.1" data-yura-reveal="curtain" id="demo-links"></div>
+      </section>
+    </main>
+
+    <script src="../_shared/unbundled-notice.js"></script>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
