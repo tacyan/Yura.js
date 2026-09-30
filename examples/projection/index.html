@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='45' font-size='38' text-anchor='middle' fill='%2300e5ff' font-family='sans-serif' font-weight='900'%3EY%3C/text%3E%3C/svg%3E" />
+    <title>YURA PROJECTION</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; background: #000; color: #e8e4de; overflow: hidden; }
+      body { font-family: 'Hiragino Sans', 'Noto Sans JP', system-ui, sans-serif; }
+      #show { width: 100vw; height: 100svh; }
+      .bar {
+        position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 2147483600;
+        display: flex; gap: 6px; align-items: center; padding: 6px 8px; border-radius: 999px;
+        background: rgba(10, 10, 14, 0.78); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.14);
+        transition: opacity 0.4s;
+      }
+      body.output .bar { display: none; }
+      body.idle .bar { opacity: 0; }
+      .bar select, .bar button { font: 600 12px/1 inherit; color: #fff; background: transparent; border: 0; padding: 8px 10px; border-radius: 999px; cursor: pointer; }
+      .bar button:hover, .bar select:hover, .bar button[aria-pressed='true'] { background: rgba(255, 255, 255, 0.14); }
+      .bar option { color: #000; }
+      .bar .sep { width: 1px; height: 18px; background: rgba(255, 255, 255, 0.18); }
+    </style>
+  </head>
+  <body>
+    <yura-lyric-stage id="show" theme="lagoon" bpm="96" song="ミナモ" artist="YURA.JS">
+      <p data-at="0.4">水面に</p>
+      <p>光が落ちて</p>
+      <p data-accent>ゆれる</p>
+      <p>名前のない海で</p>
+      <p>泡がのぼる</p>
+      <p data-accent>ひかりの中へ</p>
+      <p data-layout="vertical">とおく とおく</p>
+      <p>また会えるまで</p>
+    </yura-lyric-stage>
+
+    <div class="bar" role="toolbar" aria-label="projection controls">
+      <select id="theme" aria-label="theme"></select>
+      <button id="calibrate" aria-pressed="false" title="C">補正</button>
+      <button id="pattern" aria-pressed="false" title="T">テストパターン</button>
+      <span class="sep"></span>
+      <select id="tiles" aria-label="projectors">
+        <option value="1">プロジェクター 1台</option>
+        <option value="2">2台（横並び）</option>
+        <option value="3">3台（横並び）</option>
+      </select>
+      <button id="open" title="O">出力ウィンドウを開く</button>
+      <button id="fullscreen" title="F">全画面</button>
+      <button id="export" title="E">設定を書き出す</button>
+    </div>
+
+    <script src="../_shared/unbundled-notice.js"></script>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

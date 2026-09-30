@@ -1,3 +1,4 @@
+import { treatments, treatmentStyles, treatmentLive, type TreatmentName } from './treatments'
 import { YuraError, CODES } from '@yura/core'
 import { segmentGraphemes } from './shapes'
 import { normalizeLines, orderLines, wrapTime } from './lyrics'
@@ -46,6 +47,8 @@ export interface KineticLine {
   hold?: HoldName
   exit?: ExitName
   layout?: LayoutName
+  /** How the letters are drawn (outline, extrude, marker, halftone…; see treatments). */
+  treat?: TreatmentName
   /** A決め line (hook, chorus head): drawn from the loud accent entrances with a beat pulse. */
   accent?: boolean
 }
@@ -66,6 +69,10 @@ export interface KineticPlanOptions {
   hold?: HoldName
   exit?: ExitName
   layout?: LayoutName
+  /** Force one text treatment for every line (a line's own `treat` still wins). */
+  treat?: TreatmentName
+  /** A pool of treatments: each line draws one (seeded). Overrides the mood's own pool. */
+  treats?: readonly TreatmentName[]
   /** Seconds between auto-timed lines. Default 3.5. */
   every?: number
   /** Seconds an entrance takes (capped to a share of short lines). Default 0.9. */
@@ -96,6 +103,8 @@ export interface PlannedLine {
   hold: HoldName
   exit: ExitName
   layout: LayoutName
+  /** Text treatment ('none' when the line has none). */
+  treat: TreatmentName
   accent: boolean
   /** Per-line seed (derived from the run seed and the line index). */
   seed: number
@@ -119,6 +128,11 @@ const SALT_LINE_SEED = 102
 /** Seconds, finite and non-negative — anything else falls back. */
 function seconds(v: number | undefined, fallback: number): number {
   return v !== undefined && Number.isFinite(v) && v >= 0 ? v : fallback
+}
+
+function assertTreat(name: string | undefined): void {
+  if (name === undefined || Object.prototype.hasOwnProperty.call(treatments, name)) return
+  throw new YuraError(CODES.UNKNOWN_MOTION, `Unknown text treatment "${String(name)}". Available: ${Object.keys(treatments).join(', ')}.`, `kineticLyrics('#stage', lines, { treat: 'outline' })`)
 }
 
 function assertName(phase: MotionPhase, name: string | undefined): void {
@@ -161,6 +175,8 @@ export function planKinetic(lines: readonly KineticInput[], opts: KineticPlanOpt
   assertMood(moodName)
   for (const m of opts.moods ?? []) assertMood(m)
   for (const phase of ['enter', 'hold', 'exit', 'layout'] as const) assertName(phase, opts[phase])
+  assertTreat(opts.treat)
+  for (const t of opts.treats ?? []) assertTreat(t)
   const seed = Number.isFinite(opts.seed) ? (opts.seed as number) : DEFAULT_SEED
   const every = seconds(opts.every, DEFAULT_EVERY)
   const enterS = seconds(opts.enterDuration, DEFAULT_ENTER_S)
@@ -178,6 +194,7 @@ export function planKinetic(lines: readonly KineticInput[], opts: KineticPlanOpt
   let prevEnter: EnterName | undefined
   return ordered.map((line, i) => {
     for (const phase of ['enter', 'hold', 'exit', 'layout'] as const) assertName(phase, line[phase])
+    assertTreat(line.treat)
     const mood = kineticMoods[pool.length === 1 ? pool[0] : pick(pool, seed, i, 0)]
     const accent = line.accent === true
     const start = Number.isFinite(line.at) ? line.at : 0
@@ -195,6 +212,8 @@ export function planKinetic(lines: readonly KineticInput[], opts: KineticPlanOpt
       exit = 'fade'
     }
     prevEnter = enter
+    const treatPool = opts.treats && opts.treats.length ? opts.treats : (mood as { treat?: readonly TreatmentName[] }).treat
+    const treat: TreatmentName = line.treat ?? opts.treat ?? (treatPool && treatPool.length ? pick(treatPool, seed, i, 5) : 'none')
 
     const rowsText = line.text.split('\n')
     const rowGlyphs = rowsText.map((r) => segmentGraphemes(r))
@@ -210,6 +229,7 @@ export function planKinetic(lines: readonly KineticInput[], opts: KineticPlanOpt
       hold,
       exit,
       layout,
+      treat,
       accent,
       seed: Math.floor(hash01(seed, i, SALT_LINE_SEED) * 0x7fffffff),
     }
@@ -242,7 +262,7 @@ export function framePoses(line: PlannedLine, t: number, bpm = DEFAULT_BPM): Gly
   const enter = motions.enter[line.enter]
   const hold = motions.hold[line.hold]
   const exit = motions.exit[line.exit]
-  const layout = motions.layout[line.layout] as { offset?: (g: MotionGlyph) => { x: number; y: number } }
+  const layout = motions.layout[line.layout] as { offset?: (g: MotionGlyph) => { x: number; y: number; rotate?: number; scale?: number } }
   const exitFrom = line.end - line.exitDuration
   const n = line.glyphs.length
 
@@ -289,6 +309,10 @@ export interface GlyphStyle {
   filter: string
   clipPath: string
   textShadow: string
+  /** -webkit-text-stroke ('' at rest). */
+  textStroke: string
+  /** -webkit-text-fill-color ('' at rest). */
+  fillColor: string
 }
 
 /** Default tints for the chromatic split ghosts — overridable per page via CSS variables. */
@@ -302,6 +326,17 @@ const num = (v: number): string => {
   return String(Object.is(r, -0) ? 0 : r)
 }
 const on = (v: number): boolean => Number.isFinite(v) && Math.abs(v) > EPS
+
+/** CSS filter for a pose: focus blur, light (brightness) and prism (hue) in one chain. */
+function filterOf(pose: GlyphPose): string {
+  const f: string[] = []
+  if (on(pose.blur) && pose.blur > 0) f.push(`blur(${num(pose.blur)}em)`)
+  // Older poses built by hand may lack the light fields: treat missing as rest.
+  const bright = pose.bright ?? 1
+  if (Number.isFinite(bright) && on(bright - 1)) f.push(`brightness(${num(Math.max(0, bright))})`)
+  if (on(pose.hue ?? 0)) f.push(`hue-rotate(${num(pose.hue)}deg)`)
+  return f.length ? f.join(' ') : 'none'
+}
 
 /**
  * Serializes a pose into inline CSS. Identity parts are omitted, so an idle
@@ -329,9 +364,11 @@ export function poseToStyle(pose: GlyphPose): GlyphStyle {
   return {
     transform: t.length ? t.join(' ') : 'none',
     opacity: num(opacity),
-    filter: on(pose.blur) && pose.blur > 0 ? `blur(${num(pose.blur)}em)` : 'none',
+    filter: filterOf(pose),
     clipPath: clipOn ? `inset(${pose.clip.map((c) => `${num(c)}%`).join(' ')})` : 'none',
     textShadow: shadows.length ? shadows.join(', ') : 'none',
+    textStroke: on(pose.stroke ?? 0) && (pose.stroke ?? 0) > 0 ? `${num(pose.stroke)}em currentColor` : '',
+    fillColor: Number.isFinite(pose.fill ?? 1) && (pose.fill ?? 1) < 1 - EPS ? `color-mix(in srgb, currentColor ${num(Math.max(0, pose.fill) * 100)}%, transparent)` : '',
   }
 }
 
@@ -427,6 +464,8 @@ interface MountedLine {
   /** Last written style per glyph — unchanged frames skip the DOM entirely. */
   last: (GlyphStyle & { char: string })[]
   origin: string
+  /** The treatment's static glyph styles (outline / fill fall back to them at rest). */
+  treat: Record<string, string>[]
 }
 
 /**
@@ -482,7 +521,7 @@ export function kineticLyrics(
 
   const mount = (index: number): MountedLine => {
     const line = plan[index]
-    const layout = motions.layout[line.layout] as { box: Record<string, string>; fontScale?: number }
+    const layout = motions.layout[line.layout] as { box: Record<string, string>; fontScale?: number; block?: Record<string, string>; deco?: string }
     const el = doc.createElement('div')
     el.setAttribute('aria-label', line.text)
     setStyle(el, {
@@ -495,6 +534,9 @@ export function kineticLyrics(
     })
     const block = doc.createElement('div')
     block.setAttribute('aria-hidden', 'true')
+    const treat = treatmentStyles(line.treat, line.glyphs, line.seed)
+    setStyle(block, { position: 'relative', ...(layout.block ?? {}), ...treat.block })
+
     el.appendChild(block)
     const glyphs: KineticElement[] = []
     let g = 0
@@ -504,14 +546,33 @@ export function kineticLyrics(
       for (let k = 0; k < count; k++, g++) {
         const span = doc.createElement('span')
         span.textContent = line.glyphs[g]
-        setStyle(span, { display: 'inline-block', willChange: 'transform, opacity' })
+        setStyle(span, { display: 'inline-block', willChange: 'transform, opacity', ...treat.glyphs[g] })
         row.appendChild(span)
         glyphs.push(span)
       }
       block.appendChild(row)
     })
+    if (treat.wrap) {
+      // Brackets hug the first and last rows, so they follow vertical and multi-row lines.
+      const open = doc.createElement('span')
+      open.textContent = treat.wrap[0]
+      const close = doc.createElement('span')
+      close.textContent = treat.wrap[1]
+      const rows = (block as unknown as { firstChild?: KineticElement & { insertBefore?(a: unknown, b: unknown): void; firstChild?: unknown }; lastChild?: KineticElement }).firstChild
+      rows?.insertBefore?.(open, rows.firstChild)
+      ;(block as unknown as { lastChild?: KineticElement }).lastChild?.appendChild(close)
+    }
+    if (layout.deco) {
+      // Decoration is markup (tails, rods, perforations), added after the rows; documents without innerHTML skip it.
+      const deco = doc.createElement('div') as KineticElement & { innerHTML?: string }
+      if ('innerHTML' in deco) {
+        deco.innerHTML = layout.deco
+        setStyle(deco, { position: 'absolute', inset: '0', pointerEvents: 'none' })
+        block.appendChild(deco)
+      }
+    }
     root.appendChild(el)
-    const m: MountedLine = { el, glyphs, last: [], origin: '' }
+    const m: MountedLine = { el, glyphs, last: [], origin: '', treat: treat.glyphs }
     mounted.set(index, m)
     return m
   }
@@ -533,15 +594,27 @@ export function kineticLyrics(
         for (const span of line.glyphs) setStyle(span, { transformOrigin: origin })
         line.origin = origin
       }
+      const live = treatmentLive(plan[i].treat, t - plan[i].start, plan[i].glyphs, plan[i].seed)
+      if (live) live.forEach((style, k) => setStyle(line.glyphs[k], style))
       poses.forEach((pose, k) => {
         const s = { ...poseToStyle(pose), char: pose.char ?? plan[i].glyphs[k] }
         const prev = line.last[k]
         const span = line.glyphs[k]
         if (!prev || prev.char !== s.char) span.textContent = s.char
-        if (!prev || prev.transform !== s.transform || prev.opacity !== s.opacity || prev.filter !== s.filter || prev.clipPath !== s.clipPath || prev.textShadow !== s.textShadow) {
+        if (!prev || prev.transform !== s.transform || prev.opacity !== s.opacity || prev.filter !== s.filter || prev.clipPath !== s.clipPath || prev.textShadow !== s.textShadow || prev.textStroke !== s.textStroke || prev.fillColor !== s.fillColor) {
           // An idle glyph clears its text-shadow rather than writing 'none', so a halo
           // the page (or lyricStage) sets on an ancestor still reaches the text.
-          setStyle(span, { transform: s.transform, opacity: s.opacity, filter: s.filter, clipPath: s.clipPath, textShadow: s.textShadow === 'none' ? '' : s.textShadow })
+          // Outline / fill at rest fall back to the line's treatment (a hollow key glyph stays hollow).
+          const base = line.treat[k] ?? {}
+          setStyle(span, {
+            transform: s.transform,
+            opacity: s.opacity,
+            filter: s.filter,
+            clipPath: s.clipPath,
+            textShadow: s.textShadow === 'none' ? '' : s.textShadow,
+            WebkitTextStroke: s.textStroke || base.WebkitTextStroke || '',
+            WebkitTextFillColor: s.fillColor || base.WebkitTextFillColor || '',
+          })
         }
         line.last[k] = s
       })

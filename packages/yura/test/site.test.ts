@@ -48,7 +48,7 @@ describe('reveal math', () => {
     const chars = Array.from('夜明けの色を')
     for (const name of Object.keys(motions.enter) as (keyof typeof motions.enter)[]) {
       for (const s of textRevealStyles(name, chars, 1)) {
-        expect({ name, s }).toEqual({ name, s: { transform: 'none', opacity: '1', filter: 'none', clipPath: 'none', textShadow: 'none', char: s.char } })
+        expect({ name, s }).toEqual({ name, s: { transform: 'none', opacity: '1', filter: 'none', clipPath: 'none', textShadow: 'none', textStroke: '', fillColor: '', char: s.char } })
       }
       expect(textRevealStyles(name, chars, 1).map((s) => s.char).join('')).toBe('夜明けの色を')
       for (const v of [NaN, -1, Infinity]) expect(textRevealStyles(name, chars, v).length).toBe(chars.length)

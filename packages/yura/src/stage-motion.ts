@@ -140,6 +140,42 @@ export const cameraMoves = {
     desc: '拍ごとにレンズがぐっと寄って戻る。画面そのものがリズムを刻む。',
     pose: (_u, _t, beat) => ({ fov: CAMERA_FOV - 7 * Math.exp(-beat * 6) }),
   },
+  underwater: {
+    ja: '水中漂流',
+    desc: '水の中を漂うように、ゆっくり大きく揺られ続ける。上下左右の揺れに、わずかな傾きが混ざる。',
+    pose: (_u, t, _b, _s, seed) => ({ x: wobble(t * 0.45, seed, 41) * 1.1, y: wobble(t * 0.38, seed, 53) * 0.7, roll: wobble(t * 0.3, seed, 67) * 0.06, z: D * 1.05 }),
+  },
+  'surface-break': {
+    ja: '水面突破',
+    desc: '水面の下から持ち上がり、水面を割って文字の高さに出る。視界が開ける解放感。',
+    pose: (u) => {
+      const k = easeInOut(u)
+      return { y: -5 * (1 - k), ty: -1.5 * (1 - k), roll: Math.sin(u * TAU) * 0.02 * (1 - k) }
+    },
+  },
+  ascend: {
+    ja: '光へ昇る',
+    desc: 'カメラが上昇しながら視線を上へ向け、頭上の光を仰ぎ見る。祈り、救い、希望。',
+    pose: (u) => {
+      const k = easeInOut(u)
+      return { y: 4.5 * k, ty: 3.5 * k, z: D * (1.1 - 0.1 * k) }
+    },
+  },
+  tide: {
+    ja: '潮',
+    desc: '潮の満ち引きのように、左右へゆったり大きく揺れる。波間で見る景色。',
+    pose: (_u, t, _b, s) => ({ x: s * Math.sin(t * 0.4) * 2.4, y: Math.sin(t * 0.31) * 0.6, roll: s * Math.sin(t * 0.4 + 0.6) * 0.03 }),
+  },
+  vertigo: {
+    ja: 'めまい',
+    desc: 'ドリーズーム。文字の大きさは変わらないまま、背景の奥行きだけがぐにゃりと伸び縮みする。動揺、覚醒、世界が変わる瞬間。',
+    pose: (u) => {
+      const z = D * (0.65 + 0.9 * easeInOut(u))
+      // Keep the lyric plane's framing: tan(fov/2) · z stays what it is at rest.
+      const fov = (2 * Math.atan((Math.tan(((CAMERA_FOV / 2) * Math.PI) / 180) * D) / z) * 180) / Math.PI
+      return { z, fov }
+    },
+  },
 } satisfies Record<CameraName, CameraRecipe>
 
 /**
@@ -187,6 +223,13 @@ interface TransitionRecipe {
 /** Peak opacity for white flashes — kept under full white for comfort. */
 export const FLASH_MAX = 0.85
 const ACCENT = 'var(--yura-accent)'
+const ACCENT2 = 'var(--yura-accent2)'
+/** Vertices along the crest of a flood transition's wave. */
+const WAVE_POINTS = 12
+/** Columns of drips in a drip transition. */
+const DRIP_COLUMNS = 14
+/** Degrees per spoke of a godray transition (a spoke at full width covers it). */
+const GODRAY_SPOKE = 12
 /** Coverage 0 → 1 → 0 across the cut. */
 const cover = (p: number): number => (p < 0.5 ? p * 2 : (1 - p) * 2)
 const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`
@@ -255,6 +298,90 @@ export const stageTransitions = {
     ja: 'プッシュ',
     desc: '色の面が横から押し込んできて、そのまま反対側へ抜けていく。',
     frame: (p, s) => ({ background: ACCENT, opacity: 1, transform: `translateX(${Math.round((1 - p * 2) * 1000) / 10 * s}%)` }),
+  },
+  ripple: {
+    ja: '波紋',
+    desc: '画面の中心から、アクセント色の波紋の輪が広がって覆い、また引いて次の場面を見せる。',
+    frame: (p) => ({
+      background: `repeating-radial-gradient(circle at 50% 50%, ${ACCENT} 0 2.4%, ${ACCENT2} 2.4% 4.8%)`,
+      opacity: 1,
+      clipPath: `circle(${pct(cover(p) * 0.75)} at 50% 50%)`,
+    }),
+  },
+  flood: {
+    ja: '満ちる水',
+    desc: '下から波打つ水面がせり上がって画面を満たし、引いていくと次の場面が現れる。',
+    frame: (p) => {
+      const h = cover(p) * 112 // overshoot so the wave crests clear the top edge when full
+      const pts: string[] = []
+      for (let k = 0; k <= WAVE_POINTS; k++) {
+        const x = (k / WAVE_POINTS) * 100
+        const y = 100 - h + Math.sin(k * 1.3 + p * 14) * 3
+        pts.push(`${pct(x / 100)} ${pct(Math.max(0, Math.min(100, y)) / 100)}`)
+      }
+      return { background: `linear-gradient(to top, ${ACCENT}, ${ACCENT2})`, opacity: 1, clipPath: `polygon(${pts.join(', ')}, 100% 100%, 0% 100%)` }
+    },
+  },
+  'light-leak': {
+    ja: '光漏れ',
+    desc: 'フィルムに光が漏れたように、暖かい光のにじみが画面を横切る。フィルム映像のような余韻。',
+    frame: (p) => ({
+      background: `radial-gradient(ellipse 70% 90% at ${pct(0.1 + p * 0.8)} 35%, ${ACCENT2} 0%, ${ACCENT} 38%, transparent 72%)`,
+      opacity: FLASH_MAX * cover(p) ** 1.2,
+    }),
+  },
+  bloom: {
+    ja: '白く滲む',
+    desc: '画面の中心から白い光がにじみ広がり、すべてを包んでから引いていく。',
+    frame: (p) => {
+      const c = cover(p)
+      return { background: `radial-gradient(circle at 50% 50%, var(--yura-flash, #ffffff) 0%, var(--yura-flash, #ffffff) ${pct(c * 0.55)}, transparent ${pct(0.05 + c)})`, opacity: FLASH_MAX * c }
+    },
+  },
+  drip: {
+    ja: '垂れ幕',
+    desc: '上から色が垂れ落ちて、しずくの筋が画面を覆う。塗料や雨だれのような有機的なつなぎ。',
+    frame: (p) => {
+      const c = cover(p)
+      const pts = ['0% 0%', '100% 0%']
+      for (let k = DRIP_COLUMNS; k >= 0; k--) {
+        const long = 0.5 + 0.5 * Math.sin(k * 12.9898 + 4.1414)
+        pts.push(`${pct(k / DRIP_COLUMNS)} ${pct(Math.min(1, c * (1.05 + long * 0.45)))}`)
+      }
+      return { background: ACCENT, opacity: 1, clipPath: `polygon(${pts.join(', ')})` }
+    },
+  },
+  rain: {
+    ja: '雨幕',
+    desc: '斜めに降る雨の筋が一気に強まって画面を覆い、やむと次の場面になる。',
+    frame: (p) => {
+      const c = cover(p)
+      return {
+        background: `repeating-linear-gradient(100deg, ${ACCENT} 0 ${pct(0.004 + c * 0.03)}, transparent ${pct(0.004 + c * 0.03)} 3.4%)`,
+        opacity: clamp01(c * 1.4),
+        transform: `translateY(${Math.round((p * 2 - 1) * 200) / 10}%) scale(1.5)`,
+      }
+    },
+  },
+  prism: {
+    ja: '分光',
+    desc: '虹色に分かれた光の帯が斜めに画面を横切る。プリズムを通したような色彩のつなぎ。',
+    frame: (p) => ({
+      background: 'linear-gradient(100deg, transparent 20%, #ff3b3b 30%, #ffb13b 37%, #fff23b 44%, #3bff7c 51%, #3be8ff 58%, #5b6bff 65%, #c43bff 72%, transparent 82%)',
+      opacity: clamp01(cover(p) * 2.2),
+      transform: `translateX(${Math.round((p * 2 - 1) * 900) / 10}%) scaleX(2)`,
+    }),
+  },
+  godray: {
+    ja: '光芒',
+    desc: '画面の上から放射状の光の筋が広がって画面を満たし、また細くなって消える。',
+    frame: (p) => {
+      const w = cover(p) * GODRAY_SPOKE
+      return {
+        background: `repeating-conic-gradient(from ${Math.round(p * 300) / 10}deg at 50% -12%, ${ACCENT2} 0deg ${Math.round(w * 100) / 100}deg, transparent ${Math.round(w * 100) / 100}deg ${GODRAY_SPOKE}deg)`,
+        opacity: 1,
+      }
+    },
   },
 } satisfies Record<TransitionName, TransitionRecipe>
 

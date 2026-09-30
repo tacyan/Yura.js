@@ -1,4 +1,7 @@
 import type { KineticMoodName } from './motions'
+import type { TreatmentName } from './treatments'
+import type { BackdropName } from './backdrops'
+import type { FxName } from './screen-fx'
 
 /**
  * Themes for {@link lyricStage}: the art direction of a lyric hero put into
@@ -39,7 +42,7 @@ export interface StageTexture {
 }
 
 /** A Three.js world behind the lyrics (see stage-world.ts). */
-export type WorldName = 'monolith' | 'tunnel' | 'grid' | 'shards' | 'orbit' | 'petals' | 'cosmos'
+export type WorldName = 'monolith' | 'tunnel' | 'grid' | 'shards' | 'orbit' | 'petals' | 'cosmos' | 'ocean' | 'caustics' | 'aurora' | 'rays' | 'void'
 
 /** Font role stacks (CSS font-family). */
 export interface StageFonts {
@@ -64,6 +67,12 @@ export interface StageTheme {
   decor: readonly DecorName[]
   cameras: readonly CameraName[]
   transitions: readonly TransitionName[]
+  /** CSS pattern / scenery backdrop used when there is no 3D world. */
+  backdrop?: BackdropName
+  /** Screen effects fired on cuts (accent lines always get one). */
+  fx?: readonly FxName[]
+  /** Text treatments lines draw from (overrides the moods' own pools). */
+  treats?: readonly TreatmentName[]
 }
 
 // Names declared here so themes can reference them; recipes live in their modules.
@@ -82,6 +91,32 @@ export type DecorName =
   | 'beat'
   | 'ticker'
   | 'coords'
+  | 'lensflare'
+  | 'waterline'
+  | 'depth'
+  | 'spectrum'
+  | 'blobs'
+  | 'bars'
+  | 'shapes'
+  | 'counter'
+  | 'rings'
+  | 'dots'
+  | 'arrows'
+  | 'slashes'
+  | 'sparks'
+  | 'leaders'
+  | 'waveform'
+  | 'scratches'
+  | 'sigil'
+  | 'eye'
+  | 'static'
+  | 'dust-beam'
+  | 'drips'
+  | 'cracks'
+  | 'colophon'
+  | 'glyph-lines'
+  | 'type-scale'
+  | 'big-punct'
 export type CameraName =
   | 'dolly-in'
   | 'pull-back'
@@ -94,7 +129,29 @@ export type CameraName =
   | 'spiral'
   | 'float'
   | 'beat-zoom'
-export type TransitionName = 'cut' | 'flash' | 'wipe' | 'slash' | 'iris' | 'blinds' | 'shutter' | 'black' | 'push'
+  | 'underwater'
+  | 'surface-break'
+  | 'ascend'
+  | 'tide'
+  | 'vertigo'
+export type TransitionName =
+  | 'cut'
+  | 'flash'
+  | 'wipe'
+  | 'slash'
+  | 'iris'
+  | 'blinds'
+  | 'shutter'
+  | 'black'
+  | 'push'
+  | 'ripple'
+  | 'flood'
+  | 'light-leak'
+  | 'bloom'
+  | 'drip'
+  | 'rain'
+  | 'prism'
+  | 'godray'
 
 // ------------------------------------------------------------------ type stacks
 
@@ -303,6 +360,206 @@ export const stageThemes = {
     decor: ['corners', 'rules', 'index', 'progress'],
     cameras: ['orbit', 'float', 'pull-back', 'crane'],
     transitions: ['iris', 'black', 'flash'],
+  },
+  ocean: {
+    ja: '黄昏の海',
+    desc: '群青の空と、うねりながら地平線まで続く海。沈む光が波の上に道を描き、歌詞は水平線の上に浮かぶ。',
+    schemes: [
+      { bg: '#0b1026', fg: '#fff4e6', sub: '#a9b4d6', accent: '#ff8a5c', accent2: '#ffd29a', dim: '#2a2f5a', ghostA: '#ff8a5c', ghostB: '#5fd4ff' },
+      { bg: '#0d213d', fg: '#ffffff', sub: '#9cc3e0', accent: '#5fd4ff', accent2: '#ffe2b0', dim: '#27507a', ghostA: '#5fd4ff', ghostB: '#ff8a5c' },
+      { bg: '#1a0f2e', fg: '#ffeef5', sub: '#c2a3c9', accent: '#ff5f8f', accent2: '#ffb36b', dim: '#4a2a55', ghostA: '#ff5f8f', ghostB: '#ffb36b' },
+    ],
+    fonts: mincho(800),
+    texture: { grain: 0.3, scan: 0, paper: 0, vignette: 0.55 },
+    world: 'ocean',
+    moods: ['aqua', 'luminous', 'emotional'],
+    decor: ['waterline', 'coords', 'progress', 'corners'],
+    cameras: ['tide', 'float', 'surface-break', 'dolly-in'],
+    transitions: ['ripple', 'flood', 'light-leak', 'iris'],
+  },
+  lagoon: {
+    ja: '水底',
+    desc: '透き通る青緑の水の底。揺れる光の網が床と壁を走り、光の柱が差し込み、泡が昇っていく。',
+    schemes: [
+      { bg: '#032a33', fg: '#eafffb', sub: '#8fd3cf', accent: '#38f2d8', accent2: '#bffcff', dim: '#05414d', ghostA: '#38f2d8', ghostB: '#bffcff' },
+      { bg: '#06445a', fg: '#ffffff', sub: '#a6e6ee', accent: '#7cf7ff', accent2: '#fffbe0', dim: '#0a5a73', ghostA: '#7cf7ff', ghostB: '#fffbe0' },
+    ],
+    fonts: round(800),
+    texture: { grain: 0.25, scan: 0, paper: 0, vignette: 0.6 },
+    world: 'caustics',
+    moods: ['aqua', 'dream'],
+    decor: ['depth', 'waterline', 'crosshair', 'progress'],
+    cameras: ['underwater', 'float', 'ascend', 'surface-break'],
+    transitions: ['ripple', 'flood', 'drip', 'bloom'],
+  },
+  aurora: {
+    ja: '極光',
+    desc: '極夜の空にはためく光のカーテン。緑から紫へ色が移ろい、文字も光の中で色を変える。',
+    schemes: [
+      { bg: '#03060f', fg: '#f1fff8', sub: '#8fb3a8', accent: '#3dffa8', accent2: '#b36bff', dim: '#0b1426', ghostA: '#3dffa8', ghostB: '#b36bff' },
+      { bg: '#070b1d', fg: '#ffffff', sub: '#a3a8d6', accent: '#ff5fd2', accent2: '#4dffc3', dim: '#111a36', ghostA: '#ff5fd2', ghostB: '#4dffc3' },
+    ],
+    fonts: gothic(800),
+    texture: { grain: 0.35, scan: 0, paper: 0, vignette: 0.6 },
+    world: 'aurora',
+    moods: ['spectrum', 'dream', 'luminous'],
+    decor: ['spectrum', 'coords', 'corners', 'progress'],
+    cameras: ['crane', 'float', 'vertigo', 'orbit'],
+    transitions: ['prism', 'bloom', 'light-leak', 'black'],
+  },
+  cathedral: {
+    ja: '光芒',
+    desc: '頭上の窓から降り注ぐ光の筋と、その中を舞う塵。祈りのような静けさと、神々しい光。',
+    schemes: [
+      { bg: '#0d0a07', fg: '#fff8ea', sub: '#b8a88a', accent: '#ffcf7a', accent2: '#fff1c9', dim: '#1e1810', ghostA: '#ffcf7a', ghostB: '#fff1c9' },
+      { bg: '#1b140b', fg: '#ffffff', sub: '#d8c7a1', accent: '#ffe3a3', accent2: '#ffffff', dim: '#2a2013', ghostA: '#ffe3a3', ghostB: '#b8a88a' },
+    ],
+    fonts: mincho(700),
+    texture: { grain: 0.45, scan: 0, paper: 0, vignette: 0.7 },
+    world: 'rays',
+    moods: ['luminous', 'cinematic', 'calm'],
+    decor: ['lensflare', 'rules', 'index'],
+    cameras: ['ascend', 'crane', 'pull-back', 'float'],
+    transitions: ['godray', 'bloom', 'light-leak', 'black'],
+  },
+  rain: {
+    ja: '雨夜',
+    desc: '濡れた夜の水面に、青と桃色のネオンが揺れて映る。雨の中で歌う、少しさびしい街の夜。',
+    schemes: [
+      { bg: '#070a12', fg: '#e8f1ff', sub: '#7e8aa3', accent: '#4aa8ff', accent2: '#ff4f9a', dim: '#1a2338', ghostA: '#4aa8ff', ghostB: '#ff4f9a' },
+      { bg: '#120817', fg: '#ffe9f3', sub: '#a58aa0', accent: '#ff4f9a', accent2: '#4aa8ff', dim: '#2b1633', ghostA: '#ff4f9a', ghostB: '#4aa8ff' },
+    ],
+    fonts: gothic(800),
+    texture: { grain: 0.5, scan: 0.15, paper: 0, vignette: 0.65 },
+    world: 'ocean',
+    moods: ['aqua', 'eerie', 'emotional'],
+    decor: ['waterline', 'timecode', 'corners'],
+    cameras: ['handheld', 'tide', 'dolly-in', 'underwater'],
+    transitions: ['rain', 'drip', 'black', 'ripple'],
+  },
+  mapping: {
+    ja: '投影',
+    desc: 'プロジェクションマッピング用。背景は完全な黒（＝光を出さない）で、質感も足さない。光る文字と強い明暗だけで、建物や壁にくっきり映る。',
+    schemes: [
+      { bg: '#000000', fg: '#ffffff', sub: '#8a8a8a', accent: '#ffffff', accent2: '#ffd400', dim: '#0a0a0a', ghostA: '#00e5ff', ghostB: '#ff2e63' },
+      { bg: '#000000', fg: '#fff6d6', sub: '#9a8f70', accent: '#00e5ff', accent2: '#ff2e63', dim: '#0a0a0a', ghostA: '#00e5ff', ghostB: '#ff2e63' },
+      { bg: '#000000', fg: '#e6fbff', sub: '#7fa6ad', accent: '#ffd400', accent2: '#00e5ff', dim: '#0a0a0a', ghostA: '#ffd400', ghostB: '#00e5ff' },
+    ],
+    fonts: gothic(900),
+    texture: { grain: 0, scan: 0, paper: 0, vignette: 0 },
+    world: 'void',
+    moods: ['mapping', 'luminous', 'kinetic'],
+    decor: ['corners', 'lensflare'],
+    cameras: ['beat-zoom', 'dolly-in', 'float'],
+    transitions: ['flash', 'black', 'iris', 'godray'],
+  },
+  ruins: {
+    ja: '廃墟',
+    desc: '崩れたコンクリートと埃の光。文字は風化して欠け、ときおり瞬きの間に近づいてくる。静かなホラー。',
+    schemes: [
+      { bg: '#0f0f0e', fg: '#d8d4c8', sub: '#7d786c', accent: '#b8a07a', accent2: '#e8e0cc', dim: '#1c1b18', ghostA: '#b8a07a', ghostB: '#5e6b70' },
+      { bg: '#151514', fg: '#e6e1d3', sub: '#8a8476', accent: '#8f2a22', accent2: '#d8d4c8', dim: '#23211d', ghostA: '#8f2a22', ghostB: '#5e6b70' },
+    ],
+    fonts: mincho(700),
+    texture: { grain: 0.8, scan: 0, paper: 0.3, vignette: 0.85 },
+    world: 'void',
+    moods: ['horror'],
+    decor: ['dust-beam', 'cracks', 'scratches'],
+    cameras: ['handheld', 'float', 'dolly-in'],
+    transitions: ['black', 'cut', 'flash'],
+    backdrop: 'noise',
+    fx: ['defocus', 'tv-static', 'film-advance', 'dust-scratches'],
+    treats: ['eroded', 'none', 'ink-bleed'],
+  },
+  nightrec: {
+    ja: '深夜の録画',
+    desc: '暗視カメラの緑がかった画面に、録画中の印と時刻。何かが一瞬映り込む、監視映像の怖さ。',
+    schemes: [
+      { bg: '#050c06', fg: '#b6ffb0', sub: '#5f9a5a', accent: '#ff3b3b', accent2: '#b6ffb0', dim: '#0b1a0c', ghostA: '#b6ffb0', ghostB: '#2f6b2a' },
+    ],
+    fonts: gothic(700),
+    texture: { grain: 0.9, scan: 0.7, paper: 0, vignette: 0.9 },
+    world: 'void',
+    moods: ['horror', 'glitch'],
+    decor: ['timecode', 'corners', 'eye', 'static'],
+    cameras: ['handheld', 'float'],
+    transitions: ['cut', 'black'],
+    backdrop: 'vhs',
+    fx: ['tv-static', 'vhs-roll', 'tracking-noise', 'interlace'],
+    treats: ['none', 'glitch-split', 'double-exposure'],
+  },
+  curse: {
+    ja: '呪いの手紙',
+    desc: '古びた紙に、滲んで垂れる墨の文字。ところどころ黒塗りにされ、背後に紋様が浮かぶ。',
+    schemes: [
+      { bg: '#e9dfc8', fg: '#1a1410', sub: '#6e5d45', accent: '#8a1111', accent2: '#1a1410', dim: '#d8cbb0', ghostA: '#8a1111', ghostB: '#6e5d45' },
+      { bg: '#120d0a', fg: '#e9dfc8', sub: '#9a8768', accent: '#b01818', accent2: '#e9dfc8', dim: '#1f1712', ghostA: '#b01818', ghostB: '#9a8768' },
+    ],
+    fonts: mincho(900),
+    texture: { grain: 0.6, scan: 0, paper: 0.9, vignette: 0.7 },
+    world: 'void',
+    moods: ['horror', 'wa'],
+    decor: ['sigil', 'drips', 'colophon'],
+    cameras: ['float', 'dolly-in', 'dutch'],
+    transitions: ['black', 'cut'],
+    backdrop: 'torn-paper',
+    fx: ['ripple', 'defocus', 'invert'],
+    treats: ['ink-bleed', 'redact', 'eroded'],
+  },
+  washi: {
+    ja: '和紙と青海波',
+    desc: '生成りの和紙に藍の青海波。明朝の縦組みに傍点やかぎ括弧が添えられ、墨が滲むように現れる。',
+    schemes: [
+      { bg: '#f4efe4', fg: '#1d2a44', sub: '#6b7488', accent: '#c8102e', accent2: '#1d2a44', dim: '#e6dfcf', ghostA: '#c8102e', ghostB: '#6b7488' },
+      { bg: '#1d2a44', fg: '#f4efe4', sub: '#a9b1c4', accent: '#e8c15a', accent2: '#f4efe4', dim: '#26365a', ghostA: '#e8c15a', ghostB: '#a9b1c4' },
+    ],
+    fonts: mincho(800),
+    texture: { grain: 0.3, scan: 0, paper: 0.7, vignette: 0.3 },
+    world: 'void',
+    moods: ['wa', 'calm'],
+    decor: ['band', 'colophon', 'big-punct'],
+    cameras: ['float', 'truck', 'pull-back'],
+    transitions: ['wipe', 'black', 'iris'],
+    backdrop: 'seigaiha',
+    fx: ['light-sweep', 'bloom'],
+    treats: ['emphasis-dots', 'brackets', 'none', 'gold'],
+  },
+  comic: {
+    ja: 'コミック',
+    desc: '網点と集中線、原色のベタ。文字は叩きつけられ、弾け、吹き出しや切り貼りになる。漫画のコマのような勢い。',
+    schemes: [
+      { bg: '#fff6d6', fg: '#141414', sub: '#555555', accent: '#e8412c', accent2: '#2c7be8', dim: '#f2e6b8', ghostA: '#e8412c', ghostB: '#2c7be8' },
+      { bg: '#e8412c', fg: '#141414', sub: '#3a0d07', accent: '#ffe14d', accent2: '#141414', dim: '#d33a27', ghostA: '#141414', ghostB: '#ffe14d' },
+      { bg: '#1f5fc4', fg: '#ffffff', sub: '#d6e6ff', accent: '#ffe14d', accent2: '#141414', dim: '#1c56b3', ghostA: '#141414', ghostB: '#ffe14d' },
+    ],
+    fonts: round(900),
+    texture: { grain: 0.2, scan: 0, paper: 0.4, vignette: 0.1 },
+    world: 'void',
+    moods: ['pop', 'kinetic', 'lyricpv'],
+    decor: ['sparks', 'arrows', 'slashes'],
+    cameras: ['beat-zoom', 'whip', 'dutch'],
+    transitions: ['slash', 'push', 'flash', 'iris'],
+    backdrop: 'speed-lines',
+    fx: ['focus-lines', 'zoom-punch', 'halftone', 'shake', 'sparkle'],
+    treats: ['sticker', 'shadow-stack', 'ransom', 'extrude', 'hard-shadow'],
+  },
+  broadcast: {
+    ja: '放送',
+    desc: 'テレビのテロップと速報の画面。カラーバー、字幕帯、走査線。ニュースやバラエティの文法で歌う。',
+    schemes: [
+      { bg: '#0b1330', fg: '#ffffff', sub: '#a8b3d6', accent: '#ffd400', accent2: '#e8412c', dim: '#131e45', ghostA: '#ffd400', ghostB: '#2c7be8' },
+      { bg: '#f4f4f4', fg: '#111111', sub: '#555555', accent: '#e8412c', accent2: '#0b1330', dim: '#e2e2e2', ghostA: '#e8412c', ghostB: '#2c7be8' },
+    ],
+    fonts: gothic(900),
+    texture: { grain: 0.2, scan: 0.5, paper: 0, vignette: 0.3 },
+    world: 'void',
+    moods: ['lyricpv', 'graphic'],
+    decor: ['timecode', 'ticker', 'index'],
+    cameras: ['truck', 'beat-zoom', 'float'],
+    transitions: ['wipe', 'push', 'blinds', 'cut'],
+    backdrop: 'scan-bars',
+    fx: ['color-bars', 'interlace', 'scan-bar', 'zoom-punch'],
+    treats: ['border', 'band', 'double-border', 'none'],
   },
 } satisfies Record<string, StageTheme>
 

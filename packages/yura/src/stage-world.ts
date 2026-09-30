@@ -2,6 +2,7 @@ import { hash01 } from './motions'
 import { segmentGraphemes } from './shapes'
 import type { StageScheme, WorldName, StageFonts } from './stage-themes'
 import type { CameraPose } from './stage-motion'
+import { buildLightWorld, type LightWorldName } from './stage-world-light'
 
 /**
  * The Three.js world behind a {@link lyricStage}: a lit 3D space the camera
@@ -147,6 +148,11 @@ export const stageWorlds = {
   orbit: { ja: '軌道', desc: '傾いた何重もの輪が、それぞれの速さで回り続ける。中心の網目の球と、周回する光の粒。' },
   petals: { ja: '花びら', desc: '無数の花びらが、揺れ、回りながら舞い落ち続ける。はかなく、やさしい。' },
   cosmos: { ja: '文字の宇宙', desc: '歌詞のすべての文字が星のように奥行きの中に散らばり、今歌われている行の文字だけが明るく灯る。' },
+  ocean: { ja: '黄昏の海', desc: 'うねる海面が地平線まで続き、沈む光が波の上に一本の道を描く。波は拍で輝きを増し、歌詞は水平線の上に浮かぶ。' },
+  caustics: { ja: '水底', desc: '揺れる水面を通った光が、海底と奥の壁に網目の模様を描き続ける。上から光の柱が差し込み、泡が立ち昇る。' },
+  aurora: { ja: 'オーロラ', desc: '夜空に何枚もの光のカーテンがはためき、色を変えながら波打つ。足元の雪原にもかすかな光が映る。' },
+  rays: { ja: '光芒', desc: '頭上の強い光源から、光の筋が扇状に降り注ぐ。大聖堂の窓から差す光のような荘厳さ。' },
+  void: { ja: '漆黒', desc: '何もない完全な黒。プロジェクションマッピングで、文字以外に一切光を出したくないときに。' },
 } satisfies Record<WorldName, { ja: string; desc: string }>
 
 // ------------------------------------------------------------------ THREE glue
@@ -422,6 +428,26 @@ export function createStageWorld(THREE: ThreeNamespace, canvas: HTMLCanvasElemen
       })
       break
     }
+    case 'ocean':
+    case 'caustics':
+    case 'aurora':
+    case 'rays':
+    case 'void':
+      buildLightWorld(opts.name as LightWorldName, {
+        THREE,
+        scene,
+        renderer,
+        seed,
+        keep,
+        tint: (role, sink) => void roles[role].push(sink),
+        updaters,
+        hideShared: () => {
+          dust.visible = false
+          echo.visible = false
+        },
+        makeCanvas,
+      })
+      break
     case 'cosmos': {
       const stars = glyphStarLayout(opts.lines, seed)
       const cache = new Map<string, unknown>()

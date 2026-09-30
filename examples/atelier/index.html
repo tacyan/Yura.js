@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#071325" />
+    <meta name="description" content="Yura.jsで描く、触れられる光の彫刻。環・花・波を行き来するインタラクティブなウェブ作品。" />
+    <title>yurayura — 余白に、生命を。</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='20' fill='%23071325'/%3E%3Cpath d='M9 22Q14 8 20 22T32 19' fill='none' stroke='%23d7e8ff' stroke-width='3'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#experience">作品へ移動する</a>
+    <header class="header">
+      <a class="wordmark" href="#top" aria-label="yurayura トップ">
+        <svg width="30" height="22" viewBox="0 0 30 22" fill="none" aria-hidden="true"><path d="M1 13C6-3 10 25 15 10S24 24 29 6" stroke="currentColor" stroke-width="2" /></svg>
+        yurayura<span class="wordmark-note">光のアトリエ</span>
+      </a>
+      <nav aria-label="メインナビゲーション"><a href="#experience">作品をさわる</a><a href="#about">この作品について</a></nav>
+      <span class="edition">Web exhibition / 2026</span>
+    </header>
+
+    <main id="top">
+      <section class="hero" id="experience" aria-labelledby="hero-title">
+        <div class="art" aria-hidden="true">
+          <svg class="poster" viewBox="0 0 1000 1000" fill="none" aria-hidden="true"><defs><radialGradient id="glow"><stop stop-color="#5c8ed5" stop-opacity=".22"/><stop offset="1" stop-color="#071325" stop-opacity="0"/></radialGradient><linearGradient id="ribbon"><stop stop-color="#5b87cd"/><stop offset=".5" stop-color="#def0ff"/><stop offset="1" stop-color="#476fba"/></linearGradient></defs><circle cx="500" cy="500" r="440" fill="url(#glow)"/><g stroke="url(#ribbon)" stroke-width=".8" opacity=".8"><ellipse cx="500" cy="500" rx="305" ry="230" transform="rotate(-30 500 500)"/><ellipse cx="500" cy="500" rx="290" ry="205" transform="rotate(-20 500 500)"/><ellipse cx="500" cy="500" rx="275" ry="180" transform="rotate(-10 500 500)"/><ellipse cx="500" cy="500" rx="260" ry="155"/><ellipse cx="500" cy="500" rx="245" ry="130" transform="rotate(10 500 500)"/><ellipse cx="500" cy="500" rx="230" ry="105" transform="rotate(20 500 500)"/><ellipse cx="500" cy="500" rx="215" ry="80" transform="rotate(30 500 500)"/><ellipse cx="500" cy="500" rx="200" ry="65" transform="rotate(40 500 500)"/></g></svg>
+          <div id="sculpture"></div>
+          <div class="art-halo"></div>
+        </div>
+        <div class="hero-copy">
+          <p class="intro-label"><span class="live-dot"></span> 触れると、光が応える。</p>
+          <h1 id="hero-title">余白に、<br />生命を。</h1>
+          <p class="hero-description">かたちになって、ほどけて、また生まれる。<br />あなたの動きから始まる、小さな宇宙。</p>
+          <a class="explore-link" href="#works">3つのかたちを巡る <span aria-hidden="true">↘</span></a>
+        </div>
+        <div class="art-caption"><span class="caption-symbol" aria-hidden="true">◌</span><span id="art-name">環 — Orbit</span><span class="art-caption-note">光でできた、終わりのないかたち。</span></div>
+        <span class="vertical-note" aria-hidden="true">A study of light and motion</span>
+        <div class="experience-bar" id="works">
+          <div class="shape-picker" role="group" aria-label="作品のかたち">
+            <button type="button" data-shape="orbit" aria-pressed="true"><span class="shape-icon" aria-hidden="true">◎</span>環<span class="shape-en">Orbit</span></button>
+            <button type="button" data-shape="bloom" aria-pressed="false"><span class="shape-icon" aria-hidden="true">✳</span>花<span class="shape-en">Bloom</span></button>
+            <button type="button" data-shape="wave" aria-pressed="false"><span class="shape-icon" aria-hidden="true">≋</span>波<span class="shape-en">Wave</span></button>
+          </div>
+          <div class="playback"><span id="status" role="status">光の作品を準備しています</span><button id="pause" type="button" aria-label="アニメーションを一時停止" aria-pressed="false" disabled><span id="pause-icon" aria-hidden="true">Ⅱ</span></button></div>
+        </div>
+      </section>
+
+      <section class="about" id="about" aria-labelledby="about-title">
+        <div class="about-opening"><p class="section-note">光のこと。動きのこと。</p><h2 id="about-title">画面の向こうに、<br />気配がある。</h2></div>
+        <div class="about-body"><p class="large-copy">ただ見るだけのウェブから、<br />心が動く、ひとつの体験へ。</p><p>無数の小さな光が集まって、ひとつの彫刻になる。ポインターを動かすと光が揺らぎ、かたちを選ぶと、粒子がゆっくり次の姿へ移っていきます。</p><p>このサンプルはYura.jsの粒子描画と文字のモーションでできています。映像ファイルを再生するのではなく、いま、この画面の中で生まれている光です。</p><a class="source-link" href="https://github.com/tacyan/Yura.js" target="_blank" rel="noopener noreferrer">Yura.jsを見てみる <span aria-hidden="true">↗</span></a></div>
+        <div class="details"><span>GPUで描く光</span><span>ポインターに応える粒子</span><span>3つのかたちをモーフィング</span></div>
+      </section>
+      <section class="closing" aria-label="作品をもう一度体験する"><p>同じ光は、二度とない。</p><a href="#experience">もう一度、触れてみる <span aria-hidden="true">↑</span></a><span class="closing-word" aria-hidden="true">yurayura</span></section>
+    </main>
+    <footer><a class="wordmark" href="#top">yurayura</a><p>光と、余白と、あなた。</p><span>Made with Yura.js</span></footer>
+    <noscript><p class="noscript-note">静止画で展示しています。JavaScriptを有効にすると、作品を動かして体験できます。</p></noscript>
+    <script type="module" src="./main.ts"></script>
+    <script src="../_shared/unbundled-notice.js"></script>
+  </body>
+</html>

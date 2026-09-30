@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The lyric-motion vocabulary grows from 76 to **238 recipes** with three
+  packs — 光 light (`flare-in`, `light-sweep`, `beam-in`, `constellation`,
+  `sparkle`, `lighthouse`, `white-out`, `supernova`, `ember`…), 水 water
+  (`ripple-in`, `surface`, `droplet`, `splash`, `caustic`, `underwater`,
+  `melt`, `drain`, `freeze`…) and キネティック kinetic (`slam`, `whip-in`,
+  `solari`, `zipper`, `quake`, `shatter`, `hinge`…) — plus 17 layouts
+  (`arc`, `wave-row`, `split`, `floor`, `wall`, `headline`…) and 8 moods
+  (`luminous`, `aqua`, `spectrum`, `kinetic`, `cinematic`, `dream`, `eerie`,
+  `mapping`). Every recipe passes the same rest / hidden / finite contracts.
+- `GlyphPose` gains `bright` (brightness multiplier) and `hue` (hue
+  rotation), serialised into the glyph's CSS filter chain. Poses built
+  without them render as before.
+- Lyric stage: light and water worlds in GLSL — `ocean`, `caustics`,
+  `aurora`, `rays` and `void` (pure black for projection) — six themes
+  (`ocean`, `lagoon`, `aurora`, `cathedral`, `rain`, `mapping`), eight
+  transitions (`ripple`, `flood`, `light-leak`, `bloom`, `drip`, `rain`,
+  `prism`, `godray`), five camera moves including a true dolly zoom
+  (`vertigo`), and four decor marks (`lensflare`, `waterline`, `depth`,
+  `spectrum`). The sea's vertex shader is generated from the same wave table
+  `oceanHeight()` evaluates, so shader and tests cannot drift apart.
+- `projectionMapping()` — projection mapping for any element: four-corner
+  perspective warp, flips / quarter turns, gamma-correct edge blending with
+  black-level lift, a spill mask, per-projector viewports
+  (`projectorTiles()`), a test pattern, live calibration (drag, or `1`–`4`
+  and the arrow keys) and validated JSON configs. `projectionSync()` keeps
+  several projector windows on one timeline, and `defineLyricStage` takes a
+  `clock`. Guide: [`docs/PROJECTION.md`](docs/PROJECTION.md); example:
+  `bun run dev:projection`. New warning code `YURA-022`.
+
+### Changed
+
+- `mood: 'mix'` now draws from all 14 moods, so a seeded `'mix'` plan
+  differs from 0.3.x. Named moods and themes plan exactly as before.
+
 ## [0.3.1] - 2026-09-26
 
 ### Fixed
