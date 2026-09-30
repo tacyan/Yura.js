@@ -7,23 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01
+
 ### Added
 
-- The lyric-motion vocabulary grows from 76 to **238 recipes** with three
+- The lyric-motion vocabulary grows from 76 to **323 motions and layouts** with
   packs — 光 light (`flare-in`, `light-sweep`, `beam-in`, `constellation`,
   `sparkle`, `lighthouse`, `white-out`, `supernova`, `ember`…), 水 water
   (`ripple-in`, `surface`, `droplet`, `splash`, `caustic`, `underwater`,
   `melt`, `drain`, `freeze`…) and キネティック kinetic (`slam`, `whip-in`,
-  `solari`, `zipper`, `quake`, `shatter`, `hinge`…) — plus 17 layouts
-  (`arc`, `wave-row`, `split`, `floor`, `wall`, `headline`…) and 8 moods
-  (`luminous`, `aqua`, `spectrum`, `kinetic`, `cinematic`, `dream`, `eerie`,
-  `mapping`). Every recipe passes the same rest / hidden / finite contracts.
+  `solari`, `zipper`, `quake`, `shatter`, `hinge`…) and a typography pack —
+  108 entrances, 61 holds, 83 exits and 71 layouts
+  (`arc`, `wave-row`, `split`, `floor`, `wall`, `headline`…) and 20 total moods,
+  including `luminous`, `aqua`, `spectrum`, `kinetic`, `cinematic`, `dream`, `eerie`,
+  and `mapping`. Every recipe passes the same rest / hidden / finite contracts.
 - `GlyphPose` gains `bright` (brightness multiplier) and `hue` (hue
   rotation), serialised into the glyph's CSS filter chain. Poses built
   without them render as before.
 - Lyric stage: light and water worlds in GLSL — `ocean`, `caustics`,
-  `aurora`, `rays` and `void` (pure black for projection) — six themes
-  (`ocean`, `lagoon`, `aurora`, `cathedral`, `rain`, `mapping`), eight
+  `aurora`, `rays` and `void` (pure black for projection) — 24 total themes,
+  including `ocean`, `lagoon`, `aurora`, `cathedral`, `rain` and `mapping`, eight
   transitions (`ripple`, `flood`, `light-leak`, `bloom`, `drip`, `rain`,
   `prism`, `godray`), five camera moves including a true dolly zoom
   (`vertigo`), and four decor marks (`lensflare`, `waterline`, `depth`,
@@ -37,10 +40,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   several projector windows on one timeline, and `defineLyricStage` takes a
   `clock`. Guide: [`docs/PROJECTION.md`](docs/PROJECTION.md); example:
   `bun run dev:projection`. New warning code `YURA-022`.
+- `yuraFilm()` turns a scene script into a seekable film, with scene kinds,
+  visual looks, text treatments, backdrops, screen effects and synthesised
+  audio. `bun run film` exports MP4 through Chrome and ffmpeg. Guides:
+  [`docs/FILM.md`](docs/FILM.md) and [`docs/EFFECTS.md`](docs/EFFECTS.md).
+- `examples/atelier` offers interactive particle sculptures; `examples/comparison`
+  runs v0.3.1 and current code in isolated frames with shared briefs, text,
+  seed and timeline. Run `bun run dev:atelier` or `bun run dev:comparison`.
+
+### Fixed
+
+- Film export rejects malformed options, non-finite numbers and empty or
+  reversed export ranges before launching tools. Failures clean up Chrome,
+  ffmpeg and temporary files.
 
 ### Changed
 
-- `mood: 'mix'` now draws from all 14 moods, so a seeded `'mix'` plan
+- `mood: 'mix'` now draws from all 20 moods, so a seeded `'mix'` plan
   differs from 0.3.x. Named moods and themes plan exactly as before.
 
 ## [0.3.1] - 2026-09-26

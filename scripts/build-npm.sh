@@ -67,7 +67,7 @@ cat > "$OUT/package.json" <<EOF
 {
   "name": "yurayura",
   "version": "$VERSION",
-  "description": "Make the web move. One million GPU particles, a drop-in Three.js lyric stage, 76 named web text motions, and studio-grade page motion from HTML attributes.",
+  "description": "Make the web move. GPU particles, 323 typography motions and layouts, cinematic lyric stages, projection mapping, script-driven films, and page motion from HTML attributes.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
