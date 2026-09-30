@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>YURA FILM</title>
+    <!-- The looks name these faces first; without the network every stack falls back to the OS fonts. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;600;700;800&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;700&family=M+PLUS+Rounded+1c:wght@800;900&family=Noto+Sans+JP:wght@400;700;900&family=Noto+Serif+JP:wght@700;900&display=block"
+    />
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { height: 100%; background: #000; overflow: hidden; }
+      #film { position: fixed; inset: 0; }
+      .bar {
+        position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 10;
+        display: flex; gap: 6px; padding: 6px 8px; border-radius: 999px;
+        background: rgba(10, 10, 14, 0.78); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.14);
+        font: 600 12px/1 system-ui, sans-serif; transition: opacity 0.4s;
+      }
+      .bar button, .bar select { color: #fff; background: transparent; border: 0; padding: 8px 12px; border-radius: 999px; cursor: pointer; font: inherit; }
+      .bar button:hover { background: rgba(255, 255, 255, 0.14); }
+      .bar option { color: #000; }
+      body.export .bar, body.idle .bar { opacity: 0; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div id="film"></div>
+    <div class="bar" role="toolbar" aria-label="film controls">
+      <button id="play">▶ 音つきで再生</button>
+      <select id="look" aria-label="look"></select>
+      <select id="aspect" aria-label="aspect"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:5</option></select>
+    </div>
+    <script src="../_shared/unbundled-notice.js"></script>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

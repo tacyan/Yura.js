@@ -1,4 +1,25 @@
 import { sweepProgress } from './app'
+import {
+  hash01,
+  clamp01,
+  outCubic,
+  outQuart,
+  outExpo,
+  inCubic,
+  inQuad,
+  outBack,
+  outElastic,
+  outBounce,
+  TAU,
+  frac,
+  signedHash,
+} from './motion-kit'
+import { LIGHT_ENTER, LIGHT_HOLD, LIGHT_EXIT } from './motions-light'
+import { WATER_ENTER, WATER_HOLD, WATER_EXIT } from './motions-water'
+import { KINETIC_ENTER, KINETIC_HOLD, KINETIC_EXIT, KINETIC_LAYOUT } from './motions-kinetic'
+import { COMPOSE_LAYOUT } from './motions-layouts'
+import { HORROR_ENTER, HORROR_HOLD, HORROR_EXIT, TYPE_ENTER, TYPE_HOLD, TYPE_EXIT } from './motions-type'
+import type { TreatmentName } from './treatments'
 
 /**
  * The web-typography motion vocabulary behind {@link kineticLyrics}: the
@@ -48,6 +69,14 @@ export interface GlyphPose {
   split: number
   /** Clip insets in % of the glyph box: top, right, bottom, left. */
   clip: [number, number, number, number]
+  /** Brightness multiplier (1 = as is; >1 blooms toward white — light effects). */
+  bright: number
+  /** Hue rotation in degrees (prism / aurora colour play). */
+  hue: number
+  /** Outline width in em (0 = none): line-drawn letters. */
+  stroke: number
+  /** Fill opacity 0..1 (1 = solid, 0 = hollow outline). */
+  fill: number
   /** Temporary replacement character (scramble / decode effects). */
   char?: string
 }
@@ -71,13 +100,17 @@ export function identityPose(): GlyphPose {
     glow: 0,
     split: 0,
     clip: [0, 0, 0, 0],
+    bright: 1,
+    hue: 0,
+    stroke: 0,
+    fill: 1,
   }
 }
 
 /**
  * Layers a partial pose onto a base (in place, returns base): offsets and
  * angles add, scales and opacity multiply, clips keep the tighter inset, and
- * a replacement character from the layer wins. (Pure w.r.t. `layer`.)
+ * a replacement character from the layer wins. Brightness multiplies and hue adds. (Pure w.r.t. `layer`.)
  */
 export function composePose(base: GlyphPose, layer: Partial<GlyphPose>): GlyphPose {
   if (layer.x !== undefined) base.x += layer.x
@@ -98,6 +131,10 @@ export function composePose(base: GlyphPose, layer: Partial<GlyphPose>): GlyphPo
   if (layer.clip) {
     for (let k = 0; k < 4; k++) base.clip[k] = Math.max(base.clip[k], layer.clip[k])
   }
+  if (layer.bright !== undefined) base.bright *= layer.bright
+  if (layer.hue !== undefined) base.hue += layer.hue
+  if (layer.stroke !== undefined) base.stroke += layer.stroke
+  if (layer.fill !== undefined) base.fill *= layer.fill
   if (layer.char !== undefined) base.char = layer.char
   return base
 }
@@ -120,17 +157,7 @@ export interface MotionGlyph {
   rank: number
 }
 
-/**
- * Deterministic 0..1 hash of up to three integers (a murmur-style finalizer).
- * The only source of "randomness" in the motion vocabulary. (Pure.)
- */
-export function hash01(a: number, b = 0, c = 0): number {
-  let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul((b | 0) + 0x632be5ab, 0x165667b1) ^ Math.imul((c | 0) + 0x5bd1e995, 0x61c88647)
-  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b)
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35)
-  h ^= h >>> 16
-  return (h >>> 0) / 4294967296
-}
+export { hash01 }
 
 /** 0..1 rank of glyph `i` of `n` under an order (0 = first to move). (Pure.) */
 export function glyphRank(order: GlyphOrder, i: number, n: number, seed = 0): number {
@@ -166,32 +193,6 @@ export function glyphProgress(p: number, rank: number, stagger: number): number 
 }
 
 // ------------------------------------------------------------------ easing
-
-const clamp01 = (v: number): number => (Number.isNaN(v) ? 0 : Math.min(1, Math.max(0, v)))
-const outCubic = (t: number): number => 1 - (1 - t) ** 3
-const outQuart = (t: number): number => 1 - (1 - t) ** 4
-const outExpo = (t: number): number => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t))
-const inCubic = (t: number): number => t * t * t
-const inQuad = (t: number): number => t * t
-const BACK_OVERSHOOT = 1.70158
-const outBack = (t: number): number => {
-  const u = t - 1
-  return 1 + (BACK_OVERSHOOT + 1) * u * u * u + BACK_OVERSHOOT * u * u
-}
-const outElastic = (t: number): number =>
-  t <= 0 ? 0 : t >= 1 ? 1 : Math.pow(2, -10 * t) * Math.sin(((t * 10 - 0.75) * 2 * Math.PI) / 3) + 1
-const outBounce = (t: number): number => {
-  const n = 7.5625
-  const d = 2.75
-  if (t < 1 / d) return n * t * t
-  if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75
-  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375
-  return n * (t -= 2.625 / d) * t + 0.984375
-}
-const TAU = Math.PI * 2
-const frac = (v: number): number => v - Math.floor(v)
-/** Centered ±0.5 hash. */
-const signedHash = (a: number, b: number, c: number): number => hash01(a, b, c) - 0.5
 
 // Hash salts: distinct streams per purpose so effects never correlate.
 const SALT_ORDER = 1
@@ -282,8 +283,12 @@ export interface LayoutRecipe extends Described {
   box: Readonly<Record<string, string>>
   /** Multiplier on the run's base font size. Default 1. */
   fontScale?: number
-  /** Static per-glyph offset in em (staircases, scatter). */
-  offset?(g: MotionGlyph): { x: number; y: number }
+  /** Static per-glyph offset in em (staircases, scatter), optionally turned and scaled (rings, spirals). */
+  offset?(g: MotionGlyph): { x: number; y: number; rotate?: number; scale?: number }
+  /** Style for the text block itself (a capsule, a card, a sign board…). */
+  block?: Readonly<Record<string, string>>
+  /** Decoration markup placed inside the text block (tails, perforations, rods, icons). */
+  deco?: string
 }
 
 // ------------------------------------------------------------------ enter (登場)
@@ -835,10 +840,16 @@ const LAYOUT = {
 
 // ------------------------------------------------------------------ registries
 
-export type EnterName = keyof typeof ENTER
-export type HoldName = keyof typeof HOLD
-export type ExitName = keyof typeof EXIT
-export type LayoutName = keyof typeof LAYOUT
+// The core vocabulary above, then the packs: 光 light, 水 water, キネティック kinetic.
+const ENTER_ALL = { ...ENTER, ...LIGHT_ENTER, ...WATER_ENTER, ...KINETIC_ENTER, ...HORROR_ENTER, ...TYPE_ENTER }
+const HOLD_ALL = { ...HOLD, ...LIGHT_HOLD, ...WATER_HOLD, ...KINETIC_HOLD, ...HORROR_HOLD, ...TYPE_HOLD }
+const EXIT_ALL = { ...EXIT, ...LIGHT_EXIT, ...WATER_EXIT, ...KINETIC_EXIT, ...HORROR_EXIT, ...TYPE_EXIT }
+const LAYOUT_ALL = { ...LAYOUT, ...KINETIC_LAYOUT, ...COMPOSE_LAYOUT }
+
+export type EnterName = keyof typeof ENTER_ALL
+export type HoldName = keyof typeof HOLD_ALL
+export type ExitName = keyof typeof EXIT_ALL
+export type LayoutName = keyof typeof LAYOUT_ALL
 
 /** The whole vocabulary, by phase. Read-only by convention. */
 export const motions: {
@@ -846,7 +857,7 @@ export const motions: {
   readonly hold: Readonly<Record<HoldName, HoldRecipe>>
   readonly exit: Readonly<Record<ExitName, TransitionRecipe>>
   readonly layout: Readonly<Record<LayoutName, LayoutRecipe>>
-} = { enter: ENTER, hold: HOLD, exit: EXIT, layout: LAYOUT }
+} = { enter: ENTER_ALL, hold: HOLD_ALL, exit: EXIT_ALL, layout: LAYOUT_ALL }
 
 /** A phase of the vocabulary. */
 export type MotionPhase = keyof typeof motions
@@ -878,6 +889,8 @@ export interface KineticMood extends Described {
   hold: readonly HoldName[]
   exit: readonly ExitName[]
   layout: readonly LayoutName[]
+  /** Text treatments lines of this mood draw from (none when omitted). */
+  treat?: readonly TreatmentName[]
 }
 
 /**
@@ -932,6 +945,124 @@ export const kineticMoods = {
     hold: ['wave', 'float', 'shimmer', 'sway'],
     exit: ['evaporate', 'dissolve', 'tracking-out', 'zoom-through'],
     layout: ['center', 'vertical', 'scatter'],
+  },
+  luminous: {
+    ja: '光',
+    desc: '灯り、あふれ、まぶしく溶ける。光そのものを主役にする行に。',
+    enter: ['flare-in', 'light-sweep', 'ignite', 'halo-in', 'bloom-in', 'constellation', 'spark-in', 'godray-in', 'sunrise'],
+    hold: ['glow-breathe', 'sparkle', 'lighthouse', 'radiance', 'twinkle', 'flare'],
+    exit: ['flare-out', 'white-out', 'supernova', 'twinkle-out', 'ember', 'godray-out', 'eclipse'],
+    layout: ['center', 'giant', 'spread', 'vertical', 'arc'],
+  },
+  aqua: {
+    ja: '水',
+    desc: '浮かび、揺らぎ、滴り、流れ去る。水辺や雨、涙の歌に。',
+    enter: ['ripple-in', 'surface', 'droplet', 'splash', 'liquid', 'bubble-up', 'refract', 'tide-in', 'rain-in', 'upwell', 'pour'],
+    hold: ['ripple', 'underwater', 'buoy', 'caustic', 'current', 'drip', 'refraction', 'glint'],
+    exit: ['melt', 'sink-deep', 'splash-out', 'mist', 'ripple-out', 'drain', 'wash-away', 'drip-out', 'dissolve-water', 'surface-out'],
+    layout: ['center', 'wave-row', 'bowl', 'lower', 'vertical'],
+  },
+  spectrum: {
+    ja: '分光',
+    desc: '色が分かれ、巡り、また一つに戻る。虹やプリズムのようにカラフルな行に。',
+    enter: ['prism-in', 'aurora-in', 'photon', 'laser-scan', 'lens-focus', 'frost-in'],
+    hold: ['prism', 'rainbow', 'aurora', 'caustic'],
+    exit: ['prism-out', 'light-speed', 'photon-out', 'dissolve-water'],
+    layout: ['wave-row', 'arc', 'center', 'spread'],
+  },
+  kinetic: {
+    ja: 'キネティック',
+    desc: '叩きつけ、振り抜き、弾き飛ばす。モーショングラフィックスの重さと勢い。',
+    enter: ['slam', 'whip-in', 'flip-3d', 'roll-in', 'zipper', 'split-in', 'magnet', 'solari', 'thud', 'stretch-in', 'bounce-in'],
+    hold: ['bob', 'stretch', 'kick', 'quake', 'ticktock', 'spring'],
+    exit: ['slam-out', 'whip-out', 'split-out', 'shatter', 'stretch-out', 'roll-out', 'drop-out', 'jump-out'],
+    layout: ['headline', 'zigzag', 'condensed', 'giant', 'ascend'],
+  },
+  cinematic: {
+    ja: 'シネマ',
+    desc: '絞りが開き、焦点が合い、光に溶ける。映画のタイトルバックのような品格。',
+    enter: ['iris-in', 'depth-in', 'flare-in', 'blur-in', 'tracking-in', 'light-sweep', 'lens-focus'],
+    hold: ['push-in', 'breathe', 'lighthouse', 'glide'],
+    exit: ['depth-out', 'white-out', 'iris-out', 'blur-out', 'tracking-out', 'fade-to-dark'],
+    layout: ['lower', 'center', 'spread', 'floor', 'corner'],
+  },
+  dream: {
+    ja: '夢幻',
+    desc: '泡や星や蛍のように、漂い、瞬き、ほどけていく。夢の中の歌に。',
+    enter: ['bubble-up', 'aurora-in', 'constellation', 'firefly', 'mirage', 'condense'],
+    hold: ['underwater', 'aurora', 'twinkle', 'levitate', 'buoy'],
+    exit: ['bubble-out', 'twinkle-out', 'mist', 'evaporate', 'ember'],
+    layout: ['arc', 'wave-row', 'vertical', 'center', 'bowl'],
+  },
+  eerie: {
+    ja: '不穏',
+    desc: '明かりが揺れ、文字が震え、闇へ沈む。ホラーや緊張感のある行に。',
+    enter: ['ignite', 'condense', 'typewriter', 'glitch-in', 'ink-bloom', 'strobe-in'],
+    hold: ['candle', 'flicker', 'tremble', 'drip', 'neon-hum'],
+    exit: ['fade-to-dark', 'melt', 'sink-deep', 'burn-out', 'drip-out'],
+    layout: ['scatter', 'vertical-right', 'corner', 'tilt-right', 'diagonal'],
+  },
+  mapping: {
+    ja: '投影',
+    desc: 'プロジェクションマッピング向け。黒を「光のない面」として使い、光量と輪郭のはっきりした動きで建物や壁に強く映る。',
+    enter: ['flashbulb', 'light-sweep', 'beam-in', 'slam', 'laser-scan', 'iris-in', 'godray-in', 'constellation'],
+    hold: ['halo', 'strobe', 'glow-breathe', 'lighthouse', 'radiance', 'still'],
+    exit: ['white-out', 'beam-out', 'eclipse', 'slam-out', 'godray-out', 'implode'],
+    layout: ['giant', 'center', 'split', 'headline', 'wall', 'floor'],
+  },
+  horror: {
+    ja: 'ホラー',
+    desc: '瞬きの間に近づき、一字だけ残り、闇に呑まれる。怖さを間と光でつくる行に。',
+    enter: ['blink-creep', 'jump-scare', 'uneasy', 'v-hold', 'mirror-snap', 'manifest', 'claw-reveal'],
+    hold: ['twitch', 'stare', 'lag-one', 'dying-light', 'flicker'],
+    exit: ['pulled-down', 'look-back', 'turn-away', 'shiver', 'swallow', 'flicker-die', 'bleed'],
+    layout: ['scatter', 'vertical-right', 'corner', 'tilt-right', 'center'],
+    treat: ['eroded', 'ink-bleed', 'redact', 'double-exposure', 'none'],
+  },
+  wa: {
+    ja: '和風',
+    desc: '墨が滲み、ルビが降り、縦に組まれる。明朝と余白で見せる日本語の行に。',
+    enter: ['ink-bloom', 'rise', 'wipe-down', 'fade-up', 'ruby-drop', 'stroke-draw', 'upwell'],
+    hold: ['float', 'breathe', 'still', 'glint'],
+    exit: ['blur-out', 'evaporate', 'fade', 'under-sink', 'mist'],
+    layout: ['vertical', 'vertical-right', 'vertical-left', 'spread', 'center'],
+    treat: ['emphasis-dots', 'brackets', 'none', 'gold', 'head-rules'],
+  },
+  ballad: {
+    ja: 'バラード',
+    desc: '焦点が合い、ゆっくり呼吸し、光に溶ける。聴かせるための静かな行に。',
+    enter: ['blur-in', 'fade-up', 'bloom-in', 'manifest', 'halo-in', 'sunrise'],
+    hold: ['breathe', 'float', 'glow-breathe', 'twinkle'],
+    exit: ['evaporate', 'blur-out', 'twinkle-out', 'fade', 'mist'],
+    layout: ['center', 'lower', 'spread', 'vertical'],
+    treat: ['soft-shadow', 'none', 'glow', 'fade'],
+  },
+  lyricpv: {
+    ja: '文字PV',
+    desc: '一字ずつ拡大し、叩きつけ、線で消し、改行で送る。文字だけで一本の映像にする行に。',
+    enter: ['key-first', 'zoom-one', 'line-wipe', 'slam', 'stamp', 'typewriter', 'tracking-in', 'split-in', 'outline-fill'],
+    hold: ['key-pulse', 'track-step', 'pulse', 'read-cursor', 'outline-blink'],
+    exit: ['strike-out', 'line-feed', 'to-index', 'cut', 'backspace', 'slam-out', 'to-dot'],
+    layout: ['headline', 'giant', 'zigzag', 'condensed', 'center', 'upper'],
+    treat: ['outline', 'hard-shadow', 'marker', 'band', 'head-big', 'none', 'spot-char', 'misregister'],
+  },
+  typo: {
+    ja: '文字組',
+    desc: '括弧が開き、ルビが降り、升目に収まる。組版そのものを動きにする行に。',
+    enter: ['bracket-open', 'ruby-drop', 'retype', 'dot-grow', 'under-lift', 'stroke-draw', 'key-first'],
+    hold: ['read-cursor', 'key-pulse', 'track-step', 'still'],
+    exit: ['bracket-close', 'to-dot', 'to-index', 'under-sink', 'fold-vert', 'strike-out', 'unstroke'],
+    layout: ['left', 'spread', 'headline', 'vertical', 'center'],
+    treat: ['head-rules', 'emphasis-dots', 'underline', 'hollow-key', 'genkou', 'wide-tracking', 'none'],
+  },
+  chaos: {
+    ja: '全部入り',
+    desc: '辞典のすべての動き・配置・文字処理から毎行を選ぶ。何が来るか分からない、実験と発見の行に。',
+    enter: Object.keys(ENTER_ALL) as EnterName[],
+    hold: Object.keys(HOLD_ALL) as HoldName[],
+    exit: Object.keys(EXIT_ALL) as ExitName[],
+    layout: Object.keys(LAYOUT_ALL) as LayoutName[],
+    treat: ['none', 'outline', 'extrude', 'long-shadow', 'marker', 'glow', 'neon', 'halftone', 'chrome', 'glitch-split', 'sticker', 'ransom', 'keycap', 'rainbow', 'stencil', 'shine'],
   },
 } satisfies Record<string, KineticMood>
 

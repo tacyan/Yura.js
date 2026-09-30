@@ -306,7 +306,7 @@ describe('framePoses / phases', () => {
 
 describe('poseToStyle', () => {
   test('rest writes none everywhere', () => {
-    expect(REST).toEqual({ transform: 'none', opacity: '1', filter: 'none', clipPath: 'none', textShadow: 'none' })
+    expect(REST).toEqual({ transform: 'none', opacity: '1', filter: 'none', clipPath: 'none', textShadow: 'none', textStroke: '', fillColor: '' })
   })
 
   test('serializes each channel in em / % / deg', () => {

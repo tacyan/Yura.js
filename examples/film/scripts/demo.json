@@ -1,0 +1,22 @@
+{
+  "title": "Yura.js",
+  "look": "saas",
+  "aspect": "16:9",
+  "bpm": 112,
+  "brand": { "name": "Yura.js", "tagline": "Motion, written in code.", "url": "github.com/tacyan/Yura.js", "cta": "Start free" },
+  "scenes": [
+    { "kind": "title", "kicker": "For people who ship", "text": "How long does\nyour next *video* take?" },
+    { "kind": "compare", "before": "Two weeks in an editor.", "after": "One script." },
+    { "kind": "statement", "text": "Every frame, _written_ in code.", "caption": "No timeline. No assets." },
+    { "kind": "steps", "label": "how", "steps": [
+      { "title": "Write the *scenes*", "text": "Titles, stats, UI cards, steps — plain JSON." },
+      { "title": "Pick a _look_", "text": "Seven visual systems, one line." },
+      { "title": "Render the *MP4*", "text": "Frame-exact, with a soundtrack synthesised in code." }
+    ] },
+    { "kind": "ui", "kicker": "Step 02", "text": "Your client clicks _once_.", "card": { "title": "New render", "wave": true, "chat": "Make it feel like a launch film.", "checklist": ["Scenes", "Soundtrack", "Captions"], "button": "Render", "cursor": "You" } },
+    { "kind": "stat", "value": 238, "label": "motions in the vocabulary", "viz": "dots", "share": 0.35 },
+    { "kind": "code", "title": "zsh", "lines": ["$ bun run film my-launch.json", "  planning 9 scenes · 31.1 s", "  rendering 933 frames", "  ✓ my-launch.mp4"] },
+    { "kind": "mosaic", "text": "All in *one* file." },
+    { "kind": "end" }
+  ]
+}

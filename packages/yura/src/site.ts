@@ -1,3 +1,5 @@
+import { treatments, treatmentStyles, treatmentLive, type TreatmentName } from './treatments'
+import { backdrops, backdropMarkup, backdropFrame } from './backdrops'
 import { YuraError, CODES } from '@yura/core'
 import { motions, type EnterName } from './motions'
 import { stageThemes, type StageThemeName } from './stage-themes'
@@ -311,7 +313,12 @@ export function yuraSite(opts: SiteOptions = {}): SiteRun {
   const magnets: Magnet[] = []
   const schemeSections: { el: HTMLElement; scheme: number }[] = []
   const scrubs: { el: HTMLElement }[] = []
+  const liveTreats: { name: TreatmentName; inner: HTMLElement[]; text: string[]; seed: number }[] = []
+  const bgSections: { name: string; seed: number; els: { el: HTMLElement; key: string }[] }[] = []
   const seen = new WeakSet<Element>()
+  // Treatments and backdrops combine with the other attributes, so they keep their own bookkeeping.
+  const treated = new WeakSet<Element>()
+  const backed = new WeakSet<Element>()
   const cleanups: (() => void)[] = []
 
   const vh = (): number => win.innerHeight || html.clientHeight || 1
@@ -334,6 +341,8 @@ export function yuraSite(opts: SiteOptions = {}): SiteRun {
         c.style.filter = s.filter
         c.style.clipPath = s.clipPath
         c.style.textShadow = s.textShadow === 'none' ? '' : s.textShadow
+        ;(c.style as unknown as Record<string, string>).webkitTextStroke = s.textStroke
+        ;(c.style as unknown as Record<string, string>).webkitTextFillColor = s.fillColor
       })
     }
     const r: Reveal = {
@@ -438,6 +447,55 @@ export function yuraSite(opts: SiteOptions = {}): SiteRun {
     if (!reduced) counters.push(c)
   }
 
+  /**
+   * data-yura-treat: the element's letters take a text treatment. Glyph-level
+   * styles go on an inner span per character, so reveal animations (which
+   * own the character span's transform / opacity) and treatments never collide.
+   */
+  const armTreat = (el: HTMLElement): void => {
+    const name = el.getAttribute('data-yura-treat') as TreatmentName
+    if (!Object.prototype.hasOwnProperty.call(treatments, name)) return
+    const existing = Array.from(el.querySelectorAll<HTMLElement>('.yura-c'))
+    const chars = existing.length ? existing : splitElement(el)
+    const text = chars.map((c) => c.textContent ?? '')
+    const seed = Math.floor(num(el.getAttribute('data-yura-seed'), chars.length + 1))
+    const st = treatmentStyles(name, text, seed)
+    Object.assign(el.style, st.block)
+    const inner: HTMLElement[] = []
+    chars.forEach((c, i) => {
+      if (c.childElementCount) return
+      const t = doc.createElement('span')
+      t.className = 'yura-t'
+      t.style.display = 'inline-block'
+      Object.assign(t.style, st.glyphs[i])
+      t.textContent = c.textContent
+      c.textContent = ''
+      c.appendChild(t)
+      inner[i] = t
+    })
+    if (st.wrap) {
+      el.insertBefore(doc.createTextNode(st.wrap[0]), el.firstChild)
+      el.appendChild(doc.createTextNode(st.wrap[1]))
+    }
+    if ((treatments as Record<string, { live?: unknown }>)[name].live) liveTreats.push({ name, inner, text, seed })
+  }
+
+  /** data-yura-bg: a pattern / scenery backdrop behind the section's content. */
+  const armBackdrop = (el: HTMLElement): void => {
+    const name = el.getAttribute('data-yura-bg') ?? ''
+    if (!Object.prototype.hasOwnProperty.call(backdrops, name)) return
+    if (win.getComputedStyle(el).position === 'static') el.style.position = 'relative'
+    el.style.isolation = 'isolate'
+    const holder = doc.createElement('div')
+    holder.setAttribute('aria-hidden', 'true')
+    holder.style.cssText = 'position:absolute;inset:0;z-index:-1;pointer-events:none;overflow:hidden'
+    const seed = Math.floor(num(el.getAttribute('data-yura-seed'), 1))
+    holder.innerHTML = backdropMarkup(name, seed)
+    el.insertBefore(holder, el.firstChild)
+    const els = Array.from(holder.querySelectorAll<HTMLElement>('[data-bd]')).map((e) => ({ el: e, key: e.getAttribute('data-bd') ?? '' }))
+    if (els.length && !reduced) bgSections.push({ name, seed, els })
+  }
+
   const scan = (): void => {
     const all = <T extends Element = HTMLElement>(sel: string) => Array.from(doc.querySelectorAll<T & HTMLElement>(sel))
     const fresh = (el: Element): boolean => {
@@ -446,6 +504,8 @@ export function yuraSite(opts: SiteOptions = {}): SiteRun {
       return true
     }
     for (const el of all('[data-yura-text]')) if (fresh(el)) armText(el, 0)
+    for (const el of all('[data-yura-treat]')) if (!treated.has(el)) (treated.add(el), armTreat(el))
+    for (const el of all('[data-yura-bg]')) if (!backed.has(el)) (backed.add(el), armBackdrop(el))
     // On a stagger container, data-yura-reveal names the CHILDREN's effect — the container itself stays put.
     for (const el of all('[data-yura-reveal]')) {
       if (el.hasAttribute('data-yura-stagger') || el.parentElement?.hasAttribute('data-yura-stagger')) continue
@@ -591,6 +651,16 @@ export function yuraSite(opts: SiteOptions = {}): SiteRun {
       }
     }
     const gated = loader !== null && !Number.isFinite(loader.liftAt)
+
+    // Live treatments (karaoke fill, shine, water level) and animated backdrops run on page time.
+    for (const lt of liveTreats) {
+      const styles = treatmentLive(lt.name, t, lt.text, lt.seed)
+      if (styles) styles.forEach((s, i) => lt.inner[i] && Object.assign(lt.inner[i].style, s))
+    }
+    for (const b of bgSections) {
+      const f = backdropFrame(b.name, t, b.seed)
+      for (const { el, key } of b.els) if (f[key]) Object.assign(el.style, f[key])
+    }
 
     // READ phase: every layout read happens before any write this frame.
     const pendingRects = gated ? [] : pending.map((r) => r.el.getBoundingClientRect())

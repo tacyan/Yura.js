@@ -291,7 +291,8 @@ Particles are one way to say a lyric. The other is the way landing pages
 do it: real text, split per character, revealed from masks, pulled into
 focus, decoded from noise. `kineticLyrics()` plays the same timed lines as
 animated DOM text over any element (or over a particle canvas), with a
-vocabulary of **33 entrances, 12 holds, 22 exits and 9 layouts**, each one
+vocabulary of **91 entrances, 53 holds, 68 exits and 26 layouts** (238 in
+all, with light, water and kinetic packs) and 14 moods, each one
 named and described in words — see
 [`docs/LYRIC_MOTION.md`](docs/LYRIC_MOTION.md) for the full dictionary
 (`bun run dev:kinetic` previews every one):
@@ -364,8 +365,8 @@ nothing is hidden. `bun run dev:gallery` shows every feature live on one page.
 a *cut*: the colour scheme swaps, the camera makes a new move through a
 Three.js world, a transition wipes the frame, and the words arrive with the
 kinetic vocabulary above — framed by HUD / editorial decor and finished with
-grain, scanlines and accent flashes. **12 themes, 7 worlds, 11 camera moves,
-9 transitions and 14 decor marks**, all documented in
+grain, scanlines and accent flashes. **18 themes, 12 worlds, 16 camera moves,
+17 transitions and 18 decor marks**, all documented in
 [`docs/LYRIC_MOTION.md`](docs/LYRIC_MOTION.md) (`bun run dev:stage`):
 
 ```html
@@ -386,6 +387,46 @@ own namespace (omit it for a CSS backdrop; a missing WebGL falls back the
 same way with `YURA-021`). It sizes itself from its box at runtime, fits
 long lines, pauses off screen, keeps the source lyrics in the page for
 search engines and screen readers, and honours reduced-motion settings.
+
+### Light, water — and projection mapping
+
+The light and water worlds are written in GLSL from pure, tested tables:
+`ocean` (a swell whose height field is generated from the same wave table
+the tests evaluate, with a sun glitter path), `caustics` (a sea floor under
+moving caustic filaments, light shafts and rising bubbles), `aurora`,
+`rays` (cathedral light) and `void` — pure black for projection, where
+black means *no light on the wall*. Themes `ocean`, `lagoon`, `aurora`,
+`cathedral`, `rain` and `mapping` put them to work, with water / light
+transitions (`ripple`, `flood`, `drip`, `rain`, `light-leak`, `bloom`,
+`prism`, `godray`) and a true dolly-zoom camera (`vertigo`).
+
+`projectionMapping()` takes anything on the page — a lyric stage, a canvas,
+a video — onto a real surface: a four-corner perspective warp (a homography
+as CSS `matrix3d`), flips and quarter turns for rear or sideways
+projectors, gamma-correct soft edges and black-level lift for overlapping
+projectors, a spill mask, a test pattern, and live calibration (drag the
+corners, or `1`–`4` and the arrow keys). Coordinates are normalised, so a
+calibration saved on one machine loads at any resolution. Guide:
+[`docs/PROJECTION.md`](docs/PROJECTION.md) (`bun run dev:projection`).
+
+```ts
+import * as THREE from 'three'
+import { defineLyricStage, projectionMapping, projectionSync, projectorTiles } from 'yura'
+
+// One timeline for every projector window on this machine.
+const sync = projectionSync({ role: 'leader' })
+defineLyricStage({ three: THREE, clock: sync.clock })
+
+// Projector 1 of 2: the left slice, soft edge on the right, calibrated on the wall.
+const [left] = projectorTiles(2, 0.15)
+projectionMapping('#show', {
+  fullscreen: true,
+  viewport: { x: left.x, y: 0, width: left.width, height: 1 },
+  blend: { right: left.blendRight },
+  storageKey: 'wall-left',
+  calibrate: true,
+})
+```
 
 The choreography itself is tunable: `.motion()` retimes the automatic shape
 cycle app-wide, `morphNow` overrides per call, and `ease` takes a name from
@@ -461,8 +502,12 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   world, per-line colour-scheme cuts, camera moves, transitions, decor and
   film texture around kinetic lyrics, from one tag.
 - **Web typography motion** — `kineticLyrics()` renders lyrics as DOM text
-  with 76 named, documented motions (mask reveals, shutters, scramble,
-  neon, beat pulses, tategaki…) and six seed-planned moods.
+  with 238 named, documented motions (mask reveals, shutters, scramble,
+  neon, flares, caustics, droplets, slams, tategaki…) and 14 seed-planned
+  moods.
+- **Projection mapping** — `projectionMapping()`: corner-pin any element
+  onto a wall, soft-edge blend several projectors, mask spill, calibrate
+  live, and keep every output window on one clock with `projectionSync()`.
 - **HDR pipeline** — rgba16float scene target, light trails, threshold
   bloom, anamorphic streaks, chromatic aberration, ACES tonemapping,
   vignette, film grain; procedural nebula + starfield backdrop, zero assets.

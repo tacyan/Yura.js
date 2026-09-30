@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#081326" />
+  <title>yurayura — 同じプロンプト、ふたつの表現。</title>
+  <meta name="description" content="同一のプロンプト・文言・時間で、変更前と変更後のYura.jsを比較する実コードのサンプル。" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <header><a href="/atelier/">yurayura</a><span>進化を、同じ条件で見てみる。</span></header>
+  <main>
+    <div class="heading"><h1>同じプロンプト。<br />広がった、表現。</h1><p>変更前と変更後の実コードを、それぞれ別の画面で実行。<br />同じ言葉、同じ時間、同じシードで比べてみてください。</p></div>
+    <section class="brief" aria-label="両方に共通のプロンプト"><div class="brief-top"><span>両方に渡すプロンプト</span><div class="tabs" role="group" aria-label="プロンプトを選ぶ"><button data-brief="water" aria-pressed="true">水と光</button><button data-brief="light" aria-pressed="false">極光</button><button data-brief="kinetic" aria-pressed="false">タイポグラフィ</button></div></div><p id="prompt"></p></section>
+    <section class="comparison" aria-label="変更前と変更後の比較">
+      <article><div class="panel-heading"><h2>変更前</h2><span id="before-revision">Gitの確定済みコード</span></div><div class="frame"><iframe id="before" src="./before.html" title="変更前のYura.jsによる作品"></iframe></div><p class="recipes" id="before-recipes">読み込み中…</p></article>
+      <article><div class="panel-heading"><h2>変更後</h2><span>現在の作業コード</span></div><div class="frame"><iframe id="after" src="./after.html" title="変更後のYura.jsによる作品"></iframe></div><p class="recipes" id="after-recipes">読み込み中…</p></article>
+    </section>
+    <section class="controls" aria-label="共通の再生操作"><button id="play" aria-pressed="true">一時停止</button><button id="restart">最初から</button><label for="time">同じ時刻で比較</label><input id="time" type="range" min="0" max="11.99" step="0.01" value="0" /><output id="time-label" for="time">0.00秒</output></section>
+    <p id="load-status" role="status">両方の作品を読み込んでいます。</p>
+    <section class="evidence"><h2>実際に増えた表現の選択肢</h2><table><thead><tr><th scope="col">公開レジストリ</th><th scope="col">変更前</th><th scope="col">変更後</th></tr></thead><tbody id="counts"></tbody></table><p>数値は、それぞれ実行中のライブラリから取得しています。描画速度や美しさのスコアではありません。</p></section>
+    <details><summary>比較条件と、このサンプルで分かること</summary><p>プロンプトを共通の演出候補へ対応付け、各バージョンに存在するレシピを選びます。新しい演出がない変更前では、同じ候補表の既存レシピへフォールバックします。HTML・描画サイズ・文言・シード2026・表示間隔4秒・タイムラインは共通です。</p><p>この比較はライブラリの機能差を見るためのものです。AIに同じプロンプトを2回入力して生成品質を評価した結果ではありません。テーマごとの配色やモーションは各バージョンの実装を使います。GPUが使えない場合はCSS背景で表示し、その状態を表示します。</p><p id="provenance"></p></details>
+    <a class="atelier-link" href="/atelier/">光の彫刻のHTMLサンプルも体験する <span aria-hidden="true">↗</span></a>
+  </main><footer>yurayura / 同じ条件で、違いを確かめる。</footer>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

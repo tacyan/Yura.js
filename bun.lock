@@ -36,6 +36,35 @@
         "yura": "workspace:*",
       },
     },
+    "examples/atelier": {
+      "name": "example-atelier",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
+    "examples/comparison": {
+      "name": "example-comparison",
+      "version": "0.1.0",
+      "dependencies": {
+        "three": "^0.168.0",
+        "yura": "workspace:*",
+      },
+    },
+    "examples/effects": {
+      "name": "example-effects",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
+    "examples/film": {
+      "name": "example-film",
+      "version": "0.1.0",
+      "dependencies": {
+        "yura": "workspace:*",
+      },
+    },
     "examples/gallery": {
       "name": "example-gallery",
       "version": "0.1.0",
@@ -79,6 +108,14 @@
         "yura": "workspace:*",
       },
     },
+    "examples/projection": {
+      "name": "example-projection",
+      "version": "0.1.0",
+      "dependencies": {
+        "three": "^0.168.0",
+        "yura": "workspace:*",
+      },
+    },
     "examples/site": {
       "name": "example-site",
       "version": "0.1.0",
@@ -116,7 +153,7 @@
     },
     "packages/yura": {
       "name": "yura",
-      "version": "0.2.0",
+      "version": "0.3.1",
       "dependencies": {
         "@yura/core": "workspace:*",
         "@yura/renderer-webgl": "workspace:*",
@@ -161,6 +198,14 @@
 
     "entities": ["entities@7.0.1", "", {}, "sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA=="],
 
+    "example-atelier": ["example-atelier@workspace:examples/atelier"],
+
+    "example-comparison": ["example-comparison@workspace:examples/comparison"],
+
+    "example-effects": ["example-effects@workspace:examples/effects"],
+
+    "example-film": ["example-film@workspace:examples/film"],
+
     "example-gallery": ["example-gallery@workspace:examples/gallery"],
 
     "example-game": ["example-game@workspace:examples/game"],
@@ -172,6 +217,8 @@
     "example-lyrics": ["example-lyrics@workspace:examples/lyrics"],
 
     "example-model": ["example-model@workspace:examples/model"],
+
+    "example-projection": ["example-projection@workspace:examples/projection"],
 
     "example-site": ["example-site@workspace:examples/site"],
 

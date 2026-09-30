@@ -243,6 +243,12 @@ function fakeThree(opts: { failRenderer?: boolean } = {}): FakeThree {
       updateProjectionMatrix() {}
       updateMatrix() {}
       setMatrixAt() {}
+      // Geometry transforms, vector setters and renderer queries the light / water worlds use.
+      rotateX() { return this }
+      translate() { return this }
+      set() { return this }
+      getPixelRatio() { return 2 }
+      getContext() { return { ALIASED_POINT_SIZE_RANGE: 0x846d, getParameter: () => [1, 255] } }
     }
   state.ns = new Proxy({ SRGBColorSpace: 'srgb', DoubleSide: 2 } as Record<string, unknown>, {
     get(t, k: string) {

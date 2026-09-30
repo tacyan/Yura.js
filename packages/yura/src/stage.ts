@@ -29,6 +29,9 @@ import {
 } from './stage-motion'
 import { stageDecor, decorMarkup, decorLive } from './stage-decor'
 import { createStageWorld, stageWorlds, type ThreeNamespace, type StageWorld } from './stage-world'
+import { backdrops, backdropMarkup, backdropFrame, type BackdropName } from './backdrops'
+import { fxFrame, FX_SVG_DEFS, screenFx, type FxName } from './screen-fx'
+import type { TreatmentName } from './treatments'
 
 /**
  * lyricStage — a complete lyric hero section from one call.
@@ -77,6 +80,13 @@ export interface StagePlanOptions {
   enterDuration?: number
   exitDuration?: number
   reducedMotion?: boolean
+  /** A CSS pattern / scenery backdrop (青海波, sunburst, skyline…). Shown over the 3D world when given. */
+  backdrop?: BackdropName
+  /** Screen effects fired on cuts (accent lines always get one); [] turns the theme's off. */
+  fx?: readonly FxName[]
+  /** Text treatment for every line, or a pool lines draw from. */
+  treat?: TreatmentName
+  treats?: readonly TreatmentName[]
 }
 
 export interface StagePlan {
@@ -122,6 +132,7 @@ export function planStage(lines: readonly KineticInput[], opts: StagePlanOptions
   const themeName = opts.theme ?? DEFAULT_THEME
   check('theme', themeName, stageThemes)
   check('world', opts.world, stageWorlds)
+  check('backdrop', opts.backdrop, backdrops)
   check('camera', opts.camera, cameraMoves)
   check('transition', opts.transition, stageTransitions)
   if (opts.decor) for (const d of opts.decor) check('decor', d, stageDecor)
@@ -422,9 +433,30 @@ export function lyricStage(target: string | Element | KineticElement, lines: rea
   }
   const glow = layer(0, { background: 'radial-gradient(circle at 50% 55%, var(--yura-dim) 0%, transparent 62%)' })
   const sweep = layer(0, { background: 'conic-gradient(from 0deg at 50% 50%, transparent 0 70%, var(--yura-accent) 78%, transparent 86%)', opacity: '0.08', inset: '-50%' })
-  if (!world) {
+  // Pattern backdrop: explicit ones sit over the 3D world; the theme's is the no-WebGL fallback.
+  // A theme on the empty `void` world shows its pattern too (the pattern is its identity).
+  const bdName = opts.backdrop ?? (!world || plan.world === 'void' ? theme.backdrop : undefined)
+  const bdSeed = plan.lines[0]?.seed ?? DEFAULT_SEED
+  let bdEls: { el: Styled; key: string }[] = []
+  if (bdName) {
+    const bd = make()
+    css(bd, { position: 'absolute', inset: '0' })
+    bd.innerHTML = backdropMarkup(bdName, bdSeed)
+    backdrop.appendChild(bd)
+    const found = bd.querySelectorAll?.('[data-bd]') ?? []
+    for (let j = 0; j < found.length; j++) bdEls.push({ el: found[j] as Styled, key: (found[j] as Styled).getAttribute?.('data-bd') ?? '' })
+  } else if (!world) {
     backdrop.appendChild(glow)
     backdrop.appendChild(sweep)
+  }
+  // Screen effects: SVG filter defs once, an overlay above the words.
+  const fxPool: readonly FxName[] = (opts.fx ?? theme.fx ?? []).filter((n) => n in screenFx)
+  const fxOverlay = layer(4, { opacity: '0' })
+  if (fxPool.length) {
+    const defs = make()
+    defs.innerHTML = FX_SVG_DEFS
+    root.appendChild(defs)
+    root.appendChild(fxOverlay)
   }
 
   // Lyrics: kineticLyrics driven frame-by-frame by this stage's clock.
@@ -440,6 +472,8 @@ export function lyricStage(target: string | Element | KineticElement, lines: rea
     exitDuration: opts.exitDuration,
     bpm: opts.bpm,
     reducedMotion: reduced,
+    ...(opts.treat ? { treat: opts.treat } : {}),
+    ...(opts.treats ?? theme.treats ? { treats: opts.treats ?? theme.treats } : {}),
     size: `${LYRIC_EM}em`,
     document: doc,
     scheduler: { request: () => 0, cancel: () => {} },
@@ -567,13 +601,27 @@ export function lyricStage(target: string | Element | KineticElement, lines: rea
     // Accent hits.
     const hit = cutInfo?.accent && !reduced ? local : -1
     const sh = shakeAt(hit, line?.seed)
-    css(shake, { transform: sh.x || sh.y ? `translate(${sh.x.toFixed(3)}em, ${sh.y.toFixed(3)}em) rotate(${sh.rotate.toFixed(3)}deg)` : 'none' })
+    const shakeTf = sh.x || sh.y ? `translate(${sh.x.toFixed(3)}em, ${sh.y.toFixed(3)}em) rotate(${sh.rotate.toFixed(3)}deg)` : ''
+    // A screen effect at the head of each cut (seeded from the pool); accent lines always get one.
+    let fxRoot: Record<string, string> = {}
+    if (fxPool.length && !reduced && line) {
+      const pick = fxPool[Math.floor(hash01(line.seed, k, 97) * fxPool.length)]
+      const fire = cutInfo?.accent || hash01(line.seed, k, 98) < 0.5
+      const fr = fire ? fxFrame(pick, local / screenFx[pick].dur, line.seed) : fxFrame(pick, -1)
+      fxRoot = fr.root
+      css(fxOverlay, { background: 'none', backgroundImage: 'none', backdropFilter: 'none', WebkitBackdropFilter: 'none', maskImage: 'none', WebkitMaskImage: 'none', mask: 'none', WebkitMask: 'none', mixBlendMode: 'normal', filter: 'none', ...fr.overlay })
+    }
+    css(shake, { transform: [shakeTf, fxRoot.transform ?? ''].filter(Boolean).join(' ') || 'none', filter: fxRoot.filter ?? 'none' })
     css(flash, { opacity: String(Math.round(accentFlash(hit) * 1000) / 1000) })
 
     // Grain + live decor.
     if (tex && !reduced) {
       const [gx, gy] = grainOffset(t)
       css(grain, { backgroundPosition: `${gx}% ${gy}%` })
+    }
+    if (bdName && !reduced) {
+      const bf = backdropFrame(bdName, t, bdSeed)
+      for (const { el, key } of bdEls) if (bf[key]) css(el, bf[key])
     }
     const progress = t / totalSpan()
     for (const { el, kind } of liveEls) {
@@ -653,7 +701,7 @@ export function readLyricNodes(
     const at = Number.parseFloat(c.getAttribute('data-at') ?? '')
     if (Number.isFinite(at)) line.at = at
     if (c.hasAttribute('data-accent')) line.accent = true
-    for (const phase of ['enter', 'hold', 'exit', 'layout'] as const) {
+    for (const phase of ['enter', 'hold', 'exit', 'layout', 'treat'] as const) {
       const v = c.getAttribute(`data-${phase}`)
       if (v) (line as unknown as Record<string, string>)[phase] = v
     }
@@ -685,6 +733,9 @@ export function stageOptionsFromAttributes(get: (name: string) => string | null)
     mood: str<KineticMoodName | 'mix'>('mood'),
     camera: str<CameraName>('camera'),
     transition: str<TransitionName>('transition'),
+    backdrop: str<BackdropName>('backdrop'),
+    treat: str<TreatmentName>('treat'),
+    ...(get('fx') !== null ? { fx: (get('fx') ?? '').split(/[\s,]+/).filter(Boolean) as FxName[] } : {}),
     seed: num('seed'),
     bpm: num('bpm'),
     every: num('every'),
@@ -709,8 +760,10 @@ export function stageOptionsFromAttributes(get: (name: string) => string | null)
  * stage itself is decorative. Attributes: theme, world, mood, camera,
  * transition, decor (space-separated names, or "none"), seed, bpm, every, loop, song, artist, audio (a selector of an
  * <audio>/<video> to sync to). Changing an attribute rebuilds the stage.
+ * `clock` drives every stage on the page from one timeline — pass
+ * `projectionSync(...).clock` so several projector windows play the same frame.
  */
-export function defineLyricStage(opts: { three?: ThreeNamespace; tag?: string } = {}): CustomElementConstructor | undefined {
+export function defineLyricStage(opts: { three?: ThreeNamespace; tag?: string; clock?: () => number } = {}): CustomElementConstructor | undefined {
   if (typeof customElements === 'undefined' || typeof HTMLElement === 'undefined') return undefined
   const tag = opts.tag ?? STAGE_TAG
   const existing = customElements.get(tag)
@@ -718,7 +771,7 @@ export function defineLyricStage(opts: { three?: ThreeNamespace; tag?: string } 
   injectDefaultStyle(tag)
 
   class LyricStageElement extends HTMLElement {
-    static observedAttributes = ['theme', 'world', 'mood', 'camera', 'transition', 'decor', 'seed', 'bpm', 'every', 'loop', 'song', 'artist', 'audio']
+    static observedAttributes = ['theme', 'world', 'mood', 'camera', 'transition', 'decor', 'seed', 'bpm', 'every', 'loop', 'song', 'artist', 'audio', 'backdrop', 'treat', 'fx']
     private run: StageRun | null = null
     private lines: KineticLine[] = []
     /** Set by yuraSite for [data-yura-scrub] sections: the stage then plays with the scroll. */
@@ -762,7 +815,8 @@ export function defineLyricStage(opts: { three?: ThreeNamespace; tag?: string } 
       const audioSel = this.getAttribute('audio')
       const audio = audioSel ? (document.querySelector(audioSel) as HTMLMediaElement | null) : null
       try {
-        const scrub = this.scrubClock ? { clock: this.scrubClock, loop: false } : {}
+        // A scroll scrub wins over a shared clock (e.g. projectionSync), which wins over the stage's own.
+        const scrub = this.scrubClock ? { clock: this.scrubClock, loop: false } : opts.clock ? { clock: opts.clock } : {}
         this.run = lyricStage(this, this.lines, { ...base, three: opts.three, a11y: 'hidden', ...(audio ? { audio } : {}), ...scrub })
       } catch (e) {
         this.run = null

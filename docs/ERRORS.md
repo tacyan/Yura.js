@@ -45,6 +45,7 @@ lowercased.
 | [YURA-019](#yura-019) | `UNKNOWN_MOTION` | throw | A `kineticLyrics()` motion (`enter` / `hold` / `exit` / `layout`) or `mood` name that is not registered |
 | [YURA-020](#yura-020) | `ASSET_LOAD_FAILED` | throw | A `.glb` model or `shapes.image()` URL could not be fetched or parsed |
 | [YURA-021](#yura-021) | `STAGE_3D_FALLBACK` | warn | `lyricStage()` was given THREE but its WebGL world could not start; the CSS backdrop is used |
+| [YURA-022](#yura-022) | `PROJECTION_INVALID` | warn | A projection-mapping config had degenerate or folded corners; the full frame is used |
 | [YURA-050](#yura-050) | `DEVICE_LOST` | warn | The GPU device was lost at runtime; Yura attempts recovery |
 
 ---
@@ -386,6 +387,30 @@ and that not too many WebGL canvases are alive at once:
 
 ```js
 lyricStage('#hero', lines, { three: THREE })   // falls back by itself when WebGL is missing
+```
+
+## YURA-022
+
+**`PROJECTION_INVALID`** — warn (`console.info`), from
+`normalizeProjectionConfig()` in `packages/yura/src/projection.ts` (also used
+by `projectionMapping()` when it loads a saved calibration).
+
+**When it appears.** The four corners of a projection-mapping config cannot
+describe a picture: three of them lie on one line, two sit on top of each
+other, or the quad folds over itself (a "bow tie", which would send part of
+the picture through infinity).
+
+**Why.** A calibration file is untrusted input — hand-edited, from another
+machine, or half-written. Rather than warp the content into nothing, the
+output falls back to the full frame so the show keeps playing, and this
+message says why the corner pin was dropped.
+
+**How to fix.** Re-calibrate (drag the numbered handles, or `1`–`4` and the
+arrow keys), or give corners in order top-left, top-right, bottom-right,
+bottom-left:
+
+```js
+projectionMapping('#show', { corners: [{ x: 0.05, y: 0.1 }, { x: 0.95, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 0.92 }] })
 ```
 
 ## YURA-050
