@@ -291,8 +291,8 @@ Particles are one way to say a lyric. The other is the way landing pages
 do it: real text, split per character, revealed from masks, pulled into
 focus, decoded from noise. `kineticLyrics()` plays the same timed lines as
 animated DOM text over any element (or over a particle canvas), with a
-vocabulary of **91 entrances, 53 holds, 68 exits and 26 layouts** (238 in
-all, with light, water and kinetic packs) and 14 moods, each one
+vocabulary of **108 entrances, 61 holds, 83 exits and 71 layouts** (323 in
+all, with light, water, kinetic and type packs) and 20 moods, each one
 named and described in words — see
 [`docs/LYRIC_MOTION.md`](docs/LYRIC_MOTION.md) for the full dictionary
 (`bun run dev:kinetic` previews every one):
@@ -502,8 +502,8 @@ sizes auto-shrink so the text block always fits the target `worldWidth`.
   world, per-line colour-scheme cuts, camera moves, transitions, decor and
   film texture around kinetic lyrics, from one tag.
 - **Web typography motion** — `kineticLyrics()` renders lyrics as DOM text
-  with 238 named, documented motions (mask reveals, shutters, scramble,
-  neon, flares, caustics, droplets, slams, tategaki…) and 14 seed-planned
+  with 323 named, documented motions and layouts (mask reveals, shutters, scramble,
+  neon, flares, caustics, droplets, slams, tategaki…) and 20 seed-planned
   moods.
 - **Projection mapping** — `projectionMapping()`: corner-pin any element
   onto a wall, soft-edge blend several projectors, mask spill, calibrate
